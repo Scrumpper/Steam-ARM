@@ -1,0 +1,18 @@
+#!/bin/sh
+# steam-arm-setup: wrapper for the native ARM64 Steam installer.
+set -e
+
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help)
+            exec /usr/share/steam-arm-setup/install.sh --help
+            ;;
+    esac
+done
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "run as root: sudo steam-arm-setup" >&2
+    exit 1
+fi
+
+exec /usr/share/steam-arm-setup/install.sh "$@"

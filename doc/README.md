@@ -1,0 +1,33 @@
+# steam-arm-setup
+
+Installs Valve's native ARM64 Steam client and supporting pieces
+(RootFS, graphics provider, launcher, and optional components such as
+Vulkan compatibility layer and controller access rules) on ARM64
+Debian or Ubuntu family system with Mesa graphics stack.
+
+Nothing is downloaded during package installation. All downloads happen
+when setup command below is run.
+
+## Usage
+
+    sudo steam-arm-setup
+
+Run `steam-arm-setup --help` for list of options, including
+`--defaults`, `--select`, `--skip`, and `--list`.
+
+## Requirements
+
+- ARM64 (aarch64) system
+- Debian or Ubuntu family distribution
+- Mesa graphics stack
+
+## Issues
+
+Report problems in project's repository:
+https://github.com/Scrumpper/native-arm64-steam
+
+## Disclaimer
+
+This project is not affiliated with, endorsed by or sponsored by Valve
+Corporation. Steam, Proton, Steam Deck and Steam Frame are trademarks of
+Valve Corporation.

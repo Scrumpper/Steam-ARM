@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+echo ""
+echo "steam-arm-setup installed."
+echo "To install the native ARM64 Steam client, run:"
+echo "  sudo steam-arm-setup"
+echo ""
+
+exit 0

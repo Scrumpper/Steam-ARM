@@ -1,0 +1,19 @@
+Package: steam-arm-setup
+Version: 1.0
+Section: games
+Priority: optional
+Architecture: arm64
+Depends: bash (>= 5.0), python3 (>= 3.8), curl, ca-certificates, xz-utils
+Recommends: whiptail
+Maintainer: Scrumpper <Scrumpper@users.noreply.github.com>
+Description: install Valve's native ARM64 Steam client
+ Installs Valve's native ARM64 Steam client and the supporting pieces:
+ an ARM64 RootFS, the graphics provider, the launcher, and optional
+ components such as a Vulkan compatibility layer, joystick and
+ controller access rules, and a desktop menu entry.
+ .
+ Nothing is downloaded during package installation. All downloads
+ happen when the steam-arm-setup command is run.
+ .
+ Requires an ARM64 Debian or Ubuntu family system with a working
+ Vulkan driver.

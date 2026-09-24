@@ -1,0 +1,7 @@
+steam-arm-setup (1.0) stable; urgency=low
+
+  * Initial release: installer package for Valve's native ARM64 Steam
+    client and its supporting components on ARM64 Debian and Ubuntu
+    family systems.
+
+ -- Unofficial Armbian community build <noreply@users.noreply.github.com>  Tue, 22 Sep 2026 00:00:00 +0000
