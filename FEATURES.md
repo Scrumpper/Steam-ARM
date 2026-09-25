@@ -1,12 +1,27 @@
-# Steam ARM · native ARM64 Steam client installer
+# Steam-ARM · ARM64 Steam Client Installer
 
-**Feature list** · Valve's own ARM64 client · runs on host GPU as ARM program · x86 titles through emulation with graphics forwarded to native drivers · Windows titles through ARM64 Proton · Remote Play with software decode · controller access rules · one package, nothing bundled
+**Feature list** :
+  The Steam Frame's ARM64 (VR) client · runs on host GPU as ARM program · x86 titles through emulation with graphics forwarded to native drivers · Windows titles through ARM64 Proton · Remote Play with software decode · controller access rules 
+
+This is an installable ARM64 client. 
+
+Provides:
+
+| Component    | Scope         | Note                                                                                               |
+|--------------|---------------|----------------------------------------------------------------------------------------------------|
+| `glx-lax`    | Mesa specific | Addresses Mesa client library limit with titles that bind one OpenGL context from several threads. |
+| `vk-spoof`   | Mali specific | Written for PanVK Vulkan driver on Mali; not needed on other Vulkan drivers.                       |
+| `map-count`  | Generic       | Raises `vm.max_map_count`; applies to any Linux system running Proton.                             |
+| `xpad-dedup` | Generic       | Applies to any system where kernel exposes duplicate joystick node for pad.                        |
+| `pad-hidraw` | Generic       | Applies to any system using kernel `xpad` driver's device list.                                    |
+| `pad-xbox`   | Generic       | Applies to any XInput pad from maker other than Microsoft.                                         |
+| `desktop`    | Generic       | Application menu entry and desktop icon; no hardware dependency.                                   |
 
 ---
 
 ## Client
-- Native ARM64 build of Steam client, build Valve produced for its ARM based VR headset, Steam Frame; interface, overlay, input stack, downloader and shader system run on CPU and GPU directly, nothing emulated
-- Client package downloads from Valve on first start, then client restarts itself; sign in from Big Picture
+- Native ARM64 build of Steam client; Produced by Valve for the Steam Frame ARM based VR headset.
+- Client package downloads from Valve on first start, then client restarts itself; sign in from Big Picture or click the power button in big picture mode and go to Desktop Mode.
 - Installs into desktop user account, not root: first regular account on system (uid 1000) by default, `GAMEUSER` to choose another; account is created only when none exists, with generated password printed once
 - Own home directory under game user's account (`.local/share/steam-arm` by default, `ARMHOME_DIR` in `/etc/steam-arm/steam-arm.conf`) and own library, so it coexists with x86 client from other routes; run one at time
 - `steam-arm` launches Deck interface; `steam-arm --desktop` launches desktop interface, `--bigpicture` forces Deck interface, `STEAM_ARM_UI=desktop` in `/etc/steam-arm/steam-arm.conf` makes desktop default
@@ -44,7 +59,7 @@
 - Client's runtime container built through `bubblewrap`
 
 ## Installer
-- One package: `steam-arm-setup_1.0_arm64.deb`, installs command `steam-arm-setup` and installer script; nothing downloads at package install
+- Package: `steam-arm-setup_1.0_arm64.deb`, installs command `steam-arm-setup` and installer script; nothing downloads at package install
 - `sudo steam-arm-setup` installs core (host packages, root filesystem and graphics provider, client package, launcher) and offers optional components: `glx-lax`, `vk-spoof`, `map-count`, `xpad-dedup`, `pad-hidraw`, `pad-xbox`, `desktop`
 - Component choice through keyboard checklist, or `--select a,b`, `--skip a,b`, `--defaults`; `--list` prints components
 - Idempotent: re-running refreshes every file, and component deselected on re-run is removed again
@@ -59,7 +74,7 @@
 - No hardcoded GPU render node, card index or board detection
 
 ## Compatibility
-- Tested on one device: H96 Max V58, RK3588 board with Mali-G610 GPU, on this project's Armbian image
+- Tested on one device: H96 Max V58, RK3588 board with Mali-G610 GPU
 - `COMPATIBILITY.md` records what has and has not been tested, per device class and per driver
 
 ## How routes compare
