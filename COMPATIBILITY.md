@@ -12,6 +12,52 @@ FEX, emulation tool used for x86 game code, installs from Ubuntu PPA `ppa:fex-em
 
 Installer has no hardcoded GPU render node, no hardcoded card index, and no board detection.
 
+## Before you install
+
+Five checks cover what installer depends on. Run them on desktop session; `glxinfo`
+comes from `mesa-utils` and `vulkaninfo` from `vulkan-tools`.
+
+```
+lsmod | grep -w panthor                     # open Mali kernel driver loaded
+glxinfo -B | grep -i "renderer string"      # OpenGL renderer
+vulkaninfo --summary | grep -i "driverName\|deviceName"
+grep -E "^ID=|VERSION_CODENAME" /etc/os-release
+getconf PAGESIZE
+```
+
+Output on tested device, H96 Max V58:
+
+| Check           | Tested device                                     | What other result means                                                  |
+|-----------------|---------------------------------------------------|--------------------------------------------------------------------------|
+| `panthor`       | loaded                                            | not loaded: image uses vendor blob or older kernel; untested here        |
+| OpenGL renderer | `Mali-G610 MC4 (Panfrost)`, Mesa 26.1.4           | `llvmpipe`: no GPU acceleration; titles run on CPU or not at all         |
+| Vulkan driver   | `panvk`, device `Mali-G610 MC4`, Mesa 26.1.4      | no Vulkan device: titles built for Linux only, no Windows titles         |
+| Distribution    | `ubuntu`, `resolute`                              | `debian`: emulation tool needs another source first, see below           |
+| Page size       | `4096`                                            | `16384` or `65536`: emulation half does not run, see Raspberry Pi below  |
+
+Mesa on tested device comes from `kisak-mesa` PPA. Older Mesa releases carry earlier
+PanVK; when `vulkaninfo` lists no `panvk` device on Mali-G610, newer Mesa from that PPA
+is route tested device uses.
+
+Board whose five results match first column matches tested device in every property
+installer depends on. That makes it expected to work, and still untested until someone
+reports it.
+
+## Armbian on RK3588 boards
+
+Rock 5B, Orange Pi 5, NanoPi R6 and other RK3588 boards carry same Mali-G610 as tested
+device. On Armbian, three choices at download time decide result:
+
+- **Kernel branch.** `current` and `edge` branches are mainline kernels, and mainline has
+  carried Panthor since Linux 6.10. `vendor` branch is Rockchip's 6.1 kernel; whether it
+  has Panthor depends on build, so check with `lsmod` above.
+- **Userland.** Ubuntu based images fit installer's tested path. Debian based images need
+  emulation tool from source other than Ubuntu PPA.
+- **Mesa.** Image's stock Mesa may predate PanVK support in use here; `vulkaninfo` check
+  above shows it.
+
+Reports from these boards are what turn this section from expectation into result.
+
 ## Component scope
 
 | Component    | Scope         | Note                                                                                               |
@@ -44,8 +90,6 @@ Installer installs FEX from Ubuntu PPA `ppa:fex-emu/fex`. On Debian system witho
 `vk-spoof` exists to report device features that Direct3D translation layer requires and that Mali PanVK driver does not expose. On system with Vulkan driver that already exposes those features, `vk-spoof` is unnecessary.
 
 `glx-lax` addresses Mesa client library limit and applies to any Mesa based driver, not only Mali's, so it remains relevant on non-Mali GPUs that use Mesa.
-
-## Disclaimer
 
 ## Other ARM64 systems
 
@@ -85,10 +129,11 @@ Checked against public sources in September 2026. One device has been tested her
 in this table is drawn from driver documentation and public reports, and last column is
 judgement, not result.
 
-### Works, and has been tested
+### Tested on one device, expected on same stack
 
 **Rockchip RK3588 and RK3588S**, Mali-G610 through Panfrost and PanVK on Panthor kernel
-driver. This is configuration package was built against.
+driver. This is configuration package was built against. Tested on H96 Max V58; other
+RK3588 boards running same stack are expected to work and have not been tested.
 
 ### Works after one change
 
@@ -137,6 +182,7 @@ is no display stack to speak of.
 system service manager, which several components require.
 
 **Hardware with no 64-bit ARM support**, which is excluded by architecture itself.
+
 ## What decides it, in practice
 
 **Which Mali driver image ships.** On Rockchip boards two stacks exist: open one,
@@ -205,5 +251,7 @@ layer asks for, and is unnecessary on driver that exposes them; `glx-lax` applie
 Other five are generic.
 
 Testing has been done on one device, so anything beyond it is reasoning rather than result.
+
+## Disclaimer
 
 This project is not affiliated with, endorsed by or sponsored by Valve Corporation. Steam, Proton, Steam Deck and Steam Frame are trademarks of Valve Corporation.
