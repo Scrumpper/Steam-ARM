@@ -27,7 +27,7 @@ emulation, or fail on driver.
 
 | Date       | Hardware                             | GPU and driver   | Result                                                                                          | Source                    |
 |------------|--------------------------------------|------------------|-------------------------------------------------------------------------------------------------|---------------------------|
-| 2026-09-23 | H96 Max V58, RK3588                  | Mali-G610, PanVK | Tested configuration                                                                            | project                   |
+| 2026-09-23 | RK3588 board                         | Mali-G610, PanVK | Tested configuration                                                                            | project                   |
 | 2026-09-26 | Radxa Dragon Q6A, Snapdragon QCS6490 | Adreno, Turnip   | Client and games run; PS4 pad works; `glx-lax` and `vk-spoof` skipped; overlay and MangoHud off | Armbian forum user report |
 
 ## Updating this document

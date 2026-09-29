@@ -25,7 +25,7 @@ grep -E "^ID=|VERSION_CODENAME" /etc/os-release
 getconf PAGESIZE
 ```
 
-Output on tested device, H96 Max V58:
+Output on tested device, RK3588 board with Mali-G610 GPU:
 
 | Check           | Tested device                                | What other result means                                               |
 |-----------------|----------------------------------------------|-----------------------------------------------------------------------|
@@ -72,7 +72,7 @@ Reports from these boards are what turn this section from expectation into resul
 
 ## Known to work
 
-Tested on one device: H96 Max V58, RK3588 board with Mali-G610 GPU, running
+Tested on one device: RK3588 board with Mali-G610 GPU, running
 Armbian based image.
 
 ## Untested
@@ -132,7 +132,7 @@ judgement, not result.
 ### Tested on one device, expected on same stack
 
 **Rockchip RK3588 and RK3588S**, Mali-G610 through Panfrost and PanVK on Panthor kernel
-driver. This is configuration package was built against. Tested on H96 Max V58; other
+driver. This is configuration package was built against. Tested on one such board; other
 RK3588 boards running same stack are expected to work and have not been tested.
 
 ### Works after one change

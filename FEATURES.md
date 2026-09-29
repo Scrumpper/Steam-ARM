@@ -24,6 +24,8 @@
 ## Graphics
 - OpenGL and Vulkan calls from emulated guest forwarded to host's native Mesa libraries through FEX thunks, not emulated; host thunks at `/usr/lib/aarch64-linux-gnu/fex-emu/HostThunks`, guest thunks at `/usr/share/fex-emu/GuestThunks`, root filesystem linked as `/usr/share/guestos/fex-mesa`
 - FEX `Multiblock` enabled in game user's FEX configuration
+- 32-bit titles: OpenGL forwarded, Vulkan not (FEX forwards Vulkan for 64-bit code only); launch handler removes `-vulkan` and `-force-vulkan` from them, profile key `vk32=keep` keeps it
+- Profile key `gl32=off`: title not detected as 64-bit, without OpenGL forwarding, on x86 Mesa inside emulation (slower), through FEX app configuration (`ThunksDB` GL off) merged with Steam's FEX settings
 - `glx-lax` component: private copy of Mesa GLX client library, `libGLX_steamarmlax.so.0`, with one check relaxed, for titles that bind single OpenGL context from more than one thread; rebuilt against system Mesa when that library changes, own library name through `patchelf` so system copy is untouched
 - `vk-spoof` component: implicit Vulkan layer `VK_LAYER_STEAM_ARM_feature_spoof`, built from source at install, reports device features DXVK lists as mandatory and Mali driver does not expose, then removes them again from device creation; self-check through `vulkaninfo` when present
 - `map-count` component: `vm.max_map_count = 2147483642` in `/etc/sysctl.d/zz-steam-arm.conf`, value Proton expects; `zz-` name so it is read after `/etc/sysctl.conf`
@@ -46,9 +48,9 @@
 - Client's runtime container built through `bubblewrap`
 
 ## Installer
-- One script: `steam-arm-install.sh`; `build-deb.sh` also builds `.deb` package that installs command `steam-arm-setup`; nothing downloads at install
+- One script: `steam-arm-install.sh`; GitHub source also builds `.deb` package that installs command `steam-arm-setup` and installer script; nothing downloads at package install
 - `sudo bash steam-arm-install.sh` installs core (host packages, root filesystem and graphics provider, client package, launcher) and offers optional components: `glx-lax`, `vk-spoof`, `map-count`, `xpad-dedup`, `pad-hidraw`, `pad-xbox`, `desktop`, `desktop-mode`, `icon-bigpicture`, `icon-desktop`, `tray`, `page-size`
-- Component choice through keyboard checklist, or `--select a,b`, `--skip a,b`, `--defaults`; `--list` prints components
+- Component choice through keyboard checklist, desktop dialog (zenity) when started with no controlling terminal in graphical session, or `--select a,b`, `--skip a,b`, `--defaults`; `--list` prints components
 - Idempotent: re-running refreshes every file, and component deselected on re-run is removed again
 - Installed games kept: install, re-run, component changes and package upgrade leave game library (`steamapps`), sign-in and settings untouched; only client's program folder is replaced, and only when missing or not ARM64
 - `desktop` component: application menu entry "Steam ARM", right-click actions open either interface; window rule gives desktop interface windows title bar, and KWin reloads its rules so it applies at once
@@ -59,7 +61,7 @@
 - Page size check before anything installs: emulation needs 4K pages; 16K or 64K kernel stops setup with fix for that system, `STEAM_ARM_IGNORE_PAGESIZE=1` to skip
 - `page-size` component: on Raspberry Pi with 16K page kernel, adds `kernel=kernel8.img` to firmware `config.txt` in marked block, keeps backup, and asks for reboot and second run; deselecting removes block again; no effect on other systems
 - Header names no board; same script runs on its own or from units, TTY gated, `NO_COLOR` honoured
-- Removal: re-run with components deselected removes those components; script has no further uninstall option; package built via `build-deb.sh` removes instead with `apt purge steam-arm-setup`, keeping client and games; deleting client's directory in account it installed into removes client and every game in it
+- Removal: re-run with components deselected removes those components; script has no uninstall option for host packages, root filesystem, client package or launcher; deleting client's directory in account it installed into removes client and every game in it
 
 ## Requirements
 - ARM64 system with working Vulkan driver; Debian or Ubuntu family distribution, since installer uses `apt`
@@ -68,7 +70,7 @@
 - No hardcoded GPU render node or card index; only board detection is Raspberry Pi check in `page-size`
 
 ## Compatibility
-- Tested on one device: H96 Max V58, RK3588 board with Mali-G610 GPU, on this project's Armbian image
+- Tested on one device: RK3588 board with Mali-G610 GPU, Armbian based image
 - `COMPATIBILITY.md` records what has and has not been tested, per device class and per driver
 
 ## Charts

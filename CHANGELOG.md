@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2] - 2026-09-29
+
+### Added
+
+- Title profile key `gl32=off`: title not detected as 64-bit runs without FEX's OpenGL forwarding, on x86 Mesa inside emulation (slower). For titles forwarding breaks. Handler writes FEX app configuration with `ThunksDB` GL off, merged with Steam's own FEX settings for that title.
+- Title profile key `vk32=keep`: 32-bit title keeps `-vulkan` launch option (see Changed).
+- Component checklist as desktop dialog (zenity) when installer starts with no controlling terminal in graphical session. Terminal checklist and runs with neither terminal nor display behave as before.
+- `RESEARCH.md`: researched, untested notes per GPU family, emulation settings per title and engine, with what to change for each. Research AI-assisted; see disclaimer in file.
+
+### Changed
+
+- 32-bit titles: handler removes `-vulkan` and `-force-vulkan`. FEX forwards Vulkan for 64-bit code only, so 32-bit Vulkan ran on CPU renderer (lavapipe).
+- Source 2 titles: handler logs warning, launch unchanged.
+
+### Fixed
+
+- Memory held after game sessions: Steam overlay leaves two 25 MB frame buffers per session in `/dev/shm`, kept mapped by client's web helper until client restarts, so memory shrank with each game started. Launcher's minute sweep now frees their pages when no game runs (hole punched, file size and mappings kept). Test: 205 MB back to 55 MB one minute after third session.
+- Profile `args` counted by Unity and Godot renderer rules: profile's own `-force-glcore` or `--rendering-driver` now wins, no second renderer option added.
+- Titles started through start script (`hl2.sh` style) are detected by binary script starts: 32-bit rules, Unity and Godot rules apply to them.
+
 ## [1.1] - 2026-09-28
 
 ### Added

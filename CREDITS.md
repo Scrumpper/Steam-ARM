@@ -69,7 +69,7 @@ system, installed from its own repository, or downloaded by client at first star
 
 ## Development
 
-Developed and tested on one device, H96 Max V58, RK3588 board with Mali-G610 GPU.
+Developed and tested on one device: RK3588 board with Mali-G610 GPU.
 `COMPATIBILITY.md` records what has been tested and what has not.
 
 Development was done conversationally with **Claude Code**. 

@@ -1,3 +1,19 @@
+steam-arm-setup (1.2) stable; urgency=low
+
+  * Launcher frees memory Steam overlay holds in /dev/shm after game
+    sessions (two 25 MB buffers per session, kept mapped by web helper).
+  * 32-bit titles: -vulkan and -force-vulkan removed (Vulkan forwarding is
+    64-bit only); profile key vk32=keep keeps them.
+  * Profile key gl32=off: title not detected as 64-bit runs on emulated x86
+    Mesa instead of forwarded host Mesa.
+  * Start scripts (hl2.sh style) followed to binary they start; 64-bit
+    build preferred in arch-switch scripts, crash helpers skipped.
+  * Profile args counted by Unity and Godot renderer rules.
+  * Source 2 titles logged; component dialog (zenity) with no controlling
+    terminal in desktop session. RESEARCH.md added.
+
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Tue, 29 Sep 2026 00:00:00 +0000
+
 steam-arm-setup (1.1) stable; urgency=low
 
   * Check page size before installing anything; stop on 16K or 64K kernel
@@ -28,7 +44,7 @@ steam-arm-setup (1.1) stable; urgency=low
   * Fixed: CPU rendering after fresh install, overlay UI crash, missing
     title bar until next login.
 
- -- Unofficial Armbian community build <noreply@users.noreply.github.com>  Mon, 28 Sep 2026 00:00:00 +0000
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Mon, 28 Sep 2026 00:00:00 +0000
 
 steam-arm-setup (1.0) stable; urgency=low
 
@@ -36,4 +52,4 @@ steam-arm-setup (1.0) stable; urgency=low
     client and its supporting components on ARM64 Debian and Ubuntu
     family systems.
 
- -- Unofficial Armbian community build <noreply@users.noreply.github.com>  Tue, 22 Sep 2026 00:00:00 +0000
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Tue, 22 Sep 2026 00:00:00 +0000

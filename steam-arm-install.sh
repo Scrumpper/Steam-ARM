@@ -88,7 +88,8 @@ Same installer as `.deb` package built from GitHub source (`build-deb.sh`); that
 package's command is `steam-arm-setup`, options below are identical either way.
 
 Options
-  (none)            keyboard checklist of components (needs a terminal)
+  (none)            checklist of components: keyboard list in terminal, dialog
+                    (zenity) on desktop when started without terminal
   --defaults        recommended components, no questions
   --keep            components saved by last run, no questions (recommended set if none)
   --select a,b      exactly these components
@@ -116,8 +117,8 @@ Examples
   sudo env GAMEUSER=alice bash steam-arm-install.sh --defaults         install for account alice
 
 Re-running
-  --keep, and any run without terminal, reuse account and components saved by last
-  run; checklist starts from them.
+  --keep, and any run without terminal or dialog, reuse account and components saved
+  by last run; checklist and dialog start from them.
   A component left out on a later run is removed again. Installed games, sign-in
   and settings are kept: install, re-run, component changes and package upgrades
   never touch the game library.
@@ -217,14 +218,33 @@ case "$MODE" in
                 fi
               done
             fi
+          elif [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && command -v zenity >/dev/null 2>&1 \
+               && ! { : </dev/tty; } 2>/dev/null; then
+            # No controlling terminal but graphical session: same checklist as dialog; no reachable display keeps preset.
+            args=(); for c in $COMPONENTS; do
+              args+=("$(eval "[ \"\$$(var_of "$c")\" = 1 ]" && echo TRUE || echo FALSE)" "$c" "$(desc_of "$c")")
+            done
+            zerr=$(mktemp); rc=0
+            chosen=$(zenity --list --checklist --title="Native ARM64 Steam" --text="Optional components" \
+              --column="Install" --column="Component" --column="Description" --print-column=2 --separator=' ' \
+              --width=900 --height=560 "${args[@]}" 2>"$zerr") || rc=$?
+            if [ "$rc" = 0 ]; then
+              for c in $COMPONENTS; do eval "$(var_of "$c")=0"; done
+              for c in $chosen; do known "$c" && eval "$(var_of "$c")=1"; done
+            elif [ "$rc" = 1 ] && ! grep -qiE '(cannot|failed to|unable to) open display' "$zerr"; then
+              rm -f "$zerr"; die "cancelled"
+            else
+              warn "component dialog failed (status $rc); using preset selection"
+            fi
+            rm -f "$zerr"
           fi;;
 esac
 opt(){ eval "[ \"\$$(var_of "$1")\" = 1 ]"; }
 
-# Detect other installer flavour (marked by /etc/h96/steam-arm.conf) and refuse unless --replace-other.
+# Detect other installer flavour and refuse unless --replace-other.
 if grep -qs '/etc/h96/steam-arm.conf' /usr/local/bin/steam-arm; then
-  [ "$REPLACE_OTHER" = 1 ] || die "/usr/local/bin/steam-arm belongs to other flavour of this installer (it
-       reads /etc/h96/steam-arm.conf). Both flavours write steam-arm and steamos-session-select.
+  [ "$REPLACE_OTHER" = 1 ] || die "/usr/local/bin/steam-arm belongs to other flavour of this installer.
+       Both flavours write steam-arm and steamos-session-select.
        Pass --replace-other to install anyway; its commands are then replaced by this flavour."
   warn "steam-arm of other flavour found; --replace-other given, its commands are replaced"
 fi
@@ -936,6 +956,9 @@ on the tool's os.environ and sys.argv and decides per title:
                   64-bit Unity players with a Vulkan renderer: -force-vulkan (Unity's OpenGL core
                   context needs a newer GL than Panfrost offers); overlay mode for Vulkan titles.
                   Other Unity 5+ players: GL 4.5 report, so the core context is created.
+                  32-bit titles: -vulkan/-force-vulkan removed (no 32-bit Vulkan thunk, so
+                  Vulkan lands on CPU renderer). Source 2 titles: warning only.
+  Script launchers  hl2.sh style start scripts are followed to binary they name, for detection.
 
 Profiles, one title per line, later files override earlier ones:
   /usr/local/share/steam-arm/titles.conf      shipped with steam-arm-setup
@@ -943,11 +966,15 @@ Profiles, one title per line, later files override earlier ones:
   ~/.config/steam-arm/titles.conf              client home (HOME inside the launcher)
 Line: <appid> key=value ...   keys: overlay=x86|vulkan|off  mangohud=on|off
       godot=gl|vulkan  unity=vulkan|gl  env=NAME=VALUE;NAME=VALUE  args=ARG;ARG
+      gl32=off (32-bit title on emulated x86 Mesa, no GL thunk)  vk32=keep (keep -vulkan)
 Per-title launch options override profiles: STEAM_ARM_OVERLAY=x86|vulkan|off, and
 STEAM_ARM_PRELOAD_KEEP=a,b (keep exactly LD_PRELOAD entries containing these substrings).
 Every decision is printed to the tool's log, /tmp/fex-compat-tool-<pid>.log."""
+import atexit
 import glob
+import json
 import os
+import re
 import struct
 import sys
 
@@ -997,17 +1024,102 @@ def godot_major():
     return None
 
 
+def is_elf(p):
+    try:
+        with open(p, "rb") as f:
+            return f.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def script_target(path):
+    """ELF in the script's own directory that a start script (hl2.sh style) names, else None."""
+    try:
+        with open(path, "rb") as f:
+            if f.read(2) != b"#!":
+                return None
+            text = f.read(1 << 16).decode("utf-8", "replace")
+    except OSError:
+        return None
+    d = os.path.dirname(os.path.abspath(path))
+    found = []
+    for m in re.finditer(r"[\w./+-]+", text):
+        tok = m.group(0)
+        # "$DIR"/game and "${DIR}/game": path relative to script
+        if tok.startswith("/") and m.start() and text[m.start() - 1] in "\"}":
+            tok = tok[1:]
+        tok = tok[2:] if tok.startswith("./") else tok
+        if not tok or tok.startswith("/") or ".." in tok.split("/") or re.search(r"\.so(\.|$)", tok) \
+                or re.search(r"crash|report|breakpad|minidump", tok, re.I):
+            continue
+        p = os.path.join(d, tok)
+        if p != os.path.abspath(path) and p not in found and os.path.isfile(p) and is_elf(p):
+            found.append(p)
+    # arch-switch scripts name both builds; FEX reports x86_64, so 64-bit one runs
+    for p in found:
+        try:
+            with open(p, "rb") as f:
+                if f.read(5)[4:5] == b"\x02":
+                    return p
+        except OSError:
+            pass
+    return found[-1] if found else None
+
+
 def game_binary():
-    """The title's own executable: last existing file on the command line that is an ELF."""
+    """The title's own executable: last existing file on the command line that is an ELF,
+    or the binary a start script there names."""
     for a in reversed(sys.argv):
         if os.path.isfile(a):
-            try:
-                with open(a, "rb") as f:
-                    if f.read(4) == b"\x7fELF":
-                        return os.path.abspath(a)
-            except OSError:
-                pass
+            if is_elf(a):
+                return os.path.abspath(a)
+            t = script_target(a)
+            if t:
+                return t
     return None
+
+
+def source2():
+    """True when the title's files carry Source 2's engine library (bin/linuxsteamrt64/libengine2.so)."""
+    dirs = [os.getcwd()]
+    exe = game_binary()
+    if exe:
+        dirs.append(os.path.dirname(exe))
+    for a in reversed(sys.argv):
+        if os.path.isfile(a):
+            dirs.append(os.path.dirname(os.path.abspath(a)))
+            break
+    for d in dirs:
+        for sub in ("", "bin/linuxsteamrt64", "game/bin/linuxsteamrt64"):
+            if os.path.isfile(os.path.join(d, sub, "libengine2.so")):
+                return True
+    return False
+
+
+def gl_thunk_off():
+    """FEX app config with ThunksDB GL=0; FEX_APP_CONFIG is FEX's highest ThunksDB layer."""
+    cfg = {}
+    user = os.environ.get("FEX_APP_CONFIG")
+    if user:
+        try:
+            cfg = json.load(open(user))
+        except (OSError, ValueError):
+            cfg = {}
+    else:
+        # tool's own translation of Steam's FEX settings, which it skips once FEX_APP_CONFIG is set
+        gen = getattr(sys.modules.get("__main__"), "generate_app_config", None)
+        if callable(gen):
+            cfg = gen()
+    if not isinstance(cfg, dict):
+        cfg = {}
+    if not isinstance(cfg.get("ThunksDB"), dict):
+        cfg["ThunksDB"] = {}
+    cfg["ThunksDB"]["GL"] = 0
+    path = "/tmp/steam-arm-fex-app-config-%d.json" % os.getpid()
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    os.environ["FEX_APP_CONFIG"] = path
+    atexit.register(lambda: os.path.exists(path) and os.unlink(path))
 
 
 def engine_info():
@@ -1069,15 +1181,18 @@ def dedupe(seq):
 prof = load_profile()
 if prof:
     log("profile for", APPID, prof)
+extra = [x for x in prof.get("args", "").split(";") if x]
 engine, bits = engine_info()
 if engine:
     log("engine: %s, %s-bit" % (engine, bits))
+if source2():
+    log("source 2: needs desktop-class Vulkan features; no known fix, launched unchanged")
 # 32-bit Unity stops when x86 overlay attaches; default overlay off unless profile/launch option asks.
 engine_overlay = "off" if (engine == "unity" and bits == 32) else None
 # 64-bit Unity+Vulkan: Panfrost's GL is too old for Unity's core path (GLXBadFBConfig), so force Vulkan unless profile/launch overrides.
 unity_vk = False
 if engine == "unity" and bits == 64 and prof.get("unity", "vulkan") == "vulkan" \
-        and not any(a.startswith("-force-") for a in sys.argv) and unity_has_vulkan():
+        and not any(a.startswith("-force-") for a in sys.argv + extra) and unity_has_vulkan():
     unity_vk = True
     engine_overlay = "vulkan"
 entries = [e for e in os.environ.get("LD_PRELOAD", "").replace(" ", ":").split(":") if e]
@@ -1118,7 +1233,7 @@ major = godot_major()
 if major == 4 and prof.get("godot", "gl") == "gl":
     os.environ.setdefault("MESA_GL_VERSION_OVERRIDE", "3.3")
     os.environ.setdefault("MESA_GLSL_VERSION_OVERRIDE", "330")
-    if "--rendering-driver" not in sys.argv:
+    if "--rendering-driver" not in sys.argv + extra:
         sys.argv += ["--rendering-driver", "opengl3"]
     log("godot 4: OpenGL renderer, GL 3.3 report")
 elif major is not None:
@@ -1138,10 +1253,23 @@ for kv in [x for x in prof.get("env", "").split(";") if "=" in x]:
     k, v = kv.split("=", 1)
     os.environ[k] = v
     log("env:", k)
-extra = [x for x in prof.get("args", "").split(";") if x]
 if extra:
     sys.argv += extra
     log("args:", extra)
+
+# 32-bit: FEX has no 32-bit Vulkan thunk, so a Vulkan renderer lands on lavapipe (CPU).
+if bits == 32 and prof.get("vk32") != "keep":
+    vk = [a for a in sys.argv if a in ("-vulkan", "-force-vulkan")]
+    if vk:
+        sys.argv = [a for a in sys.argv if a not in vk]
+        log("32-bit: removed", vk, "(Vulkan would run on CPU; vk32=keep keeps it)")
+# gl32=off: emulated x86 Mesa instead of the host GL thunk, for titles the thunk breaks.
+if prof.get("gl32") == "off" and bits != 64:
+    try:
+        gl_thunk_off()
+        log("gl32: GL thunk off (FEX_APP_CONFIG=%s)" % os.environ["FEX_APP_CONFIG"])
+    except OSError as e:
+        log("gl32: could not write FEX app config:", e)
 
 items = dedupe(items)
 if items:
@@ -1161,6 +1289,7 @@ TITLES
 [ -f /etc/steam-arm/titles.conf ] || cat > /etc/steam-arm/titles.conf <<'TITLES'
 # Local title profiles; override /usr/local/share/steam-arm/titles.conf. One line per title: <appid> key=value ...
 #   overlay=x86|vulkan|off  mangohud=on|off  godot=gl|vulkan  env=A=1;B=2  args=-x;-y   (example: 1386040 overlay=vulkan)
+#   gl32=off (32-bit title on emulated x86 Mesa, no GL thunk)  vk32=keep (32-bit title keeps -vulkan)
 TITLES
 
 # FEX tool edit, shared by the launcher's start and its watcher (see the launcher).
@@ -1323,14 +1452,18 @@ fex_ok(){ grep -q '/run/gfx/main/' "$F/usr/share/fex-emu/ThunksDB.json" 2>/dev/n
 [ -d "$F" ] && ! fex_ok && python3 "$FEXPATCH" "$F" 2>/dev/null
 # Steam overlay/FEX leak /dev/shm segments (fills half of RAM -> SIGBUS); sweep unused ones at start and every minute.
 shm_sweep(){ python3 - "$(id -u)" 2>/dev/null <<'SHMPY'
-import glob, os, sys, time
-uid = int(sys.argv[1]); now = time.time(); used = set()
+import ctypes, glob, os, sys, time
+uid = int(sys.argv[1]); now = time.time(); used = set(); mappers = {}; game = False
 for p in glob.glob("/proc/[0-9]*"):
     try:
+        comm = open(p + "/comm").read().strip()
+        if os.stat(p).st_uid == uid and b"SteamLaunch" in open(p + "/cmdline", "rb").read():
+            game = True
         for line in open(p + "/maps"):
             i = line.find("/dev/shm/")
             if i >= 0:
                 used.add(line[i:].split()[0])
+                mappers.setdefault(line[i:].split()[0], set()).add(comm)
     except OSError:
         pass
     try:
@@ -1349,6 +1482,22 @@ for f in glob.glob("/dev/shm/u%d-Shm_*" % uid):
             os.unlink(f)
     except OSError:
         pass
+# Overlay frame buffers of ended sessions stay mapped by steamwebhelper (25 MB each); with no game
+# running, punch them (FALLOC_FL_PUNCH_HOLE|KEEP_SIZE): pages freed, size and mappings kept.
+if not game:
+    libc = ctypes.CDLL(None, use_errno=True)
+    for f in glob.glob("/dev/shm/u%d-Shm_*" % uid):
+        try:
+            st = os.stat(f)
+            if mappers.get(f) == {"steamwebhelper"} and st.st_blocks and st.st_size >= 8 << 20 \
+                    and now - st.st_mtime > 60:
+                fd = os.open(f, os.O_RDWR)
+                try:
+                    libc.fallocate(fd, 3, ctypes.c_long(0), ctypes.c_long(st.st_size))
+                finally:
+                    os.close(fd)
+        except OSError:
+            pass
 for f in glob.glob("/dev/shm/fex-*-stats"):
     pid = f[len("/dev/shm/fex-"):-len("-stats")]
     try:

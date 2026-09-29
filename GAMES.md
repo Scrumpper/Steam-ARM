@@ -3,8 +3,8 @@
 What works for each kind of game on this package, by build and graphics API. Updated as more
 game types are run.
 
-**Last updated:** 2026-09-26
-**Run on:** H96 Max V58 (RK3588, Mali-G610, PanVK and Panfrost, Mesa 26.1), Armbian, KDE Plasma on X11, `steam-arm-setup` 1.1, Valve FEX tool FEX-2607
+**Last updated:** 2026-09-29
+**Run on:** RK3588 board (Mali-G610, PanVK and Panfrost, Mesa 26.1), Armbian, KDE Plasma on X11, `steam-arm-install.sh` 1.2, Valve FEX tool FEX-2607
 
 Legend: ✅ works  ⚠️ works with conditions  ❌ does not work  ❓ not run yet
 
@@ -17,6 +17,7 @@ Legend: ✅ works  ⚠️ works with conditions  ❌ does not work  ❓ not run 
 | Linux, 32-bit x86, Unity                        | ✅      | ✅      | ❓        | ❌             | Title stops when Steam overlay attaches; handler starts it with overlay off                                                                                                              |
 | Linux, 64-bit x86, Godot 4                      | ✅      | ✅      | ✅        | ✅             | Handler switches Godot 4 to OpenGL renderer and GL 3.3 report (Vulkan renderer freezes on splash)                                                                                        |
 | Linux, 64-bit x86, Source engine (OpenGL)       | ✅      | ✅      | ❓        | ❓             | Menu on GPU through GL forwarding                                                                                                                                                        |
+| Linux, 32-bit x86, Source engine (OpenGL)       | ❌      | ✅      | ❓        | ❓             | Loading screen draws, then all threads wait; `gl32=off`, Multiblock off, `-nosound` do not help. Proton build runs                                                                       |
 | Linux, 32-bit x86, Unreal Engine 2 (OpenGL)     | ✅      | ✅      | ❓        | ❓             | Switches display mode for fullscreen; mode restored on quit                                                                                                                              |
 | Linux, 64-bit x86, C++ SDL, OpenGL              | ✅      | ✅      | ❓        | ❓             | On quit one thread can stay behind; client shows title running until Stop                                                                                                                |
 | Linux, 64-bit x86, custom OpenGL engine         | ⚠️     | ✅      | ❓        | ⚠️            | Some stop when Steam overlay attaches; `overlay=off` profile (shipped for known one)                                                                                                     |
@@ -44,11 +45,14 @@ Steam ARM's launch handler decides per title, before game starts, with no launch
 - MangoHud when title asks for it
 - Godot 4 titles on OpenGL renderer
 - Unity titles: Vulkan renderer where player carries it, else GL 4.5 report; 32-bit Unity players with overlay off
+- 32-bit titles: `-vulkan` and `-force-vulkan` removed (Vulkan forwarding is 64-bit only)
+- Start scripts (`hl2.sh` style) followed to binary they start
 
 Title profiles in `/etc/steam-arm/titles.conf` change it per title, by Steam app id:
 
 ```
 <appid> overlay=x86|vulkan|off  mangohud=on|off  godot=gl|vulkan  unity=vulkan|gl  env=A=1;B=2  args=-x;-y
+<appid> gl32=off  vk32=keep
 ```
 
 Per title launch options override profiles: `STEAM_ARM_OVERLAY=x86|vulkan|off %command%`.

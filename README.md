@@ -2,7 +2,7 @@
 
 Full feature list: **[FEATURES.md](FEATURES.md)**.
 
-Changes per version: **[CHANGELOG.md](CHANGELOG.md)**. Compatibility by game type: **[GAMES.md](GAMES.md)**. Other routes to Steam on ARM64: **[COMPARISON.md](COMPARISON.md)**.
+Changes per version: **[CHANGELOG.md](CHANGELOG.md)**. Compatibility by game type: **[GAMES.md](GAMES.md)**. Other routes to Steam on ARM64: **[COMPARISON.md](COMPARISON.md)**. Researched, untested settings and what to change: **[RESEARCH.md](RESEARCH.md)**.
 
 One script installs Valve's native ARM64 Steam client on ARM64 Linux system, with
 supporting pieces that client needs and does not carry: graphics forwarding, controller
@@ -52,8 +52,14 @@ Installed games are safe. Installing, re-running installer, changing components 
   two-player game handed player 2 copy of player 1. Udev rule unbinds that interface.
 - **Nothing downloaded until asked.** Installing package writes files and prints
   command to run. Every download happens when that command runs.
-- **Components are selectable.** `--defaults`, `--select a,b`, `--skip a,b`, `--list`, or
-  keyboard checklist. Component deselected on later run is removed again.
+- **Components are selectable.** `--defaults`, `--select a,b`, `--skip a,b`, `--list`,
+  keyboard checklist, or desktop dialog when started with no controlling terminal.
+  Component deselected on later run is removed again.
+- **Memory stays free across sessions.** Steam overlay leaves 25 MB buffers behind per game
+  session, still mapped by client; launcher frees their pages once no game runs.
+- **32-bit titles handled.** Vulkan options that would run on CPU are removed, start
+  scripts are followed to binary they start, and `gl32=off` profile runs title on emulated
+  x86 Mesa for titles forwarding breaks.
 - **It installs into desktop account, not root.** First regular account by default,
   another with `GAMEUSER`.
 
