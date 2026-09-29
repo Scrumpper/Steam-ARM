@@ -1,35 +1,7 @@
 #!/bin/bash
-# steam-arm-setup: install the native ARM64 Steam client on an ARM64 system with a
-# working Vulkan driver. The client runs on the GPU as an ARM program; x86 games run through the
-# emulation tool the client downloads, against the x86-64 RootFS this installer prepares, with
-# OpenGL and Vulkan forwarded to the native drivers. Windows titles run through the ARM64
-# Proton build the client downloads. Remote Play runs the package's x86-64 streaming client
-# under the system emulator with software decoding.
-#
-# Run as root:  sudo steam-arm-setup
-# Then launch:  steam-arm   (as the desktop user, from the menu entry or a terminal)
-# The first start downloads the client package and restarts itself; sign in from Big Picture.
-#
-# The core is always installed: host packages, RootFS and graphics provider, client package,
-# launcher. Optional components (all on by default):
-#   glx-lax     private Mesa GLX copy for titles that bind one GL context from several threads
-#   vk-spoof    host Vulkan layer that reports features DXVK requires but the driver lacks
-#   map-count   raise vm.max_map_count to the SteamOS value
-#   xpad-dedup  udev rule that drops the duplicate joystick some third-party Xbox pads expose
-#   pad-hidraw  hidraw access for game controllers, so the client can read a pad directly
-#   pad-xbox    present XInput pads from other makers as Xbox 360 pads (off: the client does it)
-#   desktop     application menu entry and desktop icon for the game user
-# Options: --defaults | --select a,b,c | --skip a,b | --list | --help (same meaning as in
-# steam-arm-install.sh). A component deselected on a re-run is removed again.
-#
-# Coexists with the x86 client installed by steam-arm-install.sh: the ARM client keeps its
-# own home directory (ARMHOME_DIR in /etc/steam-arm/steam-arm.conf, default .local/share/steam-arm
-# under the game user's home) and its own library. Idempotent; re-running refreshes every file.
-# Experimental: not part of the shipped image.
+# steam-arm-setup: installs Valve's native ARM64 Steam client (host packages, RootFS, launcher, optional components); run as root, then launch via steam-arm. See --help.
 set -u
-# Header. Self-contained on purpose: this script also ships on its own, where the board's
-# banner helper does not exist, and the header should not name a board either way. TTY gated,
-# NO_COLOR honoured, because the same script runs from units where escape codes are noise.
+# Banner: self-contained (no board helper needed); TTY-gated, honours NO_COLOR.
 steam_banner() {
     [ -t 1 ] || return 0
     local C=$'\033[96m' D=$'\033[2m' B=$'\033[1m' X=$'\033[0m'
@@ -41,79 +13,206 @@ steam_banner() {
     printf '%s  %s%s\n\n' "$D" "$line" "$X"
 }
 
-# The account the client installs into. Default: the desktop account already on the box,
-# which is the first regular login (uid 1000) on an image whose desktop was added on demand.
-# Set GAMEUSER to choose another. Only when no regular account exists at all is one created,
-# and then its password is generated and printed rather than being a value published in this
-# script for every box that runs it.
-GAMEUSER="${GAMEUSER:-$(getent passwd 1000 2>/dev/null | cut -d: -f1)}"
-GAMEUSER="${GAMEUSER:-steamarm}"
+say(){ printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
+warn(){ printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
+die(){ printf '\033[1;31m[fail]\033[0m %s\n' "$*"; exit 1; }
 GAMEPASS="${GAMEPASS:-}"
-# The client's own Steam Input re-identifies pads here, so the uinput service is off unless asked
-# for; the launcher pauses it while the client runs in case another route enabled it.
+# pad-xbox stays off by default: the client's own Steam Input re-identifies pads.
 DEFAULT_OFF="${DEFAULT_OFF:-pad-xbox}"
+# Client home: env, then saved setting, then default; re-run never moves the client away from its games.
+ARMHOME_DIR="${ARMHOME_DIR:-$(sed -n 's/^ARMHOME_DIR=//p' /etc/steam-arm/steam-arm.conf 2>/dev/null | tail -1)}"
 ARMHOME_DIR="${ARMHOME_DIR:-.local/share/steam-arm}"
+# Settings file is also read by the launcher/tray; conf_set updates its own key in place, keeping the rest.
+CONF=/etc/steam-arm/steam-arm.conf
+conf_get(){ sed -n "s/^$1=//p" "$CONF" 2>/dev/null | tail -1; }
+conf_set(){
+  local t; [ -f "$CONF" ] || : > "$CONF" || die "could not write $CONF"
+  t=$(mktemp "$CONF.XXXXXX") || die "could not write $CONF"
+  awk -v k="$1=" -v v="$1=$2" 'index($0, k) == 1 { if (!d) print v; d = 1; next } { print } END { if (!d) print v }' "$CONF" > "$t" \
+    && chmod 644 "$t" && mv -f "$t" "$CONF" || { rm -f "$t"; die "could not write $CONF"; }
+}
+# GAMEUSER: env, then saved account, then account whose home already holds the client, then uid 1000; created if none exists.
+# Only an env GAMEUSER or the final steamarm fallback may create an account; a conf/detected
+# name must already exist here, else a conf naming a foreign user creates it.
+GAMEUSER_MAY_CREATE=0
+if [ -n "${GAMEUSER:-}" ]; then
+  GAMEUSER_MAY_CREATE=1
+else
+  GAMEUSER="$(conf_get GAMEUSER)"
+  if [ -n "$GAMEUSER" ] && ! getent passwd "$GAMEUSER" >/dev/null 2>&1; then
+    warn "conf GAMEUSER='$GAMEUSER' has no account on this box; ignored"
+    GAMEUSER=
+  fi
+fi
+if [ -z "$GAMEUSER" ] && [ -f "$CONF" ]; then
+  GAMEUSER=$(getent passwd | while IFS=: read -r u _ id _ _ h _; do
+    [ "$id" -ge 1000 ] 2>/dev/null && [ -d "$h/$ARMHOME_DIR/.local/share/Steam" ] && echo "$u"; done)
+  [ "$(printf '%s\n' "$GAMEUSER" | wc -l)" = 1 ] || GAMEUSER=
+fi
+GAMEUSER="${GAMEUSER:-$(getent passwd 1000 2>/dev/null | cut -d: -f1)}"
+if [ -z "$GAMEUSER" ]; then GAMEUSER=steamarm; GAMEUSER_MAY_CREATE=1; fi
 RFS=/opt/fex-rootfs/Ubuntu_24_04
 FEXPPA="ppa:fex-emu/fex"
 MANIFEST=https://client-update.fastly.steamstatic.com/steam_client_publicbeta_linuxarm64
 CDN=https://client-update.steamstatic.com
-say(){ printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
-warn(){ printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
-die(){ printf '\033[1;31m[fail]\033[0m %s\n' "$*"; exit 1; }
 # ---------------------------------------------------------------------------
-COMPONENTS="glx-lax vk-spoof map-count xpad-dedup pad-hidraw pad-xbox desktop"
+COMPONENTS="glx-lax vk-spoof map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray page-size"
 desc_of(){ case "$1" in
-  glx-lax)    echo "Private Mesa GLX copy: GL context bound from several threads (Hotline Miami 2)";;
+  glx-lax)    echo "Private Mesa GLX copy, for GL contexts bound from several threads";;
   vk-spoof)   echo "Vulkan feature layer: DXVK device on the Mali driver (Proton titles)";;
   map-count)  echo "vm.max_map_count raised to the SteamOS value (Proton warns below it)";;
   xpad-dedup) echo "Drop the duplicate joystick node of third-party Xbox 360 style pads";;
   pad-hidraw) echo "Let the client read pads directly, for rumble and battery level";;
-  pad-xbox)   echo "Present XInput pads from other makers as Xbox 360 pads (the client does this itself)";;
-  desktop)    echo "Application menu entry and desktop icon for the game user";;
+  pad-xbox)   echo "Present other makers' XInput pads as Xbox 360 pads (client does this itself)";;
+  desktop)    echo "Menu entry \"Steam ARM\", and title bar for desktop interface windows";;
+  desktop-mode) echo "Menu entry \"Steam ARM (Desktop mode)\": desktop interface, for signing in";;
+  icon-bigpicture) echo "Desktop icon \"Steam ARM\"";;
+  icon-desktop) echo "Desktop icon \"Steam ARM (Desktop mode)\"";;
+  tray)       echo "Steam icon in the panel tray, with Open, desktop mode and Stop";;
+  page-size)  echo "Raspberry Pi 5: boot firmware's 4K page kernel (no effect elsewhere)";;
 esac; }
 var_of(){ echo "OPT_$(echo "$1" | tr 'a-z-' 'A-Z_')"; }
 for c in $COMPONENTS; do eval "$(var_of "$c")=1"; done
-# Components that are off unless asked for. The pad re-identification service grabs the
-# physical pad, which starves a title that opens the pad itself, so it is opt-in.
+# DEFAULT_OFF components stay opt-in (pad-xbox grabs the physical pad, starving direct reads).
 for c in ${DEFAULT_OFF:-}; do eval "$(var_of "$c")=0"; done
-MODE=ask
+usage(){
+  local c mark
+  cat <<'USAGE'
+Usage: sudo bash steam-arm-install.sh [--defaults | --select a,b,... | --skip a,b,...]
+       bash steam-arm-install.sh --list | --help
+
+Installs Valve's native ARM64 Steam client for the desktop user, with the pieces it
+needs on this system. Nothing downloads until this command runs.
+
+Same installer as `.deb` package built from GitHub source (`build-deb.sh`); that
+package's command is `steam-arm-setup`, options below are identical either way.
+
+Options
+  (none)            keyboard checklist of components (needs a terminal)
+  --defaults        recommended components, no questions
+  --keep            components saved by last run, no questions (recommended set if none)
+  --select a,b      exactly these components
+  --skip a,b        recommended components, without these
+  --list            print components and exit
+  --help            print this text and exit
+  --replace-other   install even when other flavour of this installer is present;
+                    its steam-arm and steamos-session-select commands are replaced
+
+Always installed: host packages, x86-64 root filesystem, client package, launcher.
+
+Components (* = on by default)
+USAGE
+  for c in $COMPONENTS; do
+    mark=" "; eval "[ \"\$$(var_of "$c")\" = 1 ]" && mark="*"
+    printf '  %s %-16s %s\n' "$mark" "$c" "$(desc_of "$c")"
+  done
+  cat <<'USAGE'
+
+Examples
+  sudo bash steam-arm-install.sh --defaults
+  sudo bash steam-arm-install.sh --skip tray                           no tray icon
+  sudo bash steam-arm-install.sh --skip icon-bigpicture,icon-desktop   no desktop icons
+  sudo bash steam-arm-install.sh --select desktop,desktop-mode         menu entries only
+  sudo env GAMEUSER=alice bash steam-arm-install.sh --defaults         install for account alice
+
+Re-running
+  --keep, and any run without terminal, reuse account and components saved by last
+  run; checklist starts from them.
+  A component left out on a later run is removed again. Installed games, sign-in
+  and settings are kept: install, re-run, component changes and package upgrades
+  never touch the game library.
+
+After install
+  Start "Steam ARM" from the menu, or run: steam-arm
+  Sign in from "Steam ARM (Desktop mode)". The first start downloads the client
+  and restarts it once.
+
+Environment
+  GAMEUSER=name                account to install into (default: account of last run,
+                               else uid 1000)
+  STEAM_ARM_IGNORE_PAGESIZE=1  skip the 4K page size check
+
+Documentation: README.md beside this script, or https://github.com/Scrumpper/native-arm64-steam
+
+This project is not affiliated with, endorsed by or sponsored by Valve Corporation.
+Steam, Proton and Steam Deck are trademarks of Valve Corporation.
+USAGE
+}
+MODE=ask; REPLACE_OTHER=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --defaults) MODE=defaults;;
+    --keep)     MODE=keep;;
+    --replace-other) REPLACE_OTHER=1;;
     --select)   MODE=select; SEL="${2:-}"; shift;;
     --select=*) MODE=select; SEL="${1#*=}";;
     --skip)     MODE=skip; SEL="${2:-}"; shift;;
     --skip=*)   MODE=skip; SEL="${1#*=}";;
-    --list)     for c in $COMPONENTS; do printf '  %-11s %s\n' "$c" "$(desc_of "$c")"; done; exit 0;;
-    -h|--help)  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+    --list)     for c in $COMPONENTS; do printf '  %-16s %s\n' "$c" "$(desc_of "$c")"; done; exit 0;;
+    -h|--help)  usage; exit 0;;
     *) die "unknown option: $1 (see --help)";;
   esac; shift
 done
 known(){ for c in $COMPONENTS; do [ "$c" = "$1" ] && return 0; done; return 1; }
+# Component whose files are in place (install from before selection was saved in $CONF).
+installed(){ case "$1" in
+  glx-lax)    [ -e /usr/local/sbin/steam-arm-glx-lax ];;
+  vk-spoof)   [ -e /usr/share/vulkan/implicit_layer.d/VkLayer_steam_arm_spoof.json ];;
+  map-count)  [ -e /etc/sysctl.d/zz-steam-arm.conf ];;
+  xpad-dedup) [ -e /etc/udev/rules.d/71-steam-arm-xpad-dedup.rules ];;
+  pad-hidraw) [ -e /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules ];;
+  pad-xbox)   [ -e /etc/systemd/system/steam-arm-pad-xbox.service ];;
+  desktop)    [ -e /usr/share/applications/steam-arm.desktop ];;
+  desktop-mode) [ -e /usr/share/applications/steam-arm-desktop.desktop ];;
+  icon-bigpicture) [ -e "$2/Desktop/Steam ARM.desktop" ];;
+  icon-desktop) [ -e "$2/Desktop/Steam ARM (Desktop mode).desktop" ];;
+  tray)       [ -e /usr/local/bin/steam-arm-tray ];;
+  page-size)  grep -qs '^# steam-arm-setup page-size:' /boot/firmware/config.txt /boot/config.txt;;
+  *)          return 1;;
+esac; }
+# Selection of last run: COMPONENTS_ON and COMPONENTS_OFF in $CONF, else read from files of
+# earlier install. Component in neither list (new in this version) keeps its default.
+# Status 1 when there is no earlier run.
+prior_selection(){
+  local c on= off= uh
+  if grep -q '^COMPONENTS_ON=' "$CONF" 2>/dev/null; then
+    on=$(conf_get COMPONENTS_ON); off=$(conf_get COMPONENTS_OFF)
+  elif [ -f "$CONF" ] && [ -x /usr/local/bin/steam-arm ]; then
+    uh=$(getent passwd "$GAMEUSER" | cut -d: -f6)
+    for c in $COMPONENTS; do if installed "$c" "$uh"; then on="$on,$c"; else off="$off,$c"; fi; done
+  else
+    return 1
+  fi
+  for c in $(echo "$on" | tr ',' ' '); do known "$c" && eval "$(var_of "$c")=1"; done
+  for c in $(echo "$off" | tr ',' ' '); do known "$c" && eval "$(var_of "$c")=0"; done
+  return 0
+}
 case "$MODE" in
   select) for c in $COMPONENTS; do eval "$(var_of "$c")=0"; done
           for c in $(echo "$SEL" | tr ',' ' '); do known "$c" || die "unknown component: $c"; eval "$(var_of "$c")=1"; done;;
   skip)   for c in $(echo "$SEL" | tr ',' ' '); do known "$c" || die "unknown component: $c"; eval "$(var_of "$c")=0"; done;;
-  ask)    if [ -t 0 ] && [ -t 1 ]; then
-            # The picker is keyboard driven: whiptail draws the buttons, it does not take a
-            # mouse. Say so, and name the flags that skip the picker for anyone who would
-            # rather not meet it at all.
+  keep)   prior_selection;;
+  ask)    if prior_selection; then PRIOR=1; else PRIOR=0; fi
+          if [ -t 0 ] && [ -t 1 ]; then
+            # Explain the keyboard-driven picker and its flag alternatives before showing it.
             printf '\n  Components: --defaults takes the recommended set, --select a,b takes exactly\n'
-            printf '  those, --skip a,b takes the defaults without them, --list prints them all.\n\n'
+            printf '  those, --skip a,b takes the defaults without them, --list prints them all.\n'
+            [ "$PRIOR" = 1 ] && printf '  Checklist starts from selection of last run; --keep reuses it without asking.\n'
+            echo
             if command -v whiptail >/dev/null 2>&1; then
               args=(); for c in $COMPONENTS; do
                 args+=("$c" "$(desc_of "$c")" "$(eval "[ \"\$$(var_of "$c")\" = 1 ]" && echo ON || echo OFF)")
               done
-              chosen=$(whiptail --title "Native ARM64 Steam" --checklist "Optional components.\n\nSPACE toggles the item under the cursor.  TAB moves to the buttons.  ENTER confirms.\nThis list is keyboard driven; a mouse click does nothing." 22 92 6 "${args[@]}" 3>&1 1>&2 2>&3) || die "cancelled"
+              chosen=$(whiptail --title "Native ARM64 Steam" --checklist "Optional components.\n\nSPACE toggles the item under the cursor.  TAB moves to the buttons.  ENTER confirms.\nThis list is keyboard driven; a mouse click does nothing." 28 100 12 "${args[@]}" 3>&1 1>&2 2>&3) || die "cancelled"
               for c in $COMPONENTS; do eval "$(var_of "$c")=0"; done
               for c in $chosen; do c=${c//\"/}; eval "$(var_of "$c")=1"; done
             else
               for c in $COMPONENTS; do
                 if eval "[ \"\$$(var_of "$c")\" = 1 ]"; then
-                  printf '  %-11s %s [Y/n] ' "$c" "$(desc_of "$c")"; read -r a
+                  printf '  %-16s %s [Y/n] ' "$c" "$(desc_of "$c")"; read -r a
                   case "$a" in n|N) eval "$(var_of "$c")=0";; esac
                 else
-                  printf '  %-11s %s [y/N] ' "$c" "$(desc_of "$c")"; read -r a
+                  printf '  %-16s %s [y/N] ' "$c" "$(desc_of "$c")"; read -r a
                   case "$a" in y|Y) eval "$(var_of "$c")=1";; esac
                 fi
               done
@@ -121,6 +220,71 @@ case "$MODE" in
           fi;;
 esac
 opt(){ eval "[ \"\$$(var_of "$1")\" = 1 ]"; }
+
+# Detect other installer flavour (marked by /etc/h96/steam-arm.conf) and refuse unless --replace-other.
+if grep -qs '/etc/h96/steam-arm.conf' /usr/local/bin/steam-arm; then
+  [ "$REPLACE_OTHER" = 1 ] || die "/usr/local/bin/steam-arm belongs to other flavour of this installer (it
+       reads /etc/h96/steam-arm.conf). Both flavours write steam-arm and steamos-session-select.
+       Pass --replace-other to install anyway; its commands are then replaced by this flavour."
+  warn "steam-arm of other flavour found; --replace-other given, its commands are replaced"
+fi
+
+# --- page size ---
+# Emulation needs 4K pages; Pi's page-size component selects its 4K kernel, elsewhere this stops with the fix; STEAM_ARM_TEST_* vars override for tests.
+PAGESIZE=${STEAM_ARM_TEST_PAGESIZE:-$(getconf PAGESIZE 2>/dev/null || echo 4096)}
+MODEL=${STEAM_ARM_TEST_MODEL-$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)}
+FWDIR=${STEAM_ARM_TEST_FWDIR:-/boot/firmware}
+[ -f "$FWDIR/config.txt" ] || { [ -z "${STEAM_ARM_TEST_FWDIR:-}" ] && [ -f /boot/config.txt ] && FWDIR=/boot; }
+FWCFG="$FWDIR/config.txt"
+PS_BEGIN="# steam-arm-setup page-size: 4K page kernel for x86 emulation. Remove this block to undo."
+PS_END="# end steam-arm-setup page-size"
+is_pi(){ case "$MODEL" in "Raspberry Pi"*) [ -f "$FWCFG" ];; *) return 1;; esac; }
+ps_block(){ [ -f "$FWCFG" ] && grep -qxF "$PS_BEGIN" "$FWCFG"; }
+ps_remove(){
+  local t; t=$(awk -v b="$PS_BEGIN" -v e="$PS_END" '$0==b{s=1} !s{print} $0==e{s=0}' "$FWCFG") || return 1
+  printf '%s\n' "$t" > "$FWCFG"
+}
+if [ "$PAGESIZE" = 4096 ]; then
+  if is_pi && ps_block && ! opt page-size; then
+    [ "$(id -u)" = 0 ] || die "run as root"
+    ps_remove || die "could not edit $FWCFG"
+    warn "page-size deselected: 4K kernel line removed from $FWCFG. After next reboot, firmware"
+    warn "loads its default kernel, and x86 titles stop running until page-size is selected again."
+  fi
+elif [ "${STEAM_ARM_IGNORE_PAGESIZE:-0}" = 1 ]; then
+  warn "page size is $PAGESIZE, not 4096; continuing because STEAM_ARM_IGNORE_PAGESIZE=1."
+  warn "x86 titles run only if this system provides its own 4K environment for them."
+elif is_pi; then
+  opt page-size || die "page size is $PAGESIZE and emulation needs 4096. Select page-size
+       component, or add kernel=kernel8.img to $FWCFG yourself and reboot."
+  [ "$(id -u)" = 0 ] || die "run as root"
+  if ps_block; then
+    say "4K page kernel already selected in $FWCFG; reboot, then run sudo steam-arm-setup again."
+    exit 0
+  fi
+  [ -f "$FWDIR/kernel8.img" ] || die "page size is $PAGESIZE and $FWDIR has no kernel8.img (4K page
+       kernel). Install your distribution's 4K kernel package, then run this again."
+  if grep -qE '^[[:space:]]*kernel[[:space:]]*=' "$FWCFG"; then
+    die "$FWCFG already sets kernel itself: $(grep -E '^[[:space:]]*kernel[[:space:]]*=' "$FWCFG" | head -1)
+       Point it at kernel8.img (4K pages) and reboot, then run this again."
+  fi
+  [ -f "$FWCFG.steam-arm.bak" ] || cp -p "$FWCFG" "$FWCFG.steam-arm.bak" || die "could not back up $FWCFG"
+  [ -n "$(tail -c1 "$FWCFG")" ] && echo >> "$FWCFG"   # file ending without a newline
+  printf '%s\n[all]\nkernel=kernel8.img\n%s\n' "$PS_BEGIN" "$PS_END" >> "$FWCFG" || die "could not edit $FWCFG"
+  say "page size is $PAGESIZE: $FWCFG now selects 4K page kernel (kernel8.img)."
+  say "     previous file kept as $FWCFG.steam-arm.bak"
+  say "     reboot, then run sudo steam-arm-setup again to install."
+  exit 0
+else
+  case "$MODEL" in
+    Apple*) die "page size is $PAGESIZE (Apple Silicon) and emulation needs 4096. Kernel on this
+       hardware stays at 16K; x86 side has to run inside 4K virtual machine, such as muvm,
+       which this installer does not set up. STEAM_ARM_IGNORE_PAGESIZE=1 skips this check.";;
+  esac
+  die "page size is $PAGESIZE and emulation needs 4096. Boot 4K page kernel (on most
+       distributions, separate kernel package), then run this again.
+       STEAM_ARM_IGNORE_PAGESIZE=1 skips this check."
+fi
 [ "$(id -u)" = 0 ] || die "run as root"
 
 # wait for any boot-time apt/dpkg (unattended-upgrades, armbian online-extras) to release the lock
@@ -139,8 +303,7 @@ printf 'Optional components:'; for c in $COMPONENTS; do opt "$c" && printf ' %s'
 say "1/11  host packages"
 export DEBIAN_FRONTEND=noninteractive
 wait_apt
-# The system emulator (FEX) serves Remote Play (x86-64 streaming client) and the thunk
-# libraries the RootFS configuration points at; the client's own emulation tool ships its own.
+# FEX serves Remote Play and the thunk libraries; the client's own emulator tool ships separately.
 if ! command -v FEX >/dev/null 2>&1; then
   command -v add-apt-repository >/dev/null || apt-get install -y software-properties-common
   grep -rq "fex-emu/fex" /etc/apt/sources.list.d/ 2>/dev/null || add-apt-repository -y "$FEXPPA"
@@ -148,7 +311,9 @@ fi
 wait_apt; apt-get update -y
 BUILDPKGS=""; opt vk-spoof && BUILDPKGS="gcc libc6-dev libvulkan-dev"
 opt glx-lax && BUILDPKGS="$BUILDPKGS patchelf"
-opt desktop && BUILDPKGS="$BUILDPKGS python3-pil gir1.2-ayatanaappindicator3-0.1"   # inverted menu icon; tray helper binding
+want_icons(){ opt desktop || opt desktop-mode || opt icon-bigpicture || opt icon-desktop; }
+want_icons && BUILDPKGS="$BUILDPKGS python3-pil"                                     # menu and desktop icons
+opt tray && BUILDPKGS="$BUILDPKGS gir1.2-ayatanaappindicator3-0.1"                   # tray helper binding
 wait_apt; apt-get install -y fex-emu-armv8.2 fex-emu-binfmt32 fex-emu-binfmt64 bubblewrap dbus-daemon xz-utils \
   libsdl3-0 libsdl3-image0 libsdl3-ttf0 libgtk2.0-0t64 libopenal1 zenity xdotool curl python3 file $BUILDPKGS
 command -v FEX >/dev/null || die "FEX did not install"
@@ -174,6 +339,7 @@ fi
 # ---------------------------------------------------------------------------
 say "2/11  game user '$GAMEUSER', /dev/shm, kernel limits"
 if ! id "$GAMEUSER" >/dev/null 2>&1; then
+  [ "$GAMEUSER_MAY_CREATE" = 1 ] || die "account '$GAMEUSER' not found and this source may not create one"
   useradd -m -s /bin/bash -G video,render,input,audio "$GAMEUSER"
   if [ -z "$GAMEPASS" ]; then
     GAMEPASS=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 14)
@@ -191,22 +357,31 @@ if ! mountpoint -q /dev/shm || [ "$(stat -c %a /dev/shm)" != 1777 ]; then
   mount -t tmpfs -o rw,nosuid,nodev,mode=1777 tmpfs /dev/shm; chmod 1777 /dev/shm
 fi
 grep -q '[[:space:]]/dev/shm[[:space:]]' /etc/fstab || echo 'tmpfs /dev/shm tmpfs rw,nosuid,nodev,mode=1777 0 0' >> /etc/fstab
-# The file is named zz- for the same reason zz-steam-arm-tune.conf is: systemd-sysctl applies
-# /etc/sysctl.d in filename order and /etc/sysctl.conf is linked in as 99-sysctl.conf, so a
-# 99- drop-in is read first and the 262144 in /etc/sysctl.conf wins at every boot.
+# zz- sorts after 99-sysctl.conf (else its vm.max_map_count would win at boot); drop-in saves the prior value as a comment, restored on deselect.
+MC=/etc/sysctl.d/zz-steam-arm.conf
+MC_PRIOR='# steam-arm-setup map-count; value before setup: '
 if opt map-count; then
   rm -f /etc/sysctl.d/99-steam-arm.conf
-  printf 'vm.max_map_count = 2147483642\n' > /etc/sysctl.d/zz-steam-arm.conf
-  sysctl -q -p /etc/sysctl.d/zz-steam-arm.conf 2>/dev/null || true
+  if [ -f "$MC" ]; then prior=$(sed -n "s/^$MC_PRIOR//p" "$MC" | head -1)
+  else prior=$(sysctl -n vm.max_map_count 2>/dev/null); fi
+  { [ -n "$prior" ] && printf '%s%s\n' "$MC_PRIOR" "$prior"; printf 'vm.max_map_count = 2147483642\n'; } > "$MC"
+  sysctl -q -p "$MC" 2>/dev/null || true
 else
-  rm -f /etc/sysctl.d/99-steam-arm.conf /etc/sysctl.d/zz-steam-arm.conf
-  sysctl -q -w vm.max_map_count=65530 2>/dev/null || true
+  rm -f /etc/sysctl.d/99-steam-arm.conf
+  if [ -f "$MC" ]; then
+    prior=$(sed -n "s/^$MC_PRIOR//p" "$MC" | head -1)
+    rm -f "$MC"
+    case "$prior" in
+      ''|*[!0-9]*) echo "  map-count deselected: vm.max_map_count returns to system setting at next boot";;
+      *) sysctl -q -w vm.max_map_count="$prior" 2>/dev/null || true
+         echo "  map-count deselected: vm.max_map_count back to $prior";;
+    esac
+  fi
 fi
 
 # ---------------------------------------------------------------------------
 say "3/11  x86-64 RootFS (graphics provider) + emulator configuration"
-# The client's emulation tool needs an x86-64 root with Mesa in it (the "graphics provider");
-# the same Ubuntu 24.04 RootFS the x86 client installer uses, fetched with FEXRootFSFetcher.
+# Fetch the x86-64 Ubuntu 24.04 RootFS (graphics provider) via FEXRootFSFetcher.
 if [ ! -d "$RFS" ]; then
   SRC=$(find /root/.fex-emu/RootFS /root/.local/share/fex-emu/RootFS -maxdepth 1 -name Ubuntu_24_04 -type d 2>/dev/null | head -1)
   if [ -z "$SRC" ]; then
@@ -218,8 +393,7 @@ if [ ! -d "$RFS" ]; then
 fi
 chmod o+rx /opt /opt/fex-rootfs "$RFS"
 [ -f "$RFS/usr/lib/x86_64-linux-gnu/libGL.so.1" ] || warn "RootFS carries no x86-64 libGL; games will not reach the GPU"
-# Steam Linux Runtime takes the emulation path only when this manifest exists; its directory
-# is the RootFS. The tool's built-in default path is a SteamOS location, provided as a link.
+# graphics_provider.json makes the runtime use this RootFS as the emulation path.
 cat > "$RFS/graphics_provider.json" <<'JSON'
 {
   "graphics_provider_v0": {
@@ -229,10 +403,7 @@ cat > "$RFS/graphics_provider.json" <<'JSON'
 JSON
 chmod 644 "$RFS/graphics_provider.json"
 mkdir -p /usr/share/guestos && ln -sfn "$RFS" /usr/share/guestos/fex-mesa
-# System emulator configuration for the game user (Remote Play streaming client). HostEnv is
-# applied to the host side of every FEX process only: the first entry selects the GLX copy of
-# step 4, the second keeps the host Vulkan loader on the system layer directory inside runtime
-# containers (step 5). FEX takes one value per key; repeated keys are accepted, an array is not.
+# FEX config for the game user; HostEnv entries select the GLX copy (step 4) and Vulkan layer path (step 5).
 FEXEXTRA=",
   \"Multiblock\":\"1\""
 opt glx-lax   && FEXEXTRA="$FEXEXTRA,
@@ -253,25 +424,10 @@ rm -f "$ARMHOME/.fex-emu/Config.json" 2>/dev/null   # the launcher copies the fr
 # ---------------------------------------------------------------------------
 if opt glx-lax; then
 say "4/11  GL context binding across threads (private Mesa GLX copy)"
-# Some Linux game ports bind one GL context from the main thread, then from a loader thread,
-# then from a render thread, and never release it in between (Hotline Miami 2 does this).
-# Mesa's GLX client refuses a context that is current in another thread with BadAccess, the
-# bind fails, the game draws with no context and crashes (a blank window for a moment, then
-# exit). The thunk hands glXMakeCurrent to the native Mesa, so the check runs on the host.
-# Fix: a private copy of the native libGLX_mesa with that one branch replaced by a no-op,
-# installed under the glvnd vendor name "steamarmlax". The FEX HostEnv setting in step 4 selects it
-# for the host side of FEX processes only. System Mesa and every native program are untouched.
-# The helper rebuilds the copy when the system library changes (package update) and falls
-# back to an unpatched copy if the instruction pattern is not found, so the vendor name
-# always resolves.
+# Patch libGLX_mesa to allow one GL context bound from multiple threads (some titles need this); installed as vendor "steamarmlax", host-side only.
 cat > /usr/local/lib/steam-arm-glx-lax-patch.py <<'PYEOF'
 #!/usr/bin/env python3
-# Build a copy of the Mesa GLX client library in which MakeContextCurrent no longer refuses a
-# context that is current in another thread. Usage: steam-arm-glx-lax-patch.py <libGLX_mesa.so.0> <out>
-# The check compiles (aarch64) to:  ldr xA, [xG, #256]   ; gc->currentDpy
-#                                   cbnz xA, <send BadAccess>
-#                                   ldr xB, [xG, #40]    ; gc->vtable
-# The cbnz becomes nop. Exactly one match is required; otherwise nothing is written (exit 1).
+# Patch libGLX_mesa: nop MakeContextCurrent's cross-thread current-context check (exit 1 if no match). Usage: <in> <out>
 import struct, sys
 src, dst = sys.argv[1], sys.argv[2]
 b = bytearray(open(src, "rb").read())
@@ -293,8 +449,7 @@ print("steam-arm-glx-lax-patch: cbnz at 0x%x replaced" % hits[0])
 PYEOF
 cat > /usr/local/sbin/steam-arm-glx-lax <<'GLX'
 #!/bin/sh
-# Keep /usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0 in step with the system Mesa GLX library.
-# Rebuilds only when the system library's checksum changes. Run by the installer and by steam-fex / steam-arm.
+# Keep libGLX_steamarmlax.so.0 in sync with system Mesa GLX; rebuilds only on checksum change.
 SRC=$(realpath /usr/lib/aarch64-linux-gnu/libGLX_mesa.so.0 2>/dev/null) || exit 0
 [ -f "$SRC" ] || exit 0
 OUT=/usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0
@@ -308,8 +463,7 @@ else
   cp -f "$SRC" "$T"
   echo "steam-arm-glx-lax: pattern not found in $(basename "$SRC"); vendor library is an unpatched copy" >&2
 fi
-# Own SONAME and a loader cache entry: the Steam Linux Runtime container copies host GLX vendor
-# libraries by SONAME pattern, so the copy reaches games run through the native Steam client too.
+# Own SONAME so Steam Linux Runtime containers copy this vendor lib in too.
 command -v patchelf >/dev/null && patchelf --set-soname libGLX_steamarmlax.so.0 "$T"
 chmod 644 "$T" && mv -f "$T" "$OUT" && echo "$SUM" > "$STAMP" && ldconfig
 GLX
@@ -324,15 +478,7 @@ fi
 # ---------------------------------------------------------------------------
 if opt vk-spoof; then
 say "5/11  Vulkan feature layer for Proton titles (DXVK on the Mali driver)"
-# Windows titles run through Proton, whose Direct3D layer (DXVK) lists Vulkan device features
-# as mandatory that the Mali driver (panvk) does not expose: fillModeNonSolid, geometryShader,
-# multiViewport, shaderClipDistance, shaderCullDistance, robustBufferAccess2. DXVK then finds no
-# adapter and the title exits. This host-side implicit layer reports those six as supported and
-# removes them again from vkCreateDevice, so the driver never sees them enabled. Titles that use
-# none of them (2D and simple 3D) run; a title that does use one misrenders or fails pipeline
-# creation instead of failing at start. Enabled by STEAM_ARM_VK_SPOOF=1 (set by the launcher); a
-# title can opt out with STEAM_ARM_VK_SPOOF_DISABLE=1 in its launch options. The layer reaches the
-# thunk's host Vulkan loader inside Steam runtime containers through the HostEnv entry in step 3; pressure-vessel imports host implicit layers into runtime containers by itself.
+# DXVK requires Vulkan features panvk lacks; this layer spoofs them present, then strips them before vkCreateDevice. Enabled via STEAM_ARM_VK_SPOOF=1, opt-out STEAM_ARM_VK_SPOOF_DISABLE=1.
 cat > /usr/local/lib/steam-arm-vk-spoof.c <<'CEOF'
 /* VK_LAYER_STEAM_ARM_feature_spoof: report a fixed set of VkPhysicalDeviceFeatures as supported and strip
  * them again from vkCreateDevice so the driver never sees them enabled. */
@@ -348,7 +494,7 @@ cat > /usr/local/lib/steam-arm-vk-spoof.c <<'CEOF'
 #define MAX_DEV 64
 typedef struct { void *key; PFN_vkGetInstanceProcAddr gipa; PFN_vkCreateDevice create_device;
   PFN_vkGetPhysicalDeviceFeatures gpdf; PFN_vkGetPhysicalDeviceFeatures2 gpdf2; PFN_vkDestroyInstance destroy; } inst_t;
-typedef struct { void *key; PFN_vkGetDeviceProcAddr gdpa; PFN_vkDestroyDevice destroy; } dev_t_;
+typedef struct { void *key; PFN_vkGetDeviceProcAddr gdpa; } dev_t_;
 static inst_t insts[MAX_INST]; static dev_t_ devs[MAX_DEV]; static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static int dbg;
 
@@ -430,12 +576,13 @@ static VKAPI_ATTR VkResult VKAPI_CALL layer_CreateDevice(VkPhysicalDevice pd, co
   if (dbg) fprintf(stderr, "[steam-arm-vk-spoof] vkCreateDevice -> %d (features2 %d, robustness2 %d)\n", r, have_f2, have_r2);
   if (r != VK_SUCCESS) return r;
   pthread_mutex_lock(&lock);
-  for (int i = 0; i < MAX_DEV; i++) if (!devs[i].key) { devs[i].key = key_of(*dev); devs[i].gdpa = gdpa; devs[i].destroy = (PFN_vkDestroyDevice)gdpa(*dev, "vkDestroyDevice"); break; }
+  /* record the device only; vkDestroyDevice is resolved when it is called */
+  for (int i = 0; i < MAX_DEV; i++) if (!devs[i].key) { devs[i].key = key_of(*dev); devs[i].gdpa = gdpa; break; }
   pthread_mutex_unlock(&lock);
   return VK_SUCCESS;
 }
 static VKAPI_ATTR void VKAPI_CALL layer_DestroyDevice(VkDevice dev, const VkAllocationCallbacks *ac) {
-  dev_t_ *d = dev_find(dev); PFN_vkDestroyDevice f = d->destroy;
+  dev_t_ *d = dev_find(dev); PFN_vkDestroyDevice f = (PFN_vkDestroyDevice)d->gdpa(dev, "vkDestroyDevice");
   pthread_mutex_lock(&lock); memset(d, 0, sizeof *d); pthread_mutex_unlock(&lock);
   f(dev, ac);
 }
@@ -505,16 +652,18 @@ fi
 # ---------------------------------------------------------------------------
 if opt xpad-dedup; then
 say "6/11  one joystick per pad (duplicate xpad node removed)"
-# Some third-party Xbox 360 style pads expose a headset interface (vendor class ff/5d,
-# protocol 3) that the xpad driver also binds, so one pad appears as two identical
-# joysticks and a two-player game hands player 2 a copy of player 1. The rule unbinds
-# xpad from that interface on plug-in; the script does the same for pads already up.
+# Some third-party pads expose a headset interface that xpad also binds, duplicating the joystick; unbind it.
 cat > /usr/local/sbin/steam-arm-xpad-dedup <<'DEDUP'
 #!/bin/sh
-# Some third-party Xbox 360 style pads expose their headset interface (vendor class ff/5d,
-# protocol 3) in a way the xpad driver also binds, so one pad appears as two identical joysticks
-# and games hand player 2 a copy of player 1. Unbind xpad from every such interface. Idempotent;
-# run by udev on plug-in and at boot, safe to run by hand.
+# Unbind xpad from third-party pads' duplicate headset interface (ff/5d/3); idempotent.
+case "${1:-}" in
+  -h|--help)
+    echo "usage: steam-arm-xpad-dedup   (root)"
+    echo "  Unbinds xpad from duplicate headset interface (class ff/5d, protocol 3) of"
+    echo "  third-party Xbox 360 style pads, so one pad no longer shows as two joysticks."
+    echo "  Run by udev on plug-in and at boot."
+    exit 0;;
+esac
 for i in /sys/bus/usb/drivers/xpad/*:*; do
   [ -e "$i" ] || continue
   [ "$(cat "$i/bInterfaceClass" 2>/dev/null)" = ff ] || continue
@@ -526,7 +675,7 @@ exit 0
 DEDUP
 chmod 755 /usr/local/sbin/steam-arm-xpad-dedup
 cat > /etc/udev/rules.d/71-steam-arm-xpad-dedup.rules <<'RULE'
-# Third-party Xbox 360 style pads: drop the second xpad binding on the headset interface (see steam-arm-xpad-dedup).
+# Drop duplicate xpad binding on third-party pads' headset interface.
 ACTION=="add|bind", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", DRIVER=="xpad", ATTR{bInterfaceProtocol}=="03", RUN+="/usr/bin/systemd-run --no-block --quiet /usr/local/sbin/steam-arm-xpad-dedup"
 RULE
 udevadm control --reload-rules 2>/dev/null; /usr/local/sbin/steam-arm-xpad-dedup
@@ -538,16 +687,8 @@ fi
 # ---------------------------------------------------------------------------
 if opt pad-hidraw; then
 say "7/11  controller access for the client"
-# The client runs as the desktop user and reads a pad over /dev/hidraw*, which the kernel
-# creates as root only. The rules that hand those nodes to the logged-in user ship in Valve's
-# steam-devices package and list the pads Valve wrote drivers for: a pad from any other maker
-# stays unreadable, the client's HID path fails to open it and logs a read failure, and the
-# pad is left on the generic event device with no rumble and no battery level.
-#
-# These ids come from xpad_device[] in the kernel source, so they are the pads this kernel
-# binds as Xbox compatible. Each is matched on vendor AND product, because several makers in
-# that table also make keyboards and mice and a vendor-wide rule would hand the user raw HID
-# access to those too. Regenerate with gen-gamepad-hidraw-rules.py.
+# hidraw nodes are root-only; Valve's rules list only Valve-supported pads, so add rules for the rest.
+# IDs are from the kernel's xpad_device[] table, matched vendor+product; regenerate with gen-gamepad-hidraw-rules.py.
 PAD_IDS="
 0079:18d4 03eb:ff01 03eb:ff02 03f0:0495 044f:0f00 044f:0f03 044f:0f07
 044f:0f10 044f:b326 045e:0202 045e:0285 045e:0287 045e:0288 045e:0289
@@ -618,12 +759,7 @@ fi
 # ---------------------------------------------------------------------------
 if opt pad-xbox; then
 say "8/11  pads from other makers presented as Xbox 360 pads"
-# Engines that identify a controller by its USB vendor and product ID (Rewired, InControl,
-# older SDL, Wine's XInput) ignore a pad whose IDs they carry no profile for, even when the
-# kernel drives it as an Xbox pad. This service re-emits every non-Microsoft xpad device
-# through uinput with the Xbox 360 pad IDs. The physical node is grabbed so nothing sees the
-# pad twice, which also means a title that opens the pad node itself gets nothing: leave this
-# off for those, or stop the service while they run.
+# Re-emit non-Microsoft xpad pads as Xbox 360 (045e:028e) via uinput, for engines matching by USB IDs; grabs the physical node.
 wait_apt; apt-get install -y python3-evdev >/dev/null 2>&1 || warn "python3-evdev did not install; the pad service will not start"
 cat > /usr/local/sbin/steam-arm-pad-xbox <<'PADEOF'
 #!/usr/bin/env python3
@@ -721,6 +857,7 @@ fi
 
 # ---------------------------------------------------------------------------
 say "9/11  client package (publicbeta, linuxarm64) into $ARMHOME"
+echo "  installed games, sign-in and settings are kept; only the client program folder is ever replaced"
 S="$ARMHOME/.local/share/Steam"; D="$S/steamrtarm64"
 install -d -o "$GAMEUSER" -g "$GAMEUSER" "$ARMHOME" "$ARMHOME/.local" "$ARMHOME/.local/share" "$S"
 if [ -x "$D/steam" ] && file -b "$D/steam" | grep -q aarch64; then
@@ -733,8 +870,7 @@ else
   echo "  package $ENTRY"
   curl -fL --progress-bar -o "$TMPZ" "$CDN/$ENTRY" || die "client package download failed"
   rm -rf "$D"
-  # the archive carries the steamrtarm64/ prefix and uses backslash separators; unzip would
-  # create literal backslash names
+ # Archive has steamrtarm64/ prefix with backslash separators; unzip would create literal backslash names.
   python3 - "$TMPZ" "$S" <<'PY'
 import os, sys, zipfile
 zpath, root = sys.argv[1], sys.argv[2]
@@ -774,16 +910,340 @@ chown -R "$GAMEUSER:$GAMEUSER" "$ARMHOME"
 # ---------------------------------------------------------------------------
 say "10/11  launcher, configuration, menu entry"
 mkdir -p /etc/steam-arm
-printf 'ARMHOME_DIR=%s\n' "$ARMHOME_DIR" > /etc/steam-arm/steam-arm.conf
+conf_set ARMHOME_DIR "$ARMHOME_DIR"
+conf_set GAMEUSER "$GAMEUSER"
+CONF_ON=; CONF_OFF=
+for c in $COMPONENTS; do if opt "$c"; then CONF_ON="$CONF_ON${CONF_ON:+,}$c"; else CONF_OFF="$CONF_OFF${CONF_OFF:+,}$c"; fi; done
+conf_set COMPONENTS_ON "$CONF_ON"
+conf_set COMPONENTS_OFF "$CONF_OFF"
+# Launch handler: replaces the FEX tool's LD_PRELOAD deletion; picks overlay/MangoHud/engine fixes per title.
+cat > /usr/local/lib/steam-arm-handler.py <<'HANDLERPY'
+#!/usr/bin/env python3
+"""steam-arm launch handler.
+
+Valve's FEX compatibility tool (fex-compat-tool, patched by steam-arm-setup) runs this file in
+place of its own `del os.environ['LD_PRELOAD']`, before the runtime container starts. It works
+on the tool's os.environ and sys.argv and decides per title:
+
+  Steam overlay   x86 overlay core by default; `vulkan` adds the arm64 core and the arm64
+                  overlay Vulkan layer (for Vulkan titles, whose frames x86 core never sees);
+                  `off` removes both. The arm64 core stops OpenGL titles from starting, so it
+                  is never loaded unless asked for.
+  MangoHud        loaded when title asks for it: `mangohud %command%`, `MANGOHUD=1`, or profile.
+  Engine fixes    Godot 4 titles: OpenGL renderer and GL 3.3 report (Vulkan renderer freezes on
+                  splash; Panfrost reports GL 3.1, Godot's OpenGL renderer needs 3.3).
+                  32-bit Unity players: Steam overlay off (the title stops when it attaches).
+                  64-bit Unity players with a Vulkan renderer: -force-vulkan (Unity's OpenGL core
+                  context needs a newer GL than Panfrost offers); overlay mode for Vulkan titles.
+                  Other Unity 5+ players: GL 4.5 report, so the core context is created.
+
+Profiles, one title per line, later files override earlier ones:
+  /usr/local/share/steam-arm/titles.conf      shipped with steam-arm-setup
+  /etc/steam-arm/titles.conf                  system
+  ~/.config/steam-arm/titles.conf              client home (HOME inside the launcher)
+Line: <appid> key=value ...   keys: overlay=x86|vulkan|off  mangohud=on|off
+      godot=gl|vulkan  unity=vulkan|gl  env=NAME=VALUE;NAME=VALUE  args=ARG;ARG
+Per-title launch options override profiles: STEAM_ARM_OVERLAY=x86|vulkan|off, and
+STEAM_ARM_PRELOAD_KEEP=a,b (keep exactly LD_PRELOAD entries containing these substrings).
+Every decision is printed to the tool's log, /tmp/fex-compat-tool-<pid>.log."""
+import glob
+import os
+import struct
+import sys
+
+
+def log(*a):
+    print("steam-arm:", *a)
+
+
+APPID = os.environ.get("SteamAppId") or os.environ.get("SteamGameId") or ""
+PROFILE_FILES = ("/usr/local/share/steam-arm/titles.conf", "/etc/steam-arm/titles.conf",
+                 os.path.join(os.path.expanduser("~"), ".config/steam-arm/titles.conf"))
+
+
+def load_profile():
+    prof = {}
+    for path in PROFILE_FILES:
+        try:
+            lines = open(path).read().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            words = line.split("#", 1)[0].split()
+            if len(words) > 1 and words[0] == APPID:
+                for kv in words[1:]:
+                    if "=" in kv:
+                        k, v = kv.split("=", 1)
+                        prof[k] = v
+    return prof
+
+
+def godot_major():
+    """Engine major version from a .pck header next to the game (GDPC, format, major...)."""
+    dirs = [os.getcwd()]
+    for a in reversed(sys.argv):
+        if os.path.isfile(a):
+            dirs.append(os.path.dirname(os.path.abspath(a)))
+            break
+    for d in dirs:
+        for p in glob.glob(os.path.join(d, "*.pck")):
+            try:
+                with open(p, "rb") as f:
+                    h = f.read(12)
+            except OSError:
+                continue
+            if len(h) == 12 and h[:4] == b"GDPC":
+                return struct.unpack("<I", h[8:12])[0]
+    return None
+
+
+def game_binary():
+    """The title's own executable: last existing file on the command line that is an ELF."""
+    for a in reversed(sys.argv):
+        if os.path.isfile(a):
+            try:
+                with open(a, "rb") as f:
+                    if f.read(4) == b"\x7fELF":
+                        return os.path.abspath(a)
+            except OSError:
+                pass
+    return None
+
+
+def engine_info():
+    """(engine, bits) for the title's executable. engine is 'unity' when the Unity player's
+    <name>_Data folder (Managed or il2cpp data) sits beside it, else None."""
+    exe = game_binary()
+    if not exe:
+        return None, None
+    try:
+        with open(exe, "rb") as f:
+            bits = {1: 32, 2: 64}.get(f.read(5)[4])
+    except OSError:
+        bits = None
+    d = os.path.dirname(exe)
+    stem = os.path.splitext(os.path.basename(exe))[0]
+    data = [os.path.join(d, stem + "_Data")] + glob.glob(os.path.join(d, "*_Data"))
+    unity = any(os.path.isdir(os.path.join(p, "Managed")) or os.path.isdir(os.path.join(p, "il2cpp_data"))
+                for p in data) or os.path.isfile(os.path.join(d, "UnityPlayer.so"))
+    return ("unity" if unity else None), bits
+
+
+def unity_legacy_gl():
+    """True for Unity 4 players (<name>_Data/mainData): legacy OpenGL path, no core context."""
+    exe = game_binary()
+    if not exe:
+        return False
+    d = os.path.dirname(exe)
+    return any(os.path.isfile(os.path.join(p, "mainData")) for p in glob.glob(os.path.join(d, "*_Data")))
+
+
+def unity_has_vulkan():
+    """True when the title's Unity player (UnityPlayer.so) carries the Vulkan renderer switch."""
+    exe = game_binary()
+    if not exe:
+        return False
+    p = os.path.join(os.path.dirname(exe), "UnityPlayer.so")
+    try:
+        with open(p, "rb") as f:
+            while True:
+                b = f.read(1 << 22)
+                if b"force-vulkan" in b:
+                    return True
+                if len(b) < 1 << 22:
+                    return False
+                # full chunk: step back so string split across chunk boundary is found
+                f.seek(-16, 1)
+    except OSError:
+        return False
+
+
+def dedupe(seq):
+    out = []
+    for s in seq:
+        if s not in out:
+            out.append(s)
+    return out
+
+
+prof = load_profile()
+if prof:
+    log("profile for", APPID, prof)
+engine, bits = engine_info()
+if engine:
+    log("engine: %s, %s-bit" % (engine, bits))
+# 32-bit Unity stops when x86 overlay attaches; default overlay off unless profile/launch option asks.
+engine_overlay = "off" if (engine == "unity" and bits == 32) else None
+# 64-bit Unity+Vulkan: Panfrost's GL is too old for Unity's core path (GLXBadFBConfig), so force Vulkan unless profile/launch overrides.
+unity_vk = False
+if engine == "unity" and bits == 64 and prof.get("unity", "vulkan") == "vulkan" \
+        and not any(a.startswith("-force-") for a in sys.argv) and unity_has_vulkan():
+    unity_vk = True
+    engine_overlay = "vulkan"
+entries = [e for e in os.environ.get("LD_PRELOAD", "").replace(" ", ":").split(":") if e]
+x86_overlay = [e for e in entries if "gameoverlayrenderer" in e and "steamrtarm64" not in e]
+arm_overlay = [e for e in entries if "gameoverlayrenderer" in e and "steamrtarm64" in e]
+mh_entries = [e for e in entries if "mangohud" in e.lower()]
+
+# Steam overlay
+explicit = os.environ.get("STEAM_ARM_PRELOAD_KEEP")
+if explicit is not None:
+    keep = [k for k in explicit.split(",") if k]
+    items = [e for e in entries if any(k in e for k in keep)]
+    log("overlay: STEAM_ARM_PRELOAD_KEEP", keep)
+else:
+    mode = os.environ.get("STEAM_ARM_OVERLAY") or prof.get("overlay") or engine_overlay or "x86"
+    items = []
+    if mode in ("x86", "vulkan"):
+        items += x86_overlay
+    if mode == "vulkan":
+        items += arm_overlay
+        os.environ["STEAM_ARM_VK_OVERLAY"] = "1"
+    log("overlay:", mode)
+
+# MangoHud
+mh = prof.get("mangohud", "auto")
+wants_mh = bool(mh_entries) or os.environ.get("MANGOHUD") == "1" \
+    or os.environ.get("STEAM_ARM_PRELOAD_MANGOHUD") == "1" or mh == "on"
+if mh == "off":
+    os.environ.pop("MANGOHUD", None)
+    log("mangohud: off (profile)")
+elif wants_mh:
+    items += mh_entries or ["/usr/$LIB/mangohud/libMangoHud_shim.so"]
+    os.environ["MANGOHUD"] = "1"
+    log("mangohud: on")
+
+# Godot 4
+major = godot_major()
+if major == 4 and prof.get("godot", "gl") == "gl":
+    os.environ.setdefault("MESA_GL_VERSION_OVERRIDE", "3.3")
+    os.environ.setdefault("MESA_GLSL_VERSION_OVERRIDE", "330")
+    if "--rendering-driver" not in sys.argv:
+        sys.argv += ["--rendering-driver", "opengl3"]
+    log("godot 4: OpenGL renderer, GL 3.3 report")
+elif major is not None:
+    log("godot %d: left as is" % major)
+
+# Unity 5+ needs GL core above Panfrost's 3.1 (GLXBadFBConfig); report GL 4.5 unless on Vulkan. Unity 4 (legacy GL) untouched.
+if unity_vk:
+    sys.argv += ["-force-vulkan"]
+    log("unity: Vulkan renderer (-force-vulkan)")
+elif engine == "unity" and not unity_legacy_gl():
+    os.environ.setdefault("MESA_GL_VERSION_OVERRIDE", "4.5")
+    os.environ.setdefault("MESA_GLSL_VERSION_OVERRIDE", "450")
+    log("unity: OpenGL core, GL 4.5 report")
+
+# profile extras
+for kv in [x for x in prof.get("env", "").split(";") if "=" in x]:
+    k, v = kv.split("=", 1)
+    os.environ[k] = v
+    log("env:", k)
+extra = [x for x in prof.get("args", "").split(";") if x]
+if extra:
+    sys.argv += extra
+    log("args:", extra)
+
+items = dedupe(items)
+if items:
+    os.environ["LD_PRELOAD"] = ":".join(items)
+    log("LD_PRELOAD for container:", os.environ["LD_PRELOAD"])
+else:
+    os.environ.pop("LD_PRELOAD", None)
+    log("LD_PRELOAD: none")
+HANDLERPY
+chmod 644 /usr/local/lib/steam-arm-handler.py
+mkdir -p /usr/local/share/steam-arm
+cat > /usr/local/share/steam-arm/titles.conf <<'TITLES'
+# Shipped title profiles; local overrides belong in /etc/steam-arm/titles.conf or ~/.config/steam-arm/titles.conf.
+1386040 overlay=vulkan   # Unity title on Vulkan: overlay through arm64 layer
+248570 overlay=off      # custom OpenGL engine: stops when Steam overlay attaches
+TITLES
+[ -f /etc/steam-arm/titles.conf ] || cat > /etc/steam-arm/titles.conf <<'TITLES'
+# Local title profiles; override /usr/local/share/steam-arm/titles.conf. One line per title: <appid> key=value ...
+#   overlay=x86|vulkan|off  mangohud=on|off  godot=gl|vulkan  env=A=1;B=2  args=-x;-y   (example: 1386040 overlay=vulkan)
+TITLES
+
+# FEX tool edit, shared by the launcher's start and its watcher (see the launcher).
+cat > /usr/local/lib/steam-arm-fexpatch.py <<'FEXPY'
+#!/usr/bin/env python3
+"""steam-arm-fexpatch FEXTOOLDIR: thunk overlay paths, server socket, GL and Vulkan thunks on.
+
+FEX substitutes a thunk only when the guest opens a library path listed in ThunksDB's Overlay.
+Inside the runtime container the guest opens libGL, libEGL and libvulkan from pressure-vessel's
+overrides directory, or from /run/gfx/main where current runtimes mount the graphics provider,
+for 32-bit and 64-bit titles alike. Writes only when something is missing.
+
+Also replaces the tool's deletion of LD_PRELOAD with a call to the steam-arm launch handler,
+/usr/local/lib/steam-arm-handler.py, which decides overlay, MangoHud and engine fixes per title
+(if it fails, the tool behaves as Valve wrote it). Patched only where Valve's two lines match
+exactly; an earlier steam-arm filter (v1) is replaced."""
+import json, os, sys
+F = sys.argv[1]
+db_p, tpl_p = F + "/usr/share/fex-emu/ThunksDB.json", F + "/ConfigTemplate.json"
+db = json.load(open(db_p)); changed = False
+names = {"GL": ["libGL.so", "libGL.so.1", "libGL.so.1.7.0", "libGL.so.1.2.0"],
+         "Vulkan": ["libvulkan.so", "libvulkan.so.1"], "EGL": ["libEGL.so", "libEGL.so.1"]}
+for lib, ns in names.items():
+    if lib not in db["DB"]:
+        continue
+    ov = db["DB"][lib].setdefault("Overlay", [])
+    for arch in ("i386-linux-gnu", "x86_64-linux-gnu"):
+        for base in ("/usr/lib/pressure-vessel/overrides/lib/" + arch,
+                     "/usr/lib/pressure-vessel/overrides/lib/%s/aliases" % arch,
+                     "/run/gfx/main/usr/lib/" + arch):
+            for n in ns:
+                p = base + "/" + n
+                if p not in ov:
+                    ov.append(p); changed = True
+if changed:
+    json.dump(db, open(db_p, "w"), indent=2)
+t = json.load(open(tpl_p)); c = t.setdefault("Config", {}); tc = False
+sock = "/run/user/%s/steam-arm-fexserver.sock" % os.getuid()
+if c.get("ServerSocketPath") != sock:
+    c["ServerSocketPath"] = sock; tc = True
+td = t.setdefault("ThunksDB", {})
+for k in ("GL", "Vulkan"):
+    if td.get(k) != "1":
+        td[k] = "1"; tc = True
+if tc:
+    json.dump(t, open(tpl_p, "w"), indent=4)
+ct_p = F + "/fex-compat-tool"
+MARK = "# steam-arm handler v2"
+try:
+    ct = open(ct_p).read()
+except OSError:
+    ct = MARK
+block = ("    " + MARK + "\n"
+         "    try:\n"
+         "        import runpy\n"
+         "        runpy.run_path('/usr/local/lib/steam-arm-handler.py')\n"
+         "    except Exception as _e:\n"
+         "        print('steam-arm: handler failed, Valve default applies:', _e)\n"
+         "        os.environ.pop('LD_PRELOAD', None)\n")
+old = "    if 'LD_PRELOAD' in os.environ:\n        del os.environ['LD_PRELOAD']\n"
+out = None
+if MARK in ct and "run_path('/usr/local/lib/steam-arm-handler.py')" not in ct:
+    # patched for another handler (the other steam-arm flavour): re-point the block
+    i = ct.index("    " + MARK)
+    end = "        os.environ.pop('LD_PRELOAD', None)\n"
+    j = ct.index(end, i) + len(end)
+    out = ct[:i] + block + ct[j:]
+elif MARK not in ct:
+    if ct.count(old) == 1:
+        out = ct.replace(old, block)
+    elif "# steam-arm preload filter v1" in ct:
+        i = ct.index("    # steam-arm preload filter v1")
+        end = "        os.environ.pop('LD_PRELOAD', None)\n"
+        j = ct.index(end, i) + len(end)
+        out = ct[:i] + block + ct[j:]
+if out:
+    compile(out, ct_p, "exec")
+    open(ct_p, "w").write(out)
+FEXPY
+chmod 755 /usr/local/lib/steam-arm-fexpatch.py
 cat > /usr/local/bin/steam-arm <<'LAUNCHER'
 #!/bin/sh
-# steam-arm: start the native ARM64 Steam client (Big Picture). Installed by
-# steam-arm-install.sh; /etc/steam-arm/steam-arm.conf can set ARMHOME_DIR.
-# Runs as the desktop user, no root needed. The client lives in its own home so the x86 install is
-# untouched. Games run through Valve's FEX compatibility tool (downloaded by the client) against the
-# x86-64 RootFS this build ships; graphics reach the Mali through the FEX GL and Vulkan thunks.
-# Everything the client package lacks on a non-SteamOS, non-VR box is re-applied at each start,
-# because the client re-verifies its files on update.
+# steam-arm: launches native ARM64 Steam client; runs as desktop user, games through FEX against the RootFS.
 REALHOME="$HOME"
 ARMHOME_DIR=.local/share/steam-arm            # relative to the user's home
 [ -r /etc/steam-arm/steam-arm.conf ] && . /etc/steam-arm/steam-arm.conf
@@ -795,23 +1255,26 @@ export STEAM_COMPAT_GRAPHICS_PROVIDER=/opt/fex-rootfs/Ubuntu_24_04/graphics_prov
 export __GLX_VENDOR_LIBRARY_NAME=steamarmlax
 export STEAMOS=1
 export STEAM_ARM_VK_SPOOF=1
+# PROTON_DXVK_D3D8=1: use DXVK's d3d8 (wined3d's GL path misrenders on Mali); launch option can override.
+export PROTON_DXVK_D3D8="${PROTON_DXVK_D3D8:-1}"
 S="$ARMHOME/.local/share/Steam"; D="$S/steamrtarm64"; F="$S/steamapps/common/FEX-Emu"
 
-# The pad re-identification service (steam-arm-pad-xbox) serves the emulated client, where Steam Input's
-# virtual pad is silent. It grabs the physical pad, which starves titles that open the pad
-# themselves under this client, and Steam Input here re-identifies pads on its own: pause it
-# while this client runs and start it again on exit.
+# Pause steam-arm-pad-xbox while this client runs (its own Steam Input re-IDs pads; the service would starve direct pad reads); resume on exit.
 PADSVC=0
 if systemctl is-active --quiet steam-arm-pad-xbox 2>/dev/null; then
   PADSVC=1; sudo -n systemctl stop steam-arm-pad-xbox 2>/dev/null || systemctl stop steam-arm-pad-xbox 2>/dev/null
 fi
 restore_pad(){ [ "$PADSVC" = 1 ] && { sudo -n systemctl start steam-arm-pad-xbox 2>/dev/null || systemctl start steam-arm-pad-xbox 2>/dev/null; }; }
-trap restore_pad EXIT
+FEXWATCH=
+# Single exit path: stop the FEX watcher, then restore the pad service.
+on_exit(){ [ -n "$FEXWATCH" ] && kill "$FEXWATCH" 2>/dev/null; restore_pad; }
+trap on_exit EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 if pgrep -f 'ubuntu12_32/steam ' >/dev/null 2>&1; then
   command -v zenity >/dev/null 2>&1 && zenity --warning --text="The x86 Steam client is running. Close it first; two clients fight over the controller and steam:// links." 2>/dev/null
 fi
 
-# --- client-side links the x86 steam.sh would normally create ---------------------------------
+# --- client-side links (normally made by x86 steam.sh) ---
 mkdir -p "$ARMHOME/.steam"
 ln -sfn "$S" "$ARMHOME/.steam/steam"; ln -sfn "$S" "$ARMHOME/.steam/root"
 ln -sfn "$S/linux32" "$ARMHOME/.steam/sdk32"; ln -sfn "$S/linux64" "$ARMHOME/.steam/sdk64"
@@ -819,7 +1282,7 @@ ln -sfn "$S/linuxarm64" "$ARMHOME/.steam/sdkarm64"   # sdk dir: steamclient.so f
 ln -sfn "$S/ubuntu12_32" "$ARMHOME/.steam/bin32"; ln -sfn "$S/ubuntu12_64" "$ARMHOME/.steam/bin64"
 mkdir -p "$S/package"; [ -f "$S/package/beta" ] || echo publicbeta > "$S/package/beta"
 
-# --- launch wrapper stand-in, used only if the package copy in linuxarm64 is missing --------------
+# --- launch wrapper stand-in (only if package copy missing) ---
 if [ ! -x "$S/linuxarm64/steam-launch-wrapper" ] && [ ! -x "$D/steam-launch-wrapper" ]; then
 cat > "$D/steam-launch-wrapper" <<'SH'
 #!/bin/sh
@@ -832,10 +1295,7 @@ SH
 chmod 755 "$D/steam-launch-wrapper"
 fi
 
-# --- Remote Play: the ARM streaming_client decodes only through a V4L2 hardware decoder feeding
-# Vulkan, which this kernel does not expose; the x86-64 streaming client from the same package runs
-# under FEX with software decoding instead. The -deckard client adds --openvr (segfault with no VR
-# runtime); the host-only GLX vendor override must not reach the emulated process. -------------
+# --- Remote Play: ARM client lacks Vulkan Video decode; run x86-64 client under FEX (software decode, strip --openvr) ---
 if [ -f "$D/streaming_client" ] && [ "$(head -c 4 "$D/streaming_client" | tr -d '\177')" = "ELF" ]; then
   mv -f "$D/streaming_client" "$D/streaming_client.real"      # only the real binary is ever moved aside
 fi
@@ -855,69 +1315,156 @@ fi
 # system FEX config for the x86 streaming client (same rootfs, thunks and host settings as the x86 stack)
 mkdir -p "$ARMHOME/.fex-emu"; [ -f "$ARMHOME/.fex-emu/Config.json" ] || cp -f "$REALHOME/.fex-emu/Config.json" "$ARMHOME/.fex-emu/Config.json" 2>/dev/null
 
-# --- Valve's FEX compatibility tool: rootfs default, thunk overlay paths, socket path, thunks on --
-if [ -d "$F" ]; then
-  # inside the runtime container the guest opens libGL/libvulkan through pressure-vessel's overrides
-  # directory; FEX matches overlay paths on the exact string opened, so those paths must be listed.
-  python3 - "$F/usr/share/fex-emu/ThunksDB.json" "$F/ConfigTemplate.json" <<'PY' 2>/dev/null
-import json, os, sys
-db_p, tpl_p = sys.argv[1], sys.argv[2]
-db = json.load(open(db_p)); changed = False
-names = {"GL": ["libGL.so", "libGL.so.1", "libGL.so.1.7.0", "libGL.so.1.2.0"], "Vulkan": ["libvulkan.so", "libvulkan.so.1"], "EGL": ["libEGL.so", "libEGL.so.1"]}
-for lib, ns in names.items():
-    if lib not in db["DB"]: continue
-    ov = db["DB"][lib].setdefault("Overlay", [])
-    for arch in ("i386-linux-gnu", "x86_64-linux-gnu"):
-        for sub in ("", "/aliases"):
-            for n in ns:
-                p = "/usr/lib/pressure-vessel/overrides/lib/%s%s/%s" % (arch, sub, n)
-                if p not in ov: ov.append(p); changed = True
-if changed: json.dump(db, open(db_p, "w"), indent=2)
-t = json.load(open(tpl_p)); c = t.setdefault("Config", {}); tc = False
-sock = "/run/user/%s/steam-arm-fexserver.sock" % os.getuid()
-if c.get("ServerSocketPath") != sock: c["ServerSocketPath"] = sock; tc = True
-td = t.setdefault("ThunksDB", {})
-for k in ("GL", "Vulkan"):
-    if td.get(k) != "1": td[k] = "1"; tc = True
-if tc: json.dump(t, open(tpl_p, "w"), indent=4)
-PY
-fi
+# --- Valve's FEX compat tool: patch thunk paths/socket so GL/Vulkan aren't CPU (llvmpipe); a watcher re-applies it on change ---
+FEXPATCH=/usr/local/lib/steam-arm-fexpatch.py
+fex_ok(){ grep -q '/run/gfx/main/' "$F/usr/share/fex-emu/ThunksDB.json" 2>/dev/null && grep -q '"GL": "1"' "$F/ConfigTemplate.json" 2>/dev/null \
+  && grep -q "\"/run/user/$(id -u)/steam-arm-fexserver.sock\"" "$F/ConfigTemplate.json" 2>/dev/null \
+  && { grep -q '/usr/local/lib/steam-arm-handler.py' "$F/fex-compat-tool" 2>/dev/null || ! grep -q "LD_PRELOAD" "$F/fex-compat-tool" 2>/dev/null; }; }
+[ -d "$F" ] && ! fex_ok && python3 "$FEXPATCH" "$F" 2>/dev/null
+# Steam overlay/FEX leak /dev/shm segments (fills half of RAM -> SIGBUS); sweep unused ones at start and every minute.
+shm_sweep(){ python3 - "$(id -u)" 2>/dev/null <<'SHMPY'
+import glob, os, sys, time
+uid = int(sys.argv[1]); now = time.time(); used = set()
+for p in glob.glob("/proc/[0-9]*"):
+    try:
+        for line in open(p + "/maps"):
+            i = line.find("/dev/shm/")
+            if i >= 0:
+                used.add(line[i:].split()[0])
+    except OSError:
+        pass
+    try:
+        for fd in os.listdir(p + "/fd"):
+            try:
+                t = os.readlink(p + "/fd/" + fd)
+            except OSError:
+                continue
+            if t.startswith("/dev/shm/"):
+                used.add(t.split()[0])
+    except OSError:
+        pass
+for f in glob.glob("/dev/shm/u%d-Shm_*" % uid):
+    try:
+        if f not in used and now - os.stat(f).st_mtime > 60:
+            os.unlink(f)
+    except OSError:
+        pass
+for f in glob.glob("/dev/shm/fex-*-stats"):
+    pid = f[len("/dev/shm/fex-"):-len("-stats")]
+    try:
+        if pid.isdigit() and os.stat(f).st_uid == uid and not os.path.exists("/proc/" + pid):
+            os.unlink(f)
+    except OSError:
+        pass
+SHMPY
+}
+shm_sweep
+( n=0; while sleep 1; do [ -d "$F" ] && ! fex_ok && python3 "$FEXPATCH" "$F" 2>/dev/null; n=$((n + 1)); [ $((n % 60)) -eq 0 ] && shm_sweep; done ) &
+FEXWATCH=$!
 
-# --- Remote Play client settings this box requires (see steam-arm-remoteplay) -----------------
-# Hardware decoding off and HEVC off, pinned in the account's stored client configuration. The
-# streaming client has no hardware decode path here, and advertising one leaves a session on
-# the launch screen. Applied before the client starts, since the client rewrites the file on
-# exit, and skipped when a client is already up.
+# --- Remote Play settings: pin hardware decode + HEVC off before start (client rewrites the file on exit) ---
 if command -v steam-arm-remoteplay >/dev/null 2>&1 && ! pgrep -x steam >/dev/null 2>&1; then
   steam-arm-remoteplay >/dev/null 2>&1
 fi
 
-# --- interface: Deck by default, desktop on request ------------------------------------------
-# The Deck interface registers no status-notifier item, so the client cannot show an icon in the
-# panel tray. Started without -gamepadui the client uses its own status icon, which Plasma picks
-# up through xembedsniproxy. Big Picture is still reachable from inside the client.
+# --- interface: Deck (gamepadui) by default; -gamepadui off shows the client's own tray icon via xembedsniproxy ---
 GPUI=-gamepadui
 [ "$STEAM_ARM_UI" = desktop ] && GPUI=
+SWITCH=
 case "$1" in
-  --desktop) GPUI=; shift;;
-  --bigpicture) GPUI=-gamepadui; shift;;
+  --desktop) GPUI=; SWITCH=1; shift;;
+  --bigpicture) GPUI=-gamepadui; SWITCH=1; shift;;
 esac
+# Switching interface: shut down the running client (steam -shutdown), wait, then restart in the requested mode.
+if [ -n "$SWITCH" ] && pgrep -u "$(id -u)" -x steam >/dev/null 2>&1; then
+  ( cd "$D" && ./steam -shutdown >/dev/null 2>&1 )
+  n=0
+  while pgrep -u "$(id -u)" -x steam >/dev/null 2>&1; do
+    sleep 1; n=$((n+1))
+    [ $n -ge 60 ] && { echo "steam-arm: running client did not exit within 60 s; close it from its menu, then try again" >&2; exit 1; }
+  done
+fi
+
+# Menu icon comes from the client's own icon file, absent until its first start. Wait for it in
+# the background (poll every 5 s, up to 15 min) so start is never delayed; flock keyed by uid
+# stops a second concurrent start from waiting twice.
+if command -v steam-arm-icon >/dev/null 2>&1 && [ ! -f /usr/share/icons/hicolor/256x256/apps/steam-arm.png ] \
+   && [ ! -f "$REALHOME/.local/share/icons/hicolor/256x256/apps/steam-arm.png" ]; then
+  ICONLOCK="${XDG_RUNTIME_DIR:-/tmp}/steam-arm-icon-wait-$(id -u).lock"
+  ( flock -n 9 || exit 0
+    STEP="${STEAM_ARM_ICON_POLL:-5}"; n=0
+    while [ ! -f "$S/public/steam_tray.ico" ]; do
+      n=$((n + STEP)); [ "$n" -ge 900 ] && exit 0
+      sleep "$STEP"
+    done
+    steam-arm-icon "$S" "$REALHOME/.local/share/icons/hicolor" || exit 0
+    if command -v kbuildsycoca6 >/dev/null 2>&1; then HOME="$REALHOME" kbuildsycoca6
+    elif command -v kbuildsycoca5 >/dev/null 2>&1; then HOME="$REALHOME" kbuildsycoca5
+    fi
+    for d in "$REALHOME/Desktop/Steam ARM.desktop" "$REALHOME/Desktop/Steam ARM (Desktop mode).desktop"; do
+      [ -f "$d" ] && touch "$d"
+    done
+  ) >/dev/null 2>&1 9>"$ICONLOCK" &
+fi
+
+# Client build has no tray icon; steam-arm-tray supplies one (locked single instance, user's own HOME).
+if command -v steam-arm-tray >/dev/null 2>&1 && [ -n "${DISPLAY:-}" ]; then
+  HOME="$REALHOME" setsid steam-arm-tray </dev/null >/dev/null 2>&1 &
+fi
+
+# Register the client's arm64 overlay Vulkan layer, gated by STEAM_ARM_VK_OVERLAY (handler sets it for overlay=vulkan titles only; always-on crashes Proton ARM64).
+VKL="$ARMHOME/.local/share/vulkan/implicit_layer.d"
+if [ -f "$D/steamoverlayvulkanlayer.so" ]; then
+  mkdir -p "$VKL"; rm -f "$VKL/steamoverlay_arm64.json" "$VKL/steamoverlay_arm64.json.off"
+  cat > "$VKL/steamoverlay_arm64_steamarm.json" <<VKJSON
+{
+  "file_format_version": "1.0.0",
+  "layer": {
+    "name": "VK_LAYER_VALVE_steam_overlay_arm64_steamarm",
+    "type": "GLOBAL",
+    "library_path": "$D/steamoverlayvulkanlayer.so",
+    "api_version": "1.3.207",
+    "implementation_version": "1",
+    "description": "Steam overlay layer (arm64), registered by steam-arm for profiled Vulkan titles",
+    "disable_environment": { "DISABLE_VK_LAYER_VALVE_steam_overlay_1": "1" },
+    "enable_environment": { "STEAM_ARM_VK_OVERLAY": "1" }
+  }
+}
+VKJSON
+fi
+
+# gameoverlayui crashes without the client dir on LD_LIBRARY_PATH; the client doesn't add it, so the launcher does.
+export LD_LIBRARY_PATH="$D${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 cd "$D" || exit 1
-# The installed archive is the bootstrap subset. On the first start the client must verify its
-# files so it downloads the rest of the package set (the SDK directory appears then); it exits
-# afterwards, so it is started once more with the flags that skip the verification.
+# First start must verify files (downloads the rest of the package, SDK dir appears) then exits; start again skipping verification.
 if [ ! -f "$S/linuxarm64/steamclient.so" ]; then
   ./steam -deckard -steamos3 ${GPUI:+"$GPUI"} "$@"
   [ -f "$S/linuxarm64/steamclient.so" ] || exit 1
   ln -sfn "$S/linuxarm64" "$ARMHOME/.steam/sdkarm64"
 fi
 ./steam -deckard -steamos3 ${GPUI:+"$GPUI"} -noverifyfiles -norepairfiles -noshaders "$@"
+exit $?
 LAUNCHER
 chmod 755 /usr/local/bin/steam-arm
-# Remote Play: the client's stored settings default to hardware decoding, which the streaming
-# client cannot do on this box. This helper pins hardware decoding off and HEVC off; the
-# launcher runs it before each start, and it takes --check to report without changing anything.
+# Power menu calls steamos-session-select; here it just restarts the client in the matching interface (plain env restored first).
+cat > /usr/local/bin/steamos-session-select <<'SESSEL'
+#!/bin/sh
+# steamos-session-select for steam-arm: restart the client in the interface the power menu chose.
+case "${1:-}" in
+  plasma|plasma-x11|plasma-wayland|plasma-x11-persistent|plasma-wayland-persistent|desktop) m=--desktop;;
+  *) m=--bigpicture;;
+esac
+u=$(id -un); h=$(getent passwd "$(id -u)" | cut -d: -f6)
+setsid env -i HOME="$h" USER="$u" LOGNAME="$u" PATH=/usr/local/bin:/usr/bin:/bin \
+  DISPLAY="${DISPLAY:-:0}" XAUTHORITY="${XAUTHORITY:-$h/.Xauthority}" LANG="${LANG:-C.UTF-8}" \
+  XDG_RUNTIME_DIR="/run/user/$(id -u)" XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-}" \
+  XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-x11}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+  /usr/local/bin/steam-arm "$m" </dev/null >/dev/null 2>&1 &
+exit 0
+SESSEL
+chmod 755 /usr/local/bin/steamos-session-select
+# Pin Remote Play settings (hardware decode + HEVC off); launcher runs this before each start; --check only reports.
 cat > /usr/local/bin/steam-arm-remoteplay <<'RPPY'
 #!/usr/bin/env python3
 """Pin the Remote Play client settings the native ARM64 Steam client needs on this box.
@@ -944,15 +1491,31 @@ could not be applied.
 """
 import glob
 import os
+import pwd
 import re
 import sys
+
+USAGE = """Usage: steam-arm-remoteplay [--check]
+
+Pins Remote Play settings of native ARM64 client in each localconfig.vdf of client
+home: hardware decoding off, HEVC off. Launcher runs it before each client start.
+
+  (none)       apply; refuses while client runs
+  --check      report only, change nothing
+  -h, --help   print this text and exit
+
+Client home, resolved as launcher does: STEAM_ARM_HOME, else ARMHOME_DIR from
+/etc/steam-arm/steam-arm.conf under account home (default .local/share/steam-arm).
+Exit status 0 when settings are in place, 1 otherwise."""
+CONF_PATH = "/etc/steam-arm/steam-arm.conf"
+ARMHOME_DIR = ".local/share/steam-arm"
+HOME_VAR = "STEAM_ARM_HOME"
 
 # Field numbers are from the schema embedded in the client; wire type 0 (varint) for bool.
 FIELD_HW_DECODE = 7
 FIELD_HEVC = 13
 KEY_RE = re.compile(r'("ClientConfig"\t\t")([0-9a-f]*)(")')
-# The block the client keeps the entry in, one level below the root object. Its closing
-# brace is the first "\t}" line after the opening "\t{".
+# streaming_v2 block: closing brace is the first "\t}" line after the opening "\t{".
 BLOCK_RE = re.compile(r'\n\t"streaming_v2"\n\t\{\n(?:.*\n)*?\t\}\n')
 ROOT_RE = re.compile(r'\A"UserLocalConfigStore"\n\{\n')
 ENABLE_RE = re.compile(r'\n\t\t"EnableStreaming"\t\t"')
@@ -1041,12 +1604,34 @@ def write_back(path, text):
     os.replace(tmp, path)
 
 
+def client_home():
+    """Client home as launcher resolves it: STEAM_ARM_HOME (settings file over environment), else
+    ARMHOME_DIR under account home. Account home comes from password database, because
+    launcher runs this tool with HOME already set to client home."""
+    conf = {}
+    try:
+        with open(CONF_PATH) as fh:
+            for line in fh:
+                key, sep, value = line.strip().partition("=")
+                if sep and not key.startswith("#"):
+                    conf[key.strip()] = value.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    override = conf.get(HOME_VAR) or os.environ.get(HOME_VAR)
+    if override:
+        return override
+    return os.path.join(pwd.getpwuid(os.getuid()).pw_dir, conf.get("ARMHOME_DIR") or ARMHOME_DIR)
+
+
 def main():
+    if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
+        print(USAGE)
+        return 0
     check = "--check" in sys.argv[1:]
-    home = os.environ.get("HOME", os.path.expanduser("~"))
-    files = glob.glob(os.path.join(home, ".local/share/Steam/userdata/*/config/localconfig.vdf"))
+    steam = os.path.join(client_home(), ".local/share/Steam")
+    files = glob.glob(os.path.join(steam, "userdata/*/config/localconfig.vdf"))
     if not files:
-        print("steam-arm-remoteplay: no localconfig.vdf yet; log the client in once first")
+        print("steam-arm-remoteplay: no localconfig.vdf under %s yet; sign in to client once first" % steam)
         return 1
     status = 0
     for path in files:
@@ -1065,8 +1650,7 @@ def main():
             if client_running():
                 print("steam-arm-remoteplay: the client is running; close it first, it rewrites this file on exit")
                 return 1
-            # prove the edit before writing it: the new text must carry exactly one entry, the
-            # pinned message, and every original line
+            # Verify before writing: exactly one entry with the pinned message, and every original line intact.
             found = KEY_RE.findall(new_text)
             assert len(found) == 1 and bytes.fromhex(found[0][1]) == pinned(b"")
             assert all(l in new_text.splitlines() for l in text.splitlines())
@@ -1147,12 +1731,99 @@ CM
 chmod 755 /usr/local/bin/steam-arm-compatmap
 
 
-if opt desktop; then
-cat > /usr/share/applications/steam-arm.desktop <<'DESK'
+# KWin only re-reads kwinrulesrc when told; without a reconfigure signal, rules wait until next login.
+kwin_reload(){ su - "$GAMEUSER" -c "XDG_RUNTIME_DIR=/run/user/$UID_N DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$UID_N/bus dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure" >/dev/null 2>&1 || true; }
+
+# Generated menu icons (chartreuse=Big Picture, bone=desktop) distinguish this client from x86 Steam; drawn from the client's steam_tray.ico, so re-run once it exists after first start.
+steam_arm_icon(){
+  cat > /usr/local/bin/steam-arm-icon <<'ICONPY'
+#!/usr/bin/env python3
+"""steam-arm-icon STEAMDIR HICOLORDIR: write steam-arm.png and steam-arm-desktop.png.
+
+Steam's round icon redrawn on a dark, grainy green disc with a few small squares of vivid
+colour, generated from fixed seeds so every install draws the same icons. The logo tells the
+entries apart: chartreuse for Big Picture (steam-arm), bone for desktop mode
+(steam-arm-desktop). The logo shape comes from the client's own steam_tray.ico, where it is
+white with graded transparency over a blue disc; whiteness picks the logo, and the disc is
+made opaque. Nothing is bundled with the package."""
+import math, os, subprocess, sys
+from PIL import Image
+steam, dest = sys.argv[1], sys.argv[2]
+src = None
+for c in (os.path.join(steam, "public/steam_tray.ico"),
+          "/opt/fex-rootfs/Ubuntu_24_04/usr/share/icons/hicolor/256x256/apps/steam.png"):
+    if os.path.isfile(c):
+        src = c; break
+if not src:
+    sys.exit(1)
+im = Image.open(src)
+if src.endswith(".ico"):
+    im.size = max(im.info.get("sizes", {im.size}))
+im = im.convert("RGBA").resize((256, 256), Image.LANCZOS)
+p = im.load(); W, H = im.size; CX = CY = 127.5; R = 126.5
+
+def h(x, y, seed):
+    v = (x * 374761393 + y * 668265263 + seed * 2246822519) & 0xFFFFFFFF
+    v = ((v ^ (v >> 13)) * 1274126177) & 0xFFFFFFFF
+    return ((v ^ (v >> 16)) & 0xFFFF) / 65535.0
+
+def vnoise(x, y, cell, seed):
+    gx, gy = x / cell, y / cell; x0, y0 = int(gx), int(gy); fx, fy = gx - x0, gy - y0
+    fx, fy = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy)
+    a, b = h(x0, y0, seed), h(x0 + 1, y0, seed); c, d = h(x0, y0 + 1, seed), h(x0 + 1, y0 + 1, seed)
+    top = a + (b - a) * fx
+    return top + ((c + (d - c) * fx) - top) * fy
+
+DARK, MID, LIGHT = (14, 24, 12), (30, 48, 24), (58, 82, 40)
+POPS = ((0, 229, 255), (234, 255, 0), (255, 106, 0), (180, 92, 255))
+
+def disc(x, y, seed):
+    g = 0.55 * vnoise(x, y, 40, seed) + 0.30 * vnoise(x, y, 11, seed + 1) + 0.15 * h(x, y, seed + 2)
+    col = [DARK[i] + (MID[i] - DARK[i]) * min(1, g * 1.4) for i in range(3)]
+    s = h(x // 3, y // 3, seed + 3)
+    if s > 0.93:
+        col = [LIGHT[i] * (0.7 + 0.3 * h(x, y, 9)) for i in range(3)]
+    elif s < 0.05:
+        col = [c * 0.45 for c in col]
+    cx, cy = x // 9, y // 9
+    if h(cx, cy, seed + 4) > 0.975 and 1 <= x % 9 <= 6 and 1 <= y % 9 <= 6:
+        col = list(POPS[int(h(cx, cy, seed + 5) * len(POPS)) % len(POPS)])
+    return col
+
+def draw(logo, seed):
+    out = Image.new("RGBA", im.size); o = out.load()
+    for y in range(H):
+        for x in range(W):
+            r_, g_, b_, a = p[x, y]
+            t = min(1.0, max(0.0, (min(r_, g_, b_) - 120) / 135)); t = t * t * (3 - 2 * t)
+            if math.hypot(x + .5 - CX, y + .5 - CY) < R - 1.5:
+                a = 255
+            bk = disc(x, y, seed)
+            o[x, y] = tuple(int(bk[i] + (logo[i] - bk[i]) * t) for i in range(3)) + (a,)
+    return out
+
+for name, img in (("steam-arm", draw((156, 200, 101), 11)), ("steam-arm-desktop", draw((196, 186, 160), 23))):
+    for sz in (16, 32, 48, 64, 128, 256):
+        d = os.path.join(dest, "%dx%d" % (sz, sz), "apps"); os.makedirs(d, exist_ok=True)
+        img.resize((sz, sz), Image.LANCZOS).save(os.path.join(d, name + ".png"))
+if os.path.isfile(os.path.join(dest, "index.theme")):
+    subprocess.run(["gtk-update-icon-cache", "-q", "-f", "-t", dest], stderr=subprocess.DEVNULL)
+ICONPY
+  chmod 755 /usr/local/bin/steam-arm-icon
+  rm -f /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png
+  if /usr/local/bin/steam-arm-icon "$S" /usr/share/icons/hicolor; then
+    say "     menu icons made from client's own icon"
+  else
+    say "     menu icons: made at first start, once client has downloaded its files"
+  fi
+}
+
+# Same two entries serve the app menu and the desktop icons; one function each.
+bp_entry(){ cat > "$1" <<'DESK'
 [Desktop Entry]
 Type=Application
 Name=Steam ARM
-GenericName=Steam client, native ARM64 (Big Picture)
+GenericName=Steam client, native ARM64
 Comment=Native ARM64 Steam client; games run through the client's emulation tool on the Mali GPU
 Exec=/usr/local/bin/steam-arm
 Icon=steam-arm
@@ -1160,30 +1831,80 @@ Terminal=false
 Categories=Game;
 Keywords=steam;arm;native;big picture;
 StartupNotify=false
+Actions=desktop;bigpicture;
+
+[Desktop Action desktop]
+Name=Open in desktop mode
+Exec=/usr/local/bin/steam-arm --desktop
+
+[Desktop Action bigpicture]
+Name=Open in Big Picture
+Exec=/usr/local/bin/steam-arm --bigpicture
 DESK
-# icon: the client's own icon with inverted colours, so the two clients are told apart
-for sz in 16 32 48 256; do
-  SRCI=""; for c in "$D/steam_tray_mono.png" "$RFS/usr/share/icons/hicolor/${sz}x${sz}/apps/steam.png" "$S/tenfoot/resource/images/steam_logo.png"; do [ -f "$c" ] && { SRCI="$c"; break; }; done
-  [ -n "$SRCI" ] || continue
-  DSTI="/usr/share/icons/hicolor/${sz}x${sz}/apps/steam-arm.png"; mkdir -p "$(dirname "$DSTI")"
-  if [ ! -f "$DSTI" ]; then
-    if command -v convert >/dev/null 2>&1; then convert "$SRCI" -resize "${sz}x${sz}" -channel RGB -negate "$DSTI" 2>/dev/null || cp -f "$SRCI" "$DSTI"
-    else python3 - "$SRCI" "$DSTI" "$sz" <<'PY' 2>/dev/null || cp -f "$SRCI" "$DSTI"
-import sys
-from PIL import Image, ImageOps
-im = Image.open(sys.argv[1]).convert("RGBA"); a = im.getchannel("A")
-inv = ImageOps.invert(im.convert("RGB")); inv.putalpha(a)
-inv.resize((int(sys.argv[3]),) * 2).save(sys.argv[2])
-PY
-    fi
+}
+dm_entry(){ cat > "$1" <<'DMDESK'
+[Desktop Entry]
+Type=Application
+Name=Steam ARM (Desktop mode)
+GenericName=Steam client, native ARM64, desktop interface
+Comment=Opens native ARM64 Steam client in its desktop interface; restarts it there if it runs in Big Picture
+Exec=/usr/local/bin/steam-arm --desktop
+Icon=steam-arm-desktop
+Terminal=false
+Categories=Game;
+Keywords=steam;arm;desktop;desktop mode;sign in;login;
+StartupNotify=false
+DMDESK
+}
+# desktop icon: entry written to the game user's Desktop, executable, owned by that user
+desk_icon(){ install -d -o "$GAMEUSER" -g "$GAMEUSER" "$UHOME/Desktop"; "$1" "$2"; chmod 755 "$2"; chown "$GAMEUSER:$GAMEUSER" "$2"; }
+BP_ICON="$UHOME/Desktop/Steam ARM.desktop"; DM_ICON="$UHOME/Desktop/Steam ARM (Desktop mode).desktop"
+
+if want_icons; then
+  steam_arm_icon
+else
+  rm -f /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png \
+        /usr/local/bin/steam-arm-icon
+  for n in steam-arm steam-arm-desktop; do rm -f "$UHOME"/.local/share/icons/hicolor/*/apps/"$n".png; done
+fi
+
+# "Steam ARM" menu entry, and the window frame rule for the desktop interface
+if opt desktop; then
+  bp_entry /usr/share/applications/steam-arm.desktop
+  # Client's own drawn frame doesn't move on drag; a KWin rule gives normal windows the WM frame instead (Big Picture, fullscreen, is unaffected).
+  RID=steam-arm-frame
+  kw() { su - "$GAMEUSER" -c "kwriteconfig6 --file kwinrulesrc --group $1 --key $2 '$3'" 2>/dev/null; }
+  if command -v kwriteconfig6 >/dev/null 2>&1; then
+    kw "$RID" Description "Steam ARM: window manager frame"
+    kw "$RID" wmclass steam; kw "$RID" wmclassmatch 1; kw "$RID" wmclasscomplete false
+    kw "$RID" types 1; kw "$RID" noborder false; kw "$RID" noborderrule 2
+    cur=$(su - "$GAMEUSER" -c "kreadconfig6 --file kwinrulesrc --group General --key rules" 2>/dev/null)
+    case ",$cur," in *",$RID,"*) new="$cur";; *) new="${cur:+$cur,}$RID";; esac
+    kw General rules "$new"; kw General count "$(printf '%s' "$new" | awk -F, '{print NF}')"
+    kwin_reload
   fi
-done
-gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null || true
-install -d -o "$GAMEUSER" -g "$GAMEUSER" "$UHOME/Desktop"
-cp -f /usr/share/applications/steam-arm.desktop "$UHOME/Desktop/Steam ARM.desktop"; chmod 755 "$UHOME/Desktop/Steam ARM.desktop"; chown "$GAMEUSER:$GAMEUSER" "$UHOME/Desktop/Steam ARM.desktop"
-# The Deck build of the client registers no status-notifier item, so it cannot appear in the
-# panel tray on its own. This helper puts a Steam icon there with Open, Open in desktop mode,
-# Stop and Quit, and starts with the session through an autostart entry in the game user's home.
+else
+  rm -f /usr/share/applications/steam-arm.desktop
+  if command -v kwriteconfig6 >/dev/null 2>&1; then
+    cur=$(su - "$GAMEUSER" -c "kreadconfig6 --file kwinrulesrc --group General --key rules" 2>/dev/null)
+    new=$(printf '%s' "$cur" | tr ',' '\n' | grep -vx steam-arm-frame | paste -sd, -)
+    n=$(printf '%s' "$new" | awk -F, 'NF{print NF} !NF{print 0}')
+    su - "$GAMEUSER" -c "kwriteconfig6 --file kwinrulesrc --group General --key rules '$new'; kwriteconfig6 --file kwinrulesrc --group General --key count $n; kwriteconfig6 --file kwinrulesrc --group steam-arm-frame --key Description --delete" 2>/dev/null
+    kwin_reload
+  fi
+fi
+
+# Desktop mode entry restarts a Big-Picture-running client into the desktop interface.
+if opt desktop-mode; then dm_entry /usr/share/applications/steam-arm-desktop.desktop
+else rm -f /usr/share/applications/steam-arm-desktop.desktop; fi
+
+# desktop icons, each on its own
+if opt icon-bigpicture; then desk_icon bp_entry "$BP_ICON"; else rm -f "$BP_ICON"; fi
+if opt icon-desktop; then desk_icon dm_entry "$DM_ICON"; else rm -f "$DM_ICON"; fi
+
+# panel tray icon
+if opt tray; then
+# Deck build has no tray item; this helper supplies one (Open/desktop/Stop/Quit), autostarted per session.
 cat > /usr/local/bin/steam-arm-tray <<'TRAYPY'
 #!/usr/bin/env python3
 """Plasma system tray icon for the native ARM64 Steam client.
@@ -1304,9 +2025,7 @@ def acquire_single_instance_lock():
 class SteamTray:
     def __init__(self):
         armhome = resolve_armhome()
-        # The indicator API takes an icon name looked up in a theme directory, not a
-        # file path, so the client's own tray icon is used by pointing the theme path
-        # at the directory it lives in. The theme icon stays as the fallback.
+        # Indicator API wants an icon name in a theme dir, not a path; point the theme dir at the client's icon folder.
         icon_dir = os.path.join(armhome, ".local/share/Steam/public")
         self.indicator = AyatanaAppIndicator3.Indicator.new(
             "steam-arm", "input-gaming-symbolic",
@@ -1337,10 +2056,7 @@ class SteamTray:
         GLib.timeout_add_seconds(3, self.on_poll)
 
     def on_stop(self, *_):
-        # SIGTERM only: Steam and its child processes save state and tear
-        # down cleanly on SIGTERM. A SIGKILL from here would leave the box
-        # in the misplaced-window/wrong-resolution state seen with other
-        # fullscreen titles, so it is never used.
+        # SIGTERM only: SIGKILL leaves the box in a misplaced-window/wrong-resolution state.
         signal_processes("steam", signal.SIGTERM)
         signal_processes("steamwebhelper", signal.SIGTERM)
 
@@ -1351,7 +2067,7 @@ class SteamTray:
     def update_state(self):
         running = steam_running()
         self.open_item.set_sensitive(not running)
-        self.desktop_item.set_sensitive(not running)
+        self.desktop_item.set_sensitive(True)   # the launcher restarts a running client
         self.stop_item.set_sensitive(running)
         self.indicator.set_title("Steam (running)" if running else "Steam")
 
@@ -1382,36 +2098,17 @@ X-GNOME-Autostart-enabled=true
 OnlyShowIn=KDE;GNOME;XFCE;
 TRAYDESK
 chown "$GAMEUSER:$GAMEUSER" "$UHOME/.config/autostart/steam-arm-tray.desktop"
-say "     tray helper installed; it appears in the panel at the next login"
-# The client draws its own window frame and asks the window manager for none, and this build
-# does not move the window when that frame is dragged. A window rule gives the client's normal
-# windows the window manager's frame instead, so they move and resize like any other window.
-# Big Picture is a fullscreen window, on which a frame is not drawn, so it is unaffected.
-RID=steam-arm-frame
-kw() { su - "$GAMEUSER" -c "kwriteconfig6 --file kwinrulesrc --group $1 --key $2 '$3'" 2>/dev/null; }
-if command -v kwriteconfig6 >/dev/null 2>&1; then
-  kw "$RID" Description "Steam ARM: window manager frame"
-  kw "$RID" wmclass steam; kw "$RID" wmclassmatch 1; kw "$RID" wmclasscomplete false
-  kw "$RID" types 1; kw "$RID" noborder false; kw "$RID" noborderrule 2
-  cur=$(su - "$GAMEUSER" -c "kreadconfig6 --file kwinrulesrc --group General --key rules" 2>/dev/null)
-  case ",$cur," in *",$RID,"*) new="$cur";; *) new="${cur:+$cur,}$RID";; esac
-  kw General rules "$new"; kw General count "$(printf '%s' "$new" | awk -F, '{print NF}')"
-fi
+say "     tray helper installed; it appears in the panel when the client starts"
 else
-rm -f /usr/share/applications/steam-arm.desktop "$UHOME/Desktop/Steam ARM.desktop" /usr/share/icons/hicolor/*/apps/steam-arm.png \
-      /usr/local/bin/steam-arm-tray "$UHOME/.config/autostart/steam-arm-tray.desktop"
-if command -v kwriteconfig6 >/dev/null 2>&1; then
-  cur=$(su - "$GAMEUSER" -c "kreadconfig6 --file kwinrulesrc --group General --key rules" 2>/dev/null)
-  new=$(printf '%s' "$cur" | tr ',' '\n' | grep -vx steam-arm-frame | paste -sd, -)
-  n=$(printf '%s' "$new" | awk -F, 'NF{print NF} !NF{print 0}')
-  su - "$GAMEUSER" -c "kwriteconfig6 --file kwinrulesrc --group General --key rules '$new'; kwriteconfig6 --file kwinrulesrc --group General --key count $n; kwriteconfig6 --file kwinrulesrc --group steam-arm-frame --key Description --delete" 2>/dev/null
-fi
+  rm -f /usr/local/bin/steam-arm-tray "$UHOME/.config/autostart/steam-arm-tray.desktop"
+  pkill -TERM -u "$GAMEUSER" -f /usr/local/bin/steam-arm-tray 2>/dev/null || true
 fi
 
 # ---------------------------------------------------------------------------
 say "11/11  done"
 cat <<EOM
   Client home:   $ARMHOME   (library under .local/share/Steam/steamapps)
+  Games kept:    installed games, sign-in and settings were not touched
   Launch:        steam-arm   as $GAMEUSER, or the "Steam ARM" menu entry
   First start:   downloads the client package and restarts itself; sign in from Big Picture.
   Games:         x86 Linux titles run through the client's emulation tool; Windows titles through

@@ -27,13 +27,13 @@ getconf PAGESIZE
 
 Output on tested device, H96 Max V58:
 
-| Check           | Tested device                                     | What other result means                                                  |
-|-----------------|---------------------------------------------------|--------------------------------------------------------------------------|
-| `panthor`       | loaded                                            | not loaded: image uses vendor blob or older kernel; untested here        |
-| OpenGL renderer | `Mali-G610 MC4 (Panfrost)`, Mesa 26.1.4           | `llvmpipe`: no GPU acceleration; titles run on CPU or not at all         |
-| Vulkan driver   | `panvk`, device `Mali-G610 MC4`, Mesa 26.1.4      | no Vulkan device: titles built for Linux only, no Windows titles         |
-| Distribution    | `ubuntu`, `resolute`                              | `debian`: emulation tool needs another source first, see below           |
-| Page size       | `4096`                                            | `16384` or `65536`: emulation half does not run, see Raspberry Pi below  |
+| Check           | Tested device                                | What other result means                                               |
+|-----------------|----------------------------------------------|-----------------------------------------------------------------------|
+| `panthor`       | loaded                                       | not loaded: image uses vendor blob or older kernel; untested here     |
+| OpenGL renderer | `Mali-G610 MC4 (Panfrost)`, Mesa 26.1.4      | `llvmpipe`: no GPU acceleration; titles run on CPU or not at all      |
+| Vulkan driver   | `panvk`, device `Mali-G610 MC4`, Mesa 26.1.4 | no Vulkan device: titles built for Linux only, no Windows titles      |
+| Distribution    | `ubuntu`, `resolute`                         | `debian`: emulation tool needs another source first, see below        |
+| Page size       | `4096`                                       | `16384` or `65536`: setup stops and names fix, see Raspberry Pi below |
 
 Mesa on tested device comes from `kisak-mesa` PPA. Older Mesa releases carry earlier
 PanVK; when `vulkaninfo` lists no `panvk` device on Mali-G610, newer Mesa from that PPA
@@ -200,8 +200,9 @@ against OpenGL, which Panfrost supports well; Windows titles through Direct3D la
 not reasonable expectation there.
 
 **Page size, where it is not 4K.** Raspberry Pi 5 and Apple Silicon both default to 16K.
-Pi is one line firmware change. Apple Silicon needs emulation inside guest that
-provides 4K pages. On ARM workstations default has moved between releases of same
+Pi is one line firmware change, which `page-size` component makes. Apple Silicon needs
+emulation inside guest that provides 4K pages. Setup checks page size first and stops
+with fix for that system rather than installing something that cannot run. On ARM workstations default has moved between releases of same
 distribution, so it is worth checking rather than assuming.
 
 **Whether system has service manager and device manager at all.** Terminal emulator
@@ -224,7 +225,10 @@ kernel=kernel8.img
 ```
 
 to `config.txt` (on current Raspberry Pi OS that file is `/boot/firmware/config.txt`) selects
-4K page kernel instead. 16K kernel is there for performance, so change costs a
+4K page kernel instead. `page-size` component, on by default, writes that line in marked
+block, keeps `config.txt.steam-arm.bak`, and stops so system can reboot; second run of
+`sudo bash steam-arm-install.sh` then installs. It stops instead when `config.txt` already sets
+`kernel=` or when `kernel8.img` is missing. Deselecting `page-size` removes block again. 16K kernel is there for performance, so change costs a
 few percent on other workloads.
 
 **Distribution.** Raspberry Pi OS is Debian based, and emulation tool used here comes from

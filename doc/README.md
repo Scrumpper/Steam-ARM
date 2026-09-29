@@ -15,11 +15,16 @@ when setup command below is run.
 Run `steam-arm-setup --help` for list of options, including
 `--defaults`, `--select`, `--skip`, and `--list`.
 
+Installed games are kept. Re-running setup, changing components and
+upgrading package leave game library, sign-in and settings untouched.
+
 ## Requirements
 
 - ARM64 (aarch64) system
 - Debian or Ubuntu family distribution
 - Mesa graphics stack
+- 4K page kernel (`getconf PAGESIZE` prints 4096); setup checks this first,
+  and on Raspberry Pi `page-size` component selects firmware's 4K kernel
 
 ## Issues
 

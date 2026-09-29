@@ -1,5 +1,5 @@
 Package: steam-arm-setup
-Version: 1.0
+Version: 1.1
 Section: games
 Priority: optional
 Architecture: arm64
@@ -7,8 +7,9 @@ Depends: bash (>= 5.0), python3 (>= 3.8), curl, ca-certificates, xz-utils
 Recommends: whiptail
 Maintainer: Scrumpper <Scrumpper@users.noreply.github.com>
 Description: install Valve's native ARM64 Steam client
- Installs Valve's native ARM64 Steam client and the supporting pieces:
- an ARM64 RootFS, the graphics provider, the launcher, and optional
+ Installs Valve's native ARM64 Steam client and supporting pieces:
+ FEX-Emu, x86-64 Ubuntu 24.04 RootFS with Mesa for Valve's emulation
+ tool (graphics provider), launcher, and optional
  components such as a Vulkan compatibility layer, joystick and
  controller access rules, and a desktop menu entry.
  .

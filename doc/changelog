@@ -1,3 +1,35 @@
+steam-arm-setup (1.1) stable; urgency=low
+
+  * Check page size before installing anything; stop on 16K or 64K kernel
+    with fix for that system. STEAM_ARM_IGNORE_PAGESIZE=1 skips check.
+  * New page-size component: on Raspberry Pi, select firmware's 4K page
+    kernel in config.txt, keep backup, ask for reboot and second run.
+  * New desktop-mode component: menu entry and desktop icon for desktop
+    interface. Power menu Switch to Desktop restarts client there.
+  * Menu icons from client's own icon in project banner colours; tray
+    helper started by launcher.
+  * Desktop icons and tray icon are separate components: icon-bigpicture,
+    icon-desktop, tray. Installed games, sign-in and settings are kept.
+  * Launch handler run by Valve's FEX tool: Steam overlay and MangoHud in
+    x86 titles, Godot 4 on OpenGL, title profiles in /etc/steam-arm.
+  * Handler engine rules for Unity: Vulkan renderer where player carries
+    it, GL 4.5 report otherwise, overlay off for 32-bit players.
+  * Direct3D 8 titles under Proton use DXVK (PROTON_DXVK_D3D8=1).
+  * Launcher clears shared-memory segments no process maps; after many
+    game sessions they filled /dev/shm and every title failed to start.
+    Overlay segments steamwebhelper still maps are reclaimed at client
+    restart.
+  * Installer ships as plain script steam-arm-install.sh; package still
+    builds with build-deb.sh.
+  * Icons drawn during first start once client has downloaded its icon
+    file; KDE menu cache refreshes after.
+  * Saved GAMEUSER naming absent account is ignored with warning instead
+    of creating that account.
+  * Fixed: CPU rendering after fresh install, overlay UI crash, missing
+    title bar until next login.
+
+ -- Unofficial Armbian community build <noreply@users.noreply.github.com>  Mon, 28 Sep 2026 00:00:00 +0000
+
 steam-arm-setup (1.0) stable; urgency=low
 
   * Initial release: installer package for Valve's native ARM64 Steam

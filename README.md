@@ -2,15 +2,27 @@
 
 Full feature list: **[FEATURES.md](FEATURES.md)**.
 
-One command installs Valve's native ARM64 Steam client on ARM64 Linux system, with
+Changes per version: **[CHANGELOG.md](CHANGELOG.md)**. Compatibility by game type: **[GAMES.md](GAMES.md)**. Other routes to Steam on ARM64: **[COMPARISON.md](COMPARISON.md)**.
+
+One script installs Valve's native ARM64 Steam client on ARM64 Linux system, with
 supporting pieces that client needs and does not carry: graphics forwarding, controller
-access, and Remote Play settings system without Vulkan Video requires.
+access, and Remote Play settings system without Vulkan Video requires. Readable before
+running.
 
 ```bash
-sudo dpkg -i steam-arm-setup_1.0_arm64.deb
+sudo bash steam-arm-install.sh
+```
+
+Package built from this source with `build-deb.sh` installs same thing under command
+`steam-arm-setup`:
+
+```bash
+sudo dpkg -i steam-arm-setup_*_arm64.deb
 sudo apt-get -f install          # if apt reports missing dependencies
 sudo steam-arm-setup             # installs the client; nothing is downloaded before this
 ```
+
+Installed games are safe. Installing, re-running installer, changing components and upgrading package leave game library (`steamapps`), sign-in and settings untouched; only client's own program folder is replaced, and only when it is missing or damaged.
 
 
 ## Highlights
@@ -74,15 +86,20 @@ Those ship here as selectable components, and deselecting one on later run remov
 
 ## Components
 
-| Component    | What it does                                                                                                              | Scope          |
-|--------------|---------------------------------------------------------------------------------------------------------------------------|----------------|
-| `glx-lax`    | Private copy of Mesa GLX client library, for titles that bind one OpenGL context from several threads                     | Mesa           |
-| `vk-spoof`   | Reports Vulkan device features Direct3D layer requires and driver does not expose, then removes them from device creation | Mali and PanVK |
-| `map-count`  | Raises `vm.max_map_count` to value Proton expects                                                                         | Generic        |
-| `xpad-dedup` | Drops duplicate joystick node of third-party Xbox 360 style pads                                                          | Generic        |
-| `pad-hidraw` | Hands pad's `/dev/hidraw` node and `/dev/uinput` to logged-in user                                                        | Generic        |
-| `pad-xbox`   | Presents XInput pads from other makers as Xbox 360 pads                                                                   | Generic        |
-| `desktop`    | Application menu entry and desktop icon for account client installs into                                                  | Generic        |
+| Component         | What it does                                                                                                              | Scope          |
+|-------------------|---------------------------------------------------------------------------------------------------------------------------|----------------|
+| `glx-lax`         | Private copy of Mesa GLX client library, for titles that bind one OpenGL context from several threads                     | Mesa           |
+| `vk-spoof`        | Reports Vulkan device features Direct3D layer requires and driver does not expose, then removes them from device creation | Mali and PanVK |
+| `map-count`       | Raises `vm.max_map_count` to value Proton expects                                                                         | Generic        |
+| `xpad-dedup`      | Drops duplicate joystick node of third-party Xbox 360 style pads                                                          | Generic        |
+| `pad-hidraw`      | Hands pad's `/dev/hidraw` node and `/dev/uinput` to logged-in user                                                        | Generic        |
+| `pad-xbox`        | Presents XInput pads from other makers as Xbox 360 pads                                                                   | Generic        |
+| `desktop`         | Menu entry "Steam ARM", and title bar for client's desktop interface windows                                              | Generic        |
+| `desktop-mode`    | Menu entry "Steam ARM (Desktop mode)" that opens client in its desktop interface                                          | Generic        |
+| `icon-bigpicture` | "Steam ARM" icon on desktop                                                                                               | Generic        |
+| `icon-desktop`    | "Steam ARM (Desktop mode)" icon on desktop                                                                                | Generic        |
+| `tray`            | Steam icon in panel tray                                                                                                  | Generic        |
+| `page-size`       | On 16K page kernel, selects firmware's 4K page kernel in `config.txt`; reboot, then run again                             | Raspberry Pi   |
 
 ## Requirements
 
@@ -91,7 +108,9 @@ Emulation tool is installed from Ubuntu PPA `ppa:fex-emu/fex`, so Ubuntu family
 distribution is tested path; on Debian that tool has to come from elsewhere first.
 
 Installer has no hardcoded GPU render node, no hardcoded card index and no board
-detection.
+detection outside `page-size`, which reads device model to recognise Raspberry Pi firmware.
+
+Setup checks page size before it installs anything. Emulation needs 4K pages; on 16K or 64K kernel it stops and names fix for that system, and on Raspberry Pi `page-size` component applies that fix. `STEAM_ARM_IGNORE_PAGESIZE=1` skips check, for system that runs x86 side inside its own 4K environment.
 
 ## What it does not do
 
@@ -107,17 +126,24 @@ detection.
 ## Issues and questions
 
 Report problems and ask questions in this repository's Issues. Include board,
-distribution, output of `steam-arm-setup --list`, and what installer printed.
+distribution, output of `bash steam-arm-install.sh --list` (or `steam-arm-setup --list`
+under package), and what installer printed.
 
 ## Removing it
+
+Optional components are removed by re-running installer with them deselected, script
+or package command either one. Client itself, with its games, is removed only by
+deleting client's directory in account it installed into (`~/.local/share/steam-arm`
+by default). That deletes every installed game in it.
+
+Package path only, removes command and its documentation, leaves client and games in
+place:
 
 ```bash
 sudo apt-get purge steam-arm-setup
 ```
 
-Package owns command and its documentation. Client, emulation tool and
-components installer set up are removed by re-running installer with components
-deselected, or by deleting client's directory in account it installed into.
+Script has no uninstall option beyond component deselection above.
 
 ## Building package
 
@@ -126,7 +152,7 @@ deselected, or by deleting client's directory in account it installed into.
 architecture of build machine does not matter.
 
 ```bash
-./build-deb.sh          # writes steam-arm-setup_1.0_arm64.deb beside it
+./build-deb.sh          # writes steam-arm-setup_<version>_arm64.deb beside it
 ```
 
 Layout: `steam-arm-install.sh` is installer and becomes

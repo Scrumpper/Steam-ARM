@@ -1,16 +1,18 @@
 # Steam ARM · native ARM64 Steam client installer
 
-**Feature list** · Valve's own ARM64 client · runs on host GPU as ARM program · x86 titles through emulation with graphics forwarded to native drivers · Windows titles through ARM64 Proton · Remote Play with software decode · controller access rules · one package, nothing bundled
+**Feature list** · Steam Frame's ARM64 client · runs on host GPU as ARM program · x86 titles through emulation with graphics forwarded to native drivers · Windows titles through ARM64 Proton · Remote Play with software decode · controller access rules · one package, nothing bundled
 
 ---
 
 ## Client
-- Native ARM64 build of Steam client, build Valve produced for its ARM based VR headset, Steam Frame; interface, overlay, input stack, downloader and shader system run on CPU and GPU directly, nothing emulated
+- Native ARM64 build of Steam client, build Valve produced for its ARM based VR headset, Steam Frame; client interface, input stack, downloader and shader system run on CPU and GPU without emulation; in Linux x86 titles, Steam overlay's in-game part is x86 code loaded into emulated title
 - Client package downloads from Valve on first start, then client restarts itself; sign in from Big Picture
 - Installs into desktop user account, not root: first regular account on system (uid 1000) by default, `GAMEUSER` to choose another; account is created only when none exists, with generated password printed once
 - Own home directory under game user's account (`.local/share/steam-arm` by default, `ARMHOME_DIR` in `/etc/steam-arm/steam-arm.conf`) and own library, so it coexists with x86 client from other routes; run one at time
+- `steamos-session-select`, which power menu's Switch to Desktop runs, restarts client in desktop interface
+- `--desktop` or `--bigpicture` with client already running closes it through its own shutdown and restarts it in that interface
 - `steam-arm` launches Deck interface; `steam-arm --desktop` launches desktop interface, `--bigpicture` forces Deck interface, `STEAM_ARM_UI=desktop` in `/etc/steam-arm/steam-arm.conf` makes desktop default
-- `steam-arm-tray`: Steam icon in panel tray with Open, Open in desktop mode, Stop and Quit, started with session through autostart entry; this client build registers no tray item of its own
+- `steam-arm-tray`: Steam icon in panel tray with Open, Open in desktop mode, Stop and Quit, started with session through autostart entry and by launcher; this client build registers no tray item of its own
 - Window rule for KDE: client draws its own frame and asks window manager for none, and this build does not move window when that frame is dragged; rule gives client's normal windows manager's frame so they move and resize like any other window; Big Picture is fullscreen and unaffected
 
 ## Games
@@ -44,43 +46,34 @@
 - Client's runtime container built through `bubblewrap`
 
 ## Installer
-- One package: `steam-arm-setup_1.0_arm64.deb`, installs command `steam-arm-setup` and installer script; nothing downloads at package install
-- `sudo steam-arm-setup` installs core (host packages, root filesystem and graphics provider, client package, launcher) and offers optional components: `glx-lax`, `vk-spoof`, `map-count`, `xpad-dedup`, `pad-hidraw`, `pad-xbox`, `desktop`
+- One script: `steam-arm-install.sh`; `build-deb.sh` also builds `.deb` package that installs command `steam-arm-setup`; nothing downloads at install
+- `sudo bash steam-arm-install.sh` installs core (host packages, root filesystem and graphics provider, client package, launcher) and offers optional components: `glx-lax`, `vk-spoof`, `map-count`, `xpad-dedup`, `pad-hidraw`, `pad-xbox`, `desktop`, `desktop-mode`, `icon-bigpicture`, `icon-desktop`, `tray`, `page-size`
 - Component choice through keyboard checklist, or `--select a,b`, `--skip a,b`, `--defaults`; `--list` prints components
 - Idempotent: re-running refreshes every file, and component deselected on re-run is removed again
-- `desktop` component: application menu entry and desktop icon for account client installs into
+- Installed games kept: install, re-run, component changes and package upgrade leave game library (`steamapps`), sign-in and settings untouched; only client's program folder is replaced, and only when missing or not ARM64
+- `desktop` component: application menu entry "Steam ARM", right-click actions open either interface; window rule gives desktop interface windows title bar, and KWin reloads its rules so it applies at once
+- `desktop-mode` component: second menu entry, "Steam ARM (Desktop mode)", found by searching "desktop" or "sign in"
+- `icon-bigpicture` and `icon-desktop` components: desktop icon for either entry, each chosen on its own; neither selected places none
+- `tray` component: tray helper below; deselecting it removes helper and its autostart entry and stops it
+- Menu icons made at install from client's own `steam_tray.ico`: dark, grainy green disc with small squares of vivid colour, chartreuse logo for Big Picture and bone logo for desktop mode; fixed seeds, so every install draws same icons; nothing bundled
+- Page size check before anything installs: emulation needs 4K pages; 16K or 64K kernel stops setup with fix for that system, `STEAM_ARM_IGNORE_PAGESIZE=1` to skip
+- `page-size` component: on Raspberry Pi with 16K page kernel, adds `kernel=kernel8.img` to firmware `config.txt` in marked block, keeps backup, and asks for reboot and second run; deselecting removes block again; no effect on other systems
 - Header names no board; same script runs on its own or from units, TTY gated, `NO_COLOR` honoured
-- Removal: re-run with components deselected, or delete client's directory in account it installed into; `apt purge steam-arm-setup` removes package
+- Removal: re-run with components deselected removes those components; script has no further uninstall option; package built via `build-deb.sh` removes instead with `apt purge steam-arm-setup`, keeping client and games; deleting client's directory in account it installed into removes client and every game in it
 
 ## Requirements
 - ARM64 system with working Vulkan driver; Debian or Ubuntu family distribution, since installer uses `apt`
 - Mesa graphics stack for `glx-lax`; `vk-spoof` written for PanVK on Mali
 - Ubuntu family system for FEX PPA; other systems need FEX from another source
-- No hardcoded GPU render node, card index or board detection
+- No hardcoded GPU render node or card index; only board detection is Raspberry Pi check in `page-size`
 
 ## Compatibility
 - Tested on one device: H96 Max V58, RK3588 board with Mali-G610 GPU, on this project's Armbian image
 - `COMPATIBILITY.md` records what has and has not been tested, per device class and per driver
 
-## How routes compare
-
-Legend: ✅ yes  ⚠️ partly, or with conditions  ❌ no  ❓ not publicly verified
-
-| Route | Client itself is native ARM | Installs onto your system | Mali and PanVK | Adreno | Apple GPU | Remote Play handled |
-|---|---|---|---|---|---|---|
-| **This package** | ✅ | ✅ host, no sandbox | ✅ tested on one RK3588 board | ⚠️ untested, skip `vk-spoof` | ⚠️ untested, needs 4K page environment | ✅ decode pinned before first start |
-| Canonical arm64 Steam snap | ❌ x86 client under FEX | ⚠️ snap confinement | ❌ open issue #471 since 2026-01-10 | ⚠️ other driver loading bugs open | ❓ | ❓ |
-| Box86 and Box64 | ❌ x86 client under Box64 | ✅ host | ✅ long standing SBC route | ✅ | ❓ | ❓ |
-| steamclienttermux, Android | ✅ | ⚠️ Termux and PRoot | ❌ Adreno only | ✅ Turnip | ❌ | ❓ |
-| ROCKNIX and pocknix-os | ✅ | ❌ replaces OS | ❌ Snapdragon only | ✅ | ❌ | ❓ |
-| UbuntuAsahi `steam-arm64` | ✅ | ✅ host, in microVM | ❌ | ❌ | ✅ Honeykrisp | ❓ |
-| Windows on ARM, Prism | ❌ x86 under Prism | ✅ host | ❌ | ✅ Snapdragon X | ❌ | ✅ native to Windows |
-| macOS on Apple Silicon | ✅ since 2025-06 beta | ✅ host | ❌ | ❌ | ✅ | ✅ |
-
-Reading table: routes that run **native** client are this package, Android and
-handheld projects, UbuntuAsahi, and macOS. Of those, everything except this one targets
-Adreno or Apple GPUs. Routes that cover Mali at all run **x86** client under
-emulation, or fail on driver.
+## Charts
+- **[GAMES.md](GAMES.md):** game types tested on this package, by build, graphics API and engine, and what works for each
+- **[COMPARISON.md](COMPARISON.md):** this package beside other routes to Steam on ARM64
 
 ## Not included
 - Anti-cheat titles

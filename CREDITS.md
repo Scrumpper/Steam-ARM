@@ -5,7 +5,7 @@ combination that runs native ARM64 Steam client on ARM64 system, and projects be
 are what it stands on. Nothing listed here is bundled in package: each is either already on
 system, installed from its own repository, or downloaded by client at first start.
 
-## Client and runtime
+## Client and Runtime
 
 - **Valve Corporation**: ARM64 build of Steam client, published for Linux on ARM64 as
   public beta. Also **Proton**, ARM64 build of which runs Windows titles; **Steam Linux
@@ -72,9 +72,8 @@ system, installed from its own repository, or downloaded by client at first star
 Developed and tested on one device, H96 Max V58, RK3588 board with Mali-G610 GPU.
 `COMPATIBILITY.md` records what has been tested and what has not.
 
-Development was done conversationally with **Claude Code**. Every script, component and
-workaround here was written and tested interactively on hardware. Treat everything in
-this repository as community work offered in good faith, with no warranty.
+Development was done conversationally with **Claude Code**. 
+Treat everything in this repository as community work offered in good faith, with no warranty.
 
 ## Trademarks and affiliation
 
