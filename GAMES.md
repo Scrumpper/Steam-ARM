@@ -20,7 +20,7 @@ Legend: ✅ works  ⚠️ works with conditions  ❌ does not work  ❓ not run 
 | Linux, 32-bit x86, Source engine (OpenGL)       | ❌      | ✅      | ❓        | ❓             | Loading screen draws, then all threads wait; `gl32=off`, Multiblock off, `-nosound` do not help. Proton build runs                                                                       |
 | Linux, 32-bit x86, Unreal Engine 2 (OpenGL)     | ✅      | ✅      | ❓        | ❓             | Switches display mode for fullscreen; mode restored on quit                                                                                                                              |
 | Linux, 64-bit x86, C++ SDL, OpenGL              | ✅      | ✅      | ❓        | ❓             | On quit one thread can stay behind; client shows title running until Stop                                                                                                                |
-| Linux, 64-bit x86, custom OpenGL engine         | ⚠️     | ✅      | ❓        | ⚠️            | Some stop when Steam overlay attaches; `overlay=off` profile (shipped for known one)                                                                                                     |
+| Linux, 64-bit x86, custom OpenGL engine         | ⚠️     | ✅      | ❓        | ⚠️            | Some stop when Steam overlay attaches; `overlay=off` profile for that title                                                                                                     |
 | Windows, Proton ARM64, Direct3D 11              | ✅      | ✅      | ❌        | ❌             | DXVK on PanVK at feature level 10_1 with `vk-spoof`; MangoHud and arm64 overlay layer each crash title at device creation                                                                |
 | Windows, Proton ARM64, 32-bit Direct3D 9        | ✅      | ✅      | ❓        | ❓             | DXVK `d3d9`, including Adobe AIR and Ogre engine titles                                                                                                                                  |
 | Windows, Proton ARM64, 32-bit Direct3D 8        | ✅      | ✅      | ❓        | ❓             | DXVK `d3d8` (`PROTON_DXVK_D3D8=1`, set by launcher); wined3d default draws these wrong                                                                                                   |
@@ -46,7 +46,7 @@ Steam ARM's launch handler decides per title, before game starts, with no launch
 - Godot 4 titles on OpenGL renderer
 - Unity titles: Vulkan renderer where player carries it, else GL 4.5 report; 32-bit Unity players with overlay off
 - 32-bit titles: `-vulkan` and `-force-vulkan` removed (Vulkan forwarding is 64-bit only)
-- Start scripts (`hl2.sh` style) followed to binary they start
+- Start scripts (Source engine style) followed to binary they start
 
 Title profiles in `/etc/steam-arm/titles.conf` change it per title, by Steam app id:
 

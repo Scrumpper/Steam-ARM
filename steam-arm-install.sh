@@ -405,11 +405,15 @@ say "3/11  x86-64 RootFS (graphics provider) + emulator configuration"
 if [ ! -d "$RFS" ]; then
   SRC=$(find /root/.fex-emu/RootFS /root/.local/share/fex-emu/RootFS -maxdepth 1 -name Ubuntu_24_04 -type d 2>/dev/null | head -1)
   if [ -z "$SRC" ]; then
+    # leftover download from earlier run: fetcher's overwrite prompt aborts under -y
+    rm -f /root/.fex-emu/RootFS/Ubuntu_24_04.sqsh /root/.local/share/fex-emu/RootFS/Ubuntu_24_04.sqsh
     ( cd /opt 2>/dev/null; env -u DISPLAY FEXRootFSFetcher -y -x --force-ui=tty --distro-name=ubuntu --distro-version=24.04 )
     SRC=$(find /root/.fex-emu/RootFS /root/.local/share/fex-emu/RootFS -maxdepth 1 -name Ubuntu_24_04 -type d 2>/dev/null | head -1)
   fi
   [ -n "$SRC" ] || die "RootFS fetch failed"
   mkdir -p /opt/fex-rootfs && mv "$SRC" "$RFS"
+  # download no longer needed once extracted (525 MB)
+  rm -f /root/.fex-emu/RootFS/Ubuntu_24_04.sqsh /root/.local/share/fex-emu/RootFS/Ubuntu_24_04.sqsh
 fi
 chmod o+rx /opt /opt/fex-rootfs "$RFS"
 [ -f "$RFS/usr/lib/x86_64-linux-gnu/libGL.so.1" ] || warn "RootFS carries no x86-64 libGL; games will not reach the GPU"
@@ -958,7 +962,7 @@ on the tool's os.environ and sys.argv and decides per title:
                   Other Unity 5+ players: GL 4.5 report, so the core context is created.
                   32-bit titles: -vulkan/-force-vulkan removed (no 32-bit Vulkan thunk, so
                   Vulkan lands on CPU renderer). Source 2 titles: warning only.
-  Script launchers  hl2.sh style start scripts are followed to binary they name, for detection.
+  Script launchers  Source engine style start scripts are followed to binary they name, for detection.
 
 Profiles, one title per line, later files override earlier ones:
   /usr/local/share/steam-arm/titles.conf      shipped with steam-arm-setup
@@ -1283,12 +1287,10 @@ chmod 644 /usr/local/lib/steam-arm-handler.py
 mkdir -p /usr/local/share/steam-arm
 cat > /usr/local/share/steam-arm/titles.conf <<'TITLES'
 # Shipped title profiles; local overrides belong in /etc/steam-arm/titles.conf or ~/.config/steam-arm/titles.conf.
-1386040 overlay=vulkan   # Unity title on Vulkan: overlay through arm64 layer
-248570 overlay=off      # custom OpenGL engine: stops when Steam overlay attaches
 TITLES
 [ -f /etc/steam-arm/titles.conf ] || cat > /etc/steam-arm/titles.conf <<'TITLES'
 # Local title profiles; override /usr/local/share/steam-arm/titles.conf. One line per title: <appid> key=value ...
-#   overlay=x86|vulkan|off  mangohud=on|off  godot=gl|vulkan  env=A=1;B=2  args=-x;-y   (example: 1386040 overlay=vulkan)
+#   overlay=x86|vulkan|off  mangohud=on|off  godot=gl|vulkan  env=A=1;B=2  args=-x;-y   (example: <appid> overlay=off)
 #   gl32=off (32-bit title on emulated x86 Mesa, no GL thunk)  vk32=keep (32-bit title keeps -vulkan)
 TITLES
 

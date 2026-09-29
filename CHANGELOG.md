@@ -17,12 +17,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - 32-bit titles: handler removes `-vulkan` and `-force-vulkan`. FEX forwards Vulkan for 64-bit code only, so 32-bit Vulkan ran on CPU renderer (lavapipe).
 - Source 2 titles: handler logs warning, launch unchanged.
+- Shipped title profile list is empty. Handler's engine rules cover Unity titles on Vulkan; title that stops when Steam overlay attaches takes local profile `<appid> overlay=off` in `/etc/steam-arm/titles.conf`.
 
 ### Fixed
 
 - Memory held after game sessions: Steam overlay leaves two 25 MB frame buffers per session in `/dev/shm`, kept mapped by client's web helper until client restarts, so memory shrank with each game started. Launcher's minute sweep now frees their pages when no game runs (hole punched, file size and mappings kept). Test: 205 MB back to 55 MB one minute after third session.
 - Profile `args` counted by Unity and Godot renderer rules: profile's own `-force-glcore` or `--rendering-driver` now wins, no second renderer option added.
-- Titles started through start script (`hl2.sh` style) are detected by binary script starts: 32-bit rules, Unity and Godot rules apply to them.
+- Titles started through start script (Source engine style) are detected by binary script starts: 32-bit rules, Unity and Godot rules apply to them.
+- Installer stopped at RootFS step when earlier RootFS download was left behind: FEX's fetcher asked to overwrite it and aborted. Leftover download is removed before fetch.
 
 ## [1.1] - 2026-09-28
 

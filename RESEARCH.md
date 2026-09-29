@@ -149,17 +149,17 @@ What to change: for one title that needs GL 3.2 or 3.3, launch option
 `PAN_MESA_DEBUG=gl3 %command%` or profile line `<appid> env=PAN_MESA_DEBUG=gl3`. Do not
 put it in shell profile, `/etc/environment` or session environment.
 
-### T3. Half-Life: Source native build hangs at load
+### T3. 32-bit Source engine title, native build, hangs at load
 
 Native 32-bit build hangs at load under every OpenGL variant tried: plain,
 `PAN_MESA_DEBUG=gl3`, `+mat_queue_mode 0`, overlay off, MangoHud off, GLX vendor forced to
 Mesa. Windows build under Proton runs, slowly. FEX's lead developer lists 32-bit GL
-forwarding as breaking Half-Life 2 and Portal 2
+forwarding as breaking several Source engine titles
 <https://github.com/FEX-Emu/FEX/issues/4645>, but on test system hang stays with
 forwarding off (below).
 
 What to change: Properties, Compatibility, force ARM64 Proton build to run Windows
-version. Also tested, same hang at load with all threads waiting: `280 gl32=off` (emulated
+version. Also tested, same hang at load with all threads waiting: `<appid> gl32=off` (emulated
 x86 Mesa, no GL forwarding), FEX Multiblock off, `-nosound`, FEX TSO forced on. GL
 forwarding is not cause on test system. No setting fixed native build.
 
@@ -567,7 +567,7 @@ config file. Steam file verification can restore original file.
 Status: researched, confirmed 2-1; forwarding off tested on T3 title (did not help there).
 
 FEX's lead developer tested 32-bit X11 GL forwarding: about 12 titles worked, about 28
-crashed or hung, Half-Life 2, Portal 2 and Borderlands 2 among them; issue argues against
+crashed or hung, several Source engine titles among them; issue argues against
 turning it on by default <https://github.com/FEX-Emu/FEX/issues/4645>. Title-by-title
 lists from that issue failed verification.
 
@@ -702,7 +702,7 @@ self-modifying code tracking and Mono's JIT <https://github.com/FEX-Emu/FEX/issu
 
 What to change: none known; `FEX_SMCCHECKS=full` (F6) is untested guess.
 
-### N3. Half-Life: Source native build (tested)
+### N3. 32-bit Source engine title, native build (tested)
 
 See T3: GL variants, overlay off, MangoHud off and GLX vendor did not help.
 
