@@ -12,7 +12,7 @@ on:
         default: "26.1.8"
         type: string
       mesa_sha256:
-        description: "sha256 of that Mesa release tarball (optional; known for 26.1.8)"
+        description: "sha256 of that Mesa release tarball (optional; known for 26.1.8 and 26.2.3)"
         required: false
         default: ""
         type: string
