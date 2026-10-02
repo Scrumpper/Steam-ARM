@@ -1,0 +1,12 @@
+On github.com/Scrumpper/Steam-ARM: Add file -> Create new file (or open existing file -> pencil to edit).
+Type path from list below as file name (typing / makes folders).
+Copy all text of matching file here, paste, Commit changes. Repeat for each.
+
+1. .github/ISSUE_TEMPLATE/bug_report.yml
+2. .github/ISSUE_TEMPLATE/compatibility_report.yml
+3. .github/ISSUE_TEMPLATE/config.yml
+4. .github/PULL_REQUEST_TEMPLATE.md
+5. .github/workflows/build.yml
+6. .github/workflows/lint.yml
+7. .gitignore
+8. .github/workflows/build-driver-archive.yml

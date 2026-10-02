@@ -1,0 +1,114 @@
+name: Build driver archive
+
+# Builds the x86-64 + i386 Mesa driver archive for gpu-in-emulation with tools/build-driver-archive.sh.
+# Run by hand: Actions, Build driver archive, Run workflow. Result: artifact with .tar.zst and .sha256.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mesa:
+        description: "Mesa release from archive.mesa3d.org (for example 26.1.8)"
+        required: true
+        default: "26.1.8"
+        type: string
+      mesa_sha256:
+        description: "sha256 of that Mesa release tarball (optional; known for 26.1.8)"
+        required: false
+        default: ""
+        type: string
+      extra_args:
+        description: "Extra recipe options (optional), for example --no-patches or --vulkan panfrost"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v7
+
+      # Recipe runs as root here (its supported path), so no user namespace or AppArmor change is needed.
+      - name: Host tools
+        run: |
+          miss=""
+          for t in curl tar xz zstd patch sha256sum unshare realpath git; do
+            command -v "$t" >/dev/null 2>&1 || miss="$miss $t"
+          done
+          if [ -n "$miss" ]; then
+            echo "installing:$miss"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends curl tar xz-utils zstd patch coreutils util-linux git
+          fi
+
+      # About 25 GB of build files: /mnt (runner's second disk) when it has room, else the workspace disk.
+      - name: Build folder
+        run: |
+          free_gb(){ df -BG --output=avail "$1" 2>/dev/null | tail -1 | tr -dc '0-9'; }
+          dir=$RUNNER_TEMP/driver-build
+          if [ -d /mnt ] && [ "$(free_gb /mnt || echo 0)" -gt "$(free_gb "$RUNNER_TEMP" || echo 0)" ]; then
+            dir=/mnt/driver-build
+          fi
+          sudo mkdir -p "$dir"
+          avail=$(free_gb "$dir")
+          echo "build folder $dir, ${avail} GB free"
+          if [ "${avail:-0}" -lt 30 ]; then
+            echo "freeing preinstalled toolchains the build does not use"
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+            avail=$(free_gb "$dir")
+            echo "now ${avail} GB free"
+          fi
+          [ "${avail:-0}" -ge 25 ] || { echo "::error::build needs about 25 GB free, $dir has ${avail} GB"; exit 1; }
+          echo "WORK=$dir" >> "$GITHUB_ENV"
+
+      - name: Check options
+        env:
+          MESA: ${{ inputs.mesa }}
+          MESA_SHA256: ${{ inputs.mesa_sha256 }}
+          EXTRA_ARGS: ${{ inputs.extra_args }}
+        run: |
+          args=(--mesa "$MESA")
+          [ -z "$MESA_SHA256" ] || args+=(--mesa-sha256 "$MESA_SHA256")
+          args+=(--jobs "$(nproc)")
+          read -ra extra <<< "$EXTRA_ARGS"
+          args+=("${extra[@]}")
+          # build and output folders last, so extra options cannot move them
+          args+=(--work "$WORK" --out "$GITHUB_WORKSPACE/driver-out")
+          printf '%s\n' "${args[@]}" > "$RUNNER_TEMP/recipe-args"
+          sudo bash tools/build-driver-archive.sh "${args[@]}" --dry-run
+
+      - name: Build
+        run: |
+          mapfile -t args < "$RUNNER_TEMP/recipe-args"
+          sudo bash tools/build-driver-archive.sh "${args[@]}"
+
+      - name: Archive name and checksum
+        id: result
+        run: |
+          cd "$GITHUB_WORKSPACE/driver-out"
+          f=$(find . -maxdepth 1 -name '*.tar.zst' -printf '%f\n' | head -1)
+          if [ -z "$f" ] || [ ! -f "$f.sha256" ]; then echo "::error::no archive in driver-out"; exit 1; fi
+          sha256sum -c "$f.sha256"
+          echo "name=${f%.tar.zst}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Driver archive"
+            echo
+            echo "File: \`$f\`"
+            echo
+            echo "sha256: \`$(cut -c1-64 "$f.sha256")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.result.outputs.name }}
+          path: |
+            driver-out/*.tar.zst
+            driver-out/*.tar.zst.sha256
+            driver-out/verify-*.log
+          if-no-files-found: error
+          compression-level: 0

@@ -1,0 +1,42 @@
+name: build package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package file name from build-deb.sh
+        run: echo "DEB=steam-arm-setup_$(sed -n 's/^VERSION=//p' build-deb.sh)_arm64.deb" >> "$GITHUB_ENV"
+
+      - name: Build the package
+        run: ./build-deb.sh
+
+      - name: Verify the package metadata
+        run: dpkg-deb --info "$DEB"
+
+      - name: Verify the package contents
+        run: dpkg-deb --contents "$DEB"
+
+      - name: Install the package
+        run: sudo dpkg -i "$DEB"
+
+      - name: Run steam-arm-setup --list
+        run: steam-arm-setup --list
+
+      - name: Run steam-arm-setup --help
+        run: steam-arm-setup --help
+
+      - name: Purge the package
+        run: sudo apt-get purge -y steam-arm-setup
+
+      - name: Upload the .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam-arm-setup-deb
+          path: ${{ env.DEB }}

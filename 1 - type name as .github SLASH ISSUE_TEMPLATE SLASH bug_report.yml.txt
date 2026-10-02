@@ -1,0 +1,81 @@
+name: Bug report
+description: Report a problem with steam-arm-setup.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project is tested on one device only, an RK3588 board with a Mali-G610 GPU on an Armbian based image. Fill in every field below so the report can be reproduced.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Describe the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: what-expected
+    attributes:
+      label: What was expected
+      description: Describe what should have happened instead.
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Exact command run
+      description: Paste the exact command line, including any --select, --skip, or --defaults flags.
+      placeholder: sudo steam-arm-setup --defaults
+    validations:
+      required: true
+  - type: input
+    id: board
+    attributes:
+      label: Board or machine
+      description: The board or machine model.
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and version
+      description: For example, Debian 12 or Ubuntu 24.04.
+    validations:
+      required: true
+  - type: input
+    id: uname
+    attributes:
+      label: uname -m and uname -r output
+      description: Run "uname -m; uname -r" and paste the output.
+    validations:
+      required: true
+  - type: textarea
+    id: gpu
+    attributes:
+      label: GPU and driver
+      description: Run "glxinfo -B | head" or "vulkaninfo --summary | head" and paste the output.
+    validations:
+      required: true
+  - type: input
+    id: pagesize
+    attributes:
+      label: Page size
+      description: Run "getconf PAGESIZE" and paste the output.
+    validations:
+      required: true
+  - type: textarea
+    id: component-list
+    attributes:
+      label: steam-arm-setup --list output
+      description: Run "steam-arm-setup --list" and paste the output.
+    validations:
+      required: true
+  - type: checkboxes
+    id: acknowledge
+    attributes:
+      label: Acknowledgement
+      options:
+        - label: "Confirmed: this project is tested on one device only, and the hardware used for this report may not have been verified."
+          required: true

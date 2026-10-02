@@ -1,0 +1,98 @@
+name: Compatibility report
+description: Report a device that works, or does not work, with steam-arm-setup.
+title: "[Compatibility]: "
+labels:
+  - compatibility
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form collects the data used to maintain COMPATIBILITY.md. Precise answers are more useful than long descriptions.
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      description: Board, machine, or product name.
+    validations:
+      required: true
+  - type: input
+    id: soc-gpu
+    attributes:
+      label: SoC and GPU
+      description: For example, RK3588 with Mali-G610.
+    validations:
+      required: true
+  - type: input
+    id: driver
+    attributes:
+      label: GPU driver
+      description: For example, Panfrost, PanVK, or a vendor driver, with version if known.
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and version
+    validations:
+      required: true
+  - type: input
+    id: pagesize
+    attributes:
+      label: Page size
+      description: Run "getconf PAGESIZE" and paste the output.
+    validations:
+      required: true
+  - type: textarea
+    id: components
+    attributes:
+      label: Components selected
+      description: Paste the flags used, or the output of "steam-arm-setup --list" with the selected components marked.
+    validations:
+      required: true
+  - type: dropdown
+    id: client-started
+    attributes:
+      label: Did the Steam client start
+      options:
+        - "Yes"
+        - "No"
+        - Not tried
+    validations:
+      required: true
+  - type: dropdown
+    id: native-title
+    attributes:
+      label: Did a Linux native title run
+      options:
+        - "Yes"
+        - "No"
+        - Not tried
+    validations:
+      required: true
+  - type: dropdown
+    id: proton-title
+    attributes:
+      label: Did a Windows title through Proton run
+      options:
+        - "Yes"
+        - "No"
+        - Not tried
+    validations:
+      required: true
+  - type: dropdown
+    id: remote-play
+    attributes:
+      label: Was Remote Play tried
+      options:
+        - "Yes, it worked"
+        - "Yes, it did not work"
+        - Not tried
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything else relevant, such as titles tested, error messages, or workarounds found.
+    validations:
+      required: false

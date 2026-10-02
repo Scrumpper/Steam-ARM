@@ -1,0 +1,31 @@
+name: lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check (bash -n)
+        run: |
+          bash -n steam-arm-install.sh
+          bash -n bin/steam-arm-setup
+          bash -n debian/postinst
+          bash -n build-deb.sh
+          bash -n tools/build-driver-archive.sh
+
+      # Advisory. The installer is a long generated script, and shellcheck has not been
+      # run against it here, so a failure would say more about the checker's defaults than
+      # about the script. The gate above is the one that has been verified.
+      - name: shellcheck (advisory)
+        continue-on-error: true
+        run: |
+          shellcheck --severity=error steam-arm-install.sh || true
+          shellcheck --severity=error bin/steam-arm-setup
+          shellcheck --severity=error debian/postinst
+          shellcheck --severity=error build-deb.sh
+          shellcheck --severity=error tools/build-driver-archive.sh
