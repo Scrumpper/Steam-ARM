@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: steam-arm-setup
-Source: https://github.com/Scrumpper/native-arm64-steam
+Source: https://github.com/Scrumpper/Steam-ARM
 
 Files: *
 Copyright: Scrumpper

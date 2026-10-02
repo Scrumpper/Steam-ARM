@@ -21,8 +21,9 @@ system (RK3588, Mali-G610); every other item is research only.
 6. Engine notes
 7. Known not-fixes
 8. Refuted advice
-9. Reporting results
-10. Disclaimer
+9. Popular-game survey
+10. Reporting results
+11. Disclaimer
 
 ---
 
@@ -71,7 +72,7 @@ that run through FEX; Proton titles ignore them.
 
 Read in this order, later files overriding earlier ones:
 
-- `/usr/local/share/steam-arm/titles.conf`: shipped; installer replaces it every run, so
+- `/usr/local/share/steam-arm/titles.conf`: included; installer replaces it every run, so
   local lines belong in one of files below.
 - `/etc/steam-arm/titles.conf`: system wide.
 - `~/.config/steam-arm/titles.conf`: per user, in account client runs under.
@@ -103,7 +104,9 @@ every decision to `/tmp/fex-compat-tool-<pid>.log`; check it to confirm line too
 
 ### Installer components
 
-Components written for one driver can be left out on others:
+GPU family detection sets default state of components written for one driver
+(`vk-spoof`, `gpu-in-emulation`, `glx-lax`); `--detect` prints family and defaults. On GPU
+detection does not recognise, leave component out by hand:
 
 ```
 sudo bash steam-arm-install.sh --skip vk-spoof
@@ -209,8 +212,100 @@ default for one title.
 
 UE4 asks for Direct3D feature level 11_0. DXVK on PanVK offers 10_1, since PanVK has no
 tessellation. Reporting tessellation as present through Vulkan layer crashed X server.
+Raising DXVK's level with `d3d11.maxFeatureLevel = 11_0` in `dxvk.conf` gets engine past
+its check; engine then crashes compiling geometry shader, which PanVK does not implement
+(`vk-spoof` only reports it).
 
-What to change: none on Mali. Do not spoof tessellation.
+What to change: none on Mali. Do not spoof tessellation or raise feature level.
+
+### T9. DXVK 2.7.1 and 3.1.1 reach same level on PanVK
+
+Proton 11 ARM64 carries DXVK 2.7.1, Proton Experimental ARM64 carries DXVK 3.1.1. With
+`vk-spoof` on, both report feature level 10_1 on PanVK and both ran same Direct3D 11
+titles: 64-bit GameMaker title reached title screen, UE4 title stopped at its 11_0 check.
+DXVK 3 driver notes list transform feedback as required, and PanVK has none, so result
+was expected to differ; on test system it did not
+<https://github.com/doitsujin/dxvk/releases>.
+
+What to change: nothing. When title fails on one Proton ARM64 build, try other one before
+reporting.
+
+### T10. Unity HDRP titles need feature level 11_0
+
+Unity title using HD Render Pipeline showed black screen under Proton ARM64. Its log
+states that feature level 10_1 lacks compute shaders and that HDRP is unsupported there.
+DXVK on PanVK offers 10_1 (T9).
+
+What to change: none on Mali. Unity titles on built-in or Universal pipeline do not hit
+this check.
+
+### T11. PhysX install step (automatic)
+
+Legacy PhysX installer (PhysX 9.x, msiexec) waited over 5 minutes with no window on first
+start of 32-bit UE3 title under Proton ARM64. Steam decides whether to run install step
+from value in title's prefix: in `pfx/system.reg`, under
+`[Software\\Wow6432Node\\Valve\\Steam\\Apps\\<appid>]`, named after install script
+section. Value `1` skips step only when section sets no minimum; when section sets one
+(`MinimumHasRunValue`), value has to reach it, else step runs again. Proton issue 51
+documents value `1` for section without minimum
+<https://github.com/ValveSoftware/Proton/issues/51>. On test system value at or above
+minimum made install step finish in seconds, and Steam kept value. Stopping PhysX
+installer with SIGTERM also let Steam continue to title.
+
+Launcher applies both automatically (README, PhysX install step). Title in this test then
+stopped 5 seconds in with engine assertion, same with `FEX_X87REDUCEDPRECISION=0`:
+separate problem, not PhysX.
+
+What to change: nothing by default. `STEAM_ARM_PHYSX_SKIP=0` in launcher's environment
+turns it off.
+
+### T12. FEX 2609 lists container paths itself
+
+FEX commit 71afe47 (2026-08-13, in FEX 2609) adds library paths of Steam's runtime
+container to FEX's forwarding list, same paths 1.2 added to Valve's `ThunksDB.json`
+<https://github.com/FEX-Emu/FEX/commit/71afe476751deac24adabd1adb575fd2337b6e0a>. With
+FEX-2609 beta tool and stock `ThunksDB.json`, OpenGL and Vulkan forwarding loaded and
+titles rendered on GPU. Valve's default FEX tool was still FEX-2607 at time of testing.
+
+What to change: nothing. Launcher reads tool's `VERSIONS.txt` and edits `ThunksDB.json`
+only below 2609.
+
+### T13. `STEAM_COMPAT_FEX_CONFIG` cannot carry settings
+
+FEX tool reads extra configuration from `STEAM_COMPAT_FEX_CONFIG`, but client always sets
+it, empty when title has no per-app setting, so launch option or environment value never
+reaches tool. Per-app option interface exists only on Steam Frame.
+
+What to change: nothing. Launcher keeps its edit of tool's `ConfigTemplate.json` on
+forwarding route.
+
+### T14. Client channel with Steam Frame mode
+
+Client started in Steam Frame mode (`-deckard`) moves itself to its own hidden ARM beta
+channel on first start; client's `package/beta` file and bootstrap log name it.
+`publicbeta` written into that file had no effect, so 2.0 no longer writes it and
+downloads first package from stable `steam_client_linuxarm64` manifest.
+
+What to change: nothing.
+
+### T15. GPU drivers inside emulation (Valve's layout)
+
+Valve's Steam Frame packages include x86 Mesa for use inside emulation: package
+`deckard-mesa-linux-x86_64` in Valve's holo package repository installs it at
+`/usr/share/guestos/fex-mesa`, beside x86 dependency tree, and Steam Frame's per-app
+translation settings default OpenGL and Vulkan forwarding off
+<https://holo-packages.steamos.cloud/archlinux-deckard-hotfixes/>. x86-64 and i386 Mesa
+with Panfrost and PanVK ran under FEX on test system and drove Mali without forwarding,
+including 32-bit Vulkan, which forwarding sends to CPU renderer. `gpu-in-emulation`
+component uses this layout with Mesa 26.1.8. Linux titles that ran on forwarding also ran
+here; 64-bit OpenGL title with vsync off started only here; 32-bit Source engine hang (T3)
+stayed. 32-bit title that includes DXVK Native creates its device on Mali with 2.0 archive,
+which reports DXVK and vkd3d features; that title then hangs at loading, as on OpenGL.
+Proton ARM64 titles use system Vulkan, so component does not change them.
+
+What to change: nothing for Java and 32-bit Vulkan titles; launch handler puts them on
+Mali drivers in emulation. For other title that fails on forwarding, profile key `gfx=b`;
+`gfx=a` returns title to forwarding.
 
 ---
 
@@ -329,6 +424,26 @@ What to change: launch option `GALLIUM_HUD=simple,fps %command%` for OpenGL titl
 layer under Proton is untested; on test system MangoHud and arm64 overlay layer each
 crashed Proton titles at device creation, so try Mesa layer on Linux Vulkan titles first.
 
+
+#### M8. Direct3D 12 and vkd3d-proton on PanVK
+
+Status: device features checked with `vulkaninfo` on test system and in vkd3d-proton
+source; no Direct3D 12 title run.
+
+vkd3d-proton refuses to create device without `VK_EXT_transform_feedback`,
+`robustBufferAccess2` and `robustImageAccess2`
+<https://github.com/HansKristian-Work/vkd3d-proton/blob/master/libs/vkd3d/device.c>. PanVK
+on Mali-G610 exposes none of them. Even with them present, missing
+`vertexPipelineStoresAndAtomics` and `sparseResidencyAliased` cap feature level at 11_0,
+and `denormBehaviorIndependence` none caps Shader Model at 6.0. Unreal Engine 5 titles
+fall under same limits (E2).
+
+Open Mesa merge requests cover geometry shaders (38401, 44118), transform feedback (43359)
+and clip and cull distance (40343, 43156); none covers tessellation, and none has merge
+date <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/43359>.
+
+What to change: none. Direct3D 12 titles do not run on Mali.
+
 ### Adreno: Turnip
 
 #### A1. Turnip Vulkan level
@@ -341,7 +456,7 @@ and OpenGL replayed nightly <https://docs.mesa3d.org/drivers/freedreno.html>
 <https://blogs.igalia.com/dpiliaiev/turnip-my-5y-retrospective/>. Low-end Adreno 6xx parts
 may lack some feature level pieces.
 
-What to change: `--skip vk-spoof` at install; Turnip exposes features that layer reports.
+What to change: none at install; GPU family detection leaves `vk-spoof` off on Adreno, and Turnip exposes features that layer reports.
 `glx-lax` applies (Mesa).
 
 #### A2. Unreal Engine 5 Direct3D 12 titles need vkd3d-proton fix
@@ -379,7 +494,7 @@ conformant GL 4.6 and GLES 3.2 <https://asahilinux.org/2024/06/vk13-on-the-m1-in
 <https://asahilinux.org/2024/02/conformant-gl46-on-the-m1/>. Conformance says nothing
 about speed or optional extensions.
 
-What to change: `--skip vk-spoof` at install. Handler's Unity and Godot 4 rules target
+What to change: none at install; GPU family detection leaves `vk-spoof` off on `apple-agx`. Handler's Unity and Godot 4 rules target
 Panfrost's GL 3.1; on Asahi `<appid> godot=vulkan` restores Godot's own Vulkan renderer
 (inferred, untested).
 
@@ -455,8 +570,8 @@ Status: no claim survived verification.
 Research found no verified result for ARM servers or workstations with AMD or NVIDIA
 cards: no DXVK or vkd3d-proton feature level, no PCIe or firmware quirk list.
 
-What to change: `--skip vk-spoof`. `glx-lax` applies only to Mesa; skip it too on NVIDIA's
-own driver (`--skip vk-spoof,glx-lax`). Check `getconf PAGESIZE`; some server kernels use
+What to change: none at install; GPU family detection leaves `vk-spoof` off on AMD, NVIDIA
+and Intel, and `glx-lax` off on NVIDIA's own driver. Check `getconf PAGESIZE`; some server kernels use
 64K pages.
 
 ---
@@ -472,7 +587,7 @@ Every FEX option has environment variable `FEX_<OPTION>`, option name in capital
 file. User AppConfig files, matched on program name, sit in
 `~/.fex-emu/AppConfig/<program>.json` or
 `~/.fex-emu/AppConfig/Steam_<appid>_<program>.json`
-<https://wiki.fex-emu.com/index.php/Config>. Upstream FEX ships no per-game fixes: its
+<https://wiki.fex-emu.com/index.php/Config>. Upstream FEX includes no per-game fixes: its
 AppConfig folder holds only `client.json` and `steamwebhelper.json`
 <https://github.com/FEX-Emu/FEX/tree/main/Data/AppConfig>.
 
@@ -601,6 +716,9 @@ Knight switched its Linux default to Vulkan in its Unity 2020.2 update:
 What to change: renderer through `unity=vulkan` or `unity=gl` profile key, or
 `args=-force-glcore` (T4). Example for Vulkan title that misrenders: `367520 unity=gl`.
 
+Windows Unity titles on HD Render Pipeline need feature level 11_0 and do not run on Mali
+(T10).
+
 ### E2. Unreal Engine 4 and 5
 
 Status: UE4 Direct3D 11 limit tested (T8); rest researched.
@@ -608,8 +726,8 @@ Status: UE4 Direct3D 11 limit tested (T8); rest researched.
 - UE4 Direct3D 11 renderer needs feature level 11_0 and Shader Model 5. On Mali it stops
   (T8).
 - UE5 Nanite and Lumen need Shader Model 6; Nanite needs Direct3D 12 with 6.6 atomics or
-  Vulkan `VK_KHR_shader_atomic_int64`, whichever renderer runs. PanVK support for that
-  extension is unverified; expect failure on Mali.
+  Vulkan `VK_KHR_shader_atomic_int64`, whichever renderer runs. UE5 Direct3D 12 titles
+  fail on Mali before that, at vkd3d-proton device creation (M8).
 - UE5 Direct3D 12 on Adreno: A2. Asahi reaches feature level 12_0: AS3.
 - Native Linux UE4 and UE5 builds already render through Vulkan; their Shader Model 5 path
   needs tessellation too (inferred from T8).
@@ -621,8 +739,8 @@ Sources:
 <https://forums.unrealengine.com/t/a-d3d11-compatible-gpu-feature-level-11-0-shader-model-5-0-is-required-to-run-the-engine/2272322>
 ```
 
-What to change: none on Mali. On Adreno, Asahi or discrete GPUs: `--skip vk-spoof`, newest
-ARM64 Proton.
+What to change: none on Mali. On Adreno, Asahi or discrete GPUs: newest ARM64 Proton
+(detection leaves `vk-spoof` off there).
 
 ### E3. Source (Source 1)
 
@@ -712,7 +830,7 @@ See M5. No setting helps.
 
 ### N5. Unreal Engine 4 Direct3D 11 titles on PanVK (tested)
 
-See T8. Tessellation spoof crashed X server.
+See T8. Tessellation spoof crashed X server; raised feature level crashed engine.
 
 ### N6. Valheim dedicated server
 
@@ -722,6 +840,11 @@ FEX syscall passthrough; issue open, low confidence
 
 What to change: none known.
 
+### N7. 32-bit Unreal Engine 3 title under Proton ARM64 (tested)
+
+See T11. PhysX install step skipped; title stops 5 seconds in with engine assertion.
+`FEX_X87REDUCEDPRECISION=0` did not help.
+
 ---
 
 ## Refuted advice
@@ -730,6 +853,11 @@ Do not try these. Each failed verification or conflicts with test results.
 
 - **UE4 `-vulkan` as feature level 11_0 bypass on Mali.** UE4's Vulkan Shader Model 5 path
   also needs tessellation, which PanVK lacks (T8).
+- **`d3d11.maxFeatureLevel = 11_0` in `dxvk.conf` for UE4 on Mali.** Tested: engine passes
+  its check, then crashes compiling geometry shader (T8).
+- **`publicbeta` in client's `package/beta` with Steam Frame mode.** Tested: client moves
+  to its own ARM channel regardless (T14).
+- **`STEAM_COMPAT_FEX_CONFIG` as launch option.** Tested: client overwrites it (T13).
 - **`R600_DEBUG=mono`.** Variable of AMD r600 driver; no effect on Panfrost, PanVK, Turnip
   or Asahi.
 - **`DXVK_ASYNC=1` or unsetting `DXVK_ASYNC`.** Sources disagree; upstream DXVK ignores
@@ -761,6 +889,26 @@ Do not try these. Each failed verification or conflicts with test results.
   <https://github.com/FEX-Emu/FEX/issues/4568>.
 - **Unity `A Short Hike` freezing under box64 on Mali-G52 class hardware.** Refuted 1-2
   <https://github.com/ptitSeb/box64/issues/1252>.
+
+---
+
+## Popular-game survey
+
+Status: survey of public compatibility data, September 2026; no title in it was run for
+this survey.
+
+568 popular Steam titles were sorted by Steam Deck compatibility data, engine and graphics
+API. Steam Frame ratings gave little: 543 of 568 were unknown.
+
+- Direct3D 12 is largest gap: 119 titles use it only and 45 more offer it beside other
+  API, most of them Unreal Engine 5. None of Direct3D 12 path runs on Mali (M8).
+- Unreal Engine 4: 43 titles, blocked by tessellation (T8).
+- Kernel-level anti-cheat: 19 titles left out.
+- Unity: 110 titles, largest engine, mostly Direct3D 11, which runs at 10_1 unless title
+  uses HDRP (T10).
+
+What to change: use Steam Deck rating over Steam Frame rating for now, and check engine
+and graphics API of title before relying on it for Mali.
 
 ---
 

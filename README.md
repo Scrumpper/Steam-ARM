@@ -1,181 +1,1008 @@
-# Steam ARM setup
+# Steam ARM
 
-Full feature list: **[FEATURES.md](FEATURES.md)**.
+Valve's native ARM64 Steam client on ARM64 Linux · x86 Linux titles through FEX · Windows
+titles through ARM64 Proton · one installer script · settings menu `steam-arm-config`
 
-Changes per version: **[CHANGELOG.md](CHANGELOG.md)**. Compatibility by game type: **[GAMES.md](GAMES.md)**. Other routes to Steam on ARM64: **[COMPARISON.md](COMPARISON.md)**. Researched, untested settings and what to change: **[RESEARCH.md](RESEARCH.md)**.
-
-One script installs Valve's native ARM64 Steam client on ARM64 Linux system, with
-supporting pieces that client needs and does not carry: graphics forwarding, controller
-access, and Remote Play settings system without Vulkan Video requires. Readable before
-running.
-
-```bash
-sudo bash steam-arm-install.sh
-```
-
-Package built from this source with `build-deb.sh` installs same thing under command
-`steam-arm-setup`:
-
-```bash
-sudo dpkg -i steam-arm-setup_*_arm64.deb
-sudo apt-get -f install          # if apt reports missing dependencies
-sudo steam-arm-setup             # installs the client; nothing is downloaded before this
-```
-
-Installed games are safe. Installing, re-running installer, changing components and upgrading package leave game library (`steamapps`), sign-in and settings untouched; only client's own program folder is replaced, and only when it is missing or damaged.
-
-
-## Highlights
-
-- **Valve's own ARM64 client.** Client build Valve made for its ARM based VR headset,
-  Steam Frame. It is native ARM program: interface, overlay, input stack and
-  download and shader systems run on CPU and GPU directly. Only title's x86 code
-  goes through emulation tool client downloads.
-- **Windows titles through ARM64 Proton.** Valve's ARM64 Proton build runs them, and its
-  Direct3D layer reaches system Vulkan driver.
-- **Vulkan compatibility layer for Mali.** Direct3D layer asks for device features
-  Mali driver does not expose. `Vk-spoof` component reports them and removes them again
-  before device creation, so Proton titles start on PanVK.
-- **Remote Play that connects.** Streaming client decodes through Vulkan Video, which
-  Mali driver does not provide, so client advertises decoder it does not have and
-  session never finishes negotiating. `steam-arm-remoteplay` pins hardware decoding and HEVC
-  off in client's stored configuration, and launcher applies it before every start,
-  including first, so new installation streams without settings change.
-- **Controllers client can read.** Steam client runs as desktop user and reads pad
-  over `/dev/hidraw`, which kernel creates for root account only. Rules that hand
-  those devices to logged-in user cover pads client has drivers for; this ships
-  rules for every pad kernel `xpad` driver recognises, 243 of them, matched on vendor and
-  product so keyboards and mice from same makers are not included, together with
-  `/dev/uinput`.
-- **One joystick per pad.** Third-party Xbox 360 style pads that expose headset interface
-  were bound twice by `xpad` driver, so one pad appeared as two identical joysticks and
-  two-player game handed player 2 copy of player 1. Udev rule unbinds that interface.
-- **Nothing downloaded until asked.** Installing package writes files and prints
-  command to run. Every download happens when that command runs.
-- **Components are selectable.** `--defaults`, `--select a,b`, `--skip a,b`, `--list`,
-  keyboard checklist, or desktop dialog when started with no controlling terminal.
-  Component deselected on later run is removed again.
-- **Memory stays free across sessions.** Steam overlay leaves 25 MB buffers behind per game
-  session, still mapped by client; launcher frees their pages once no game runs.
-- **32-bit titles handled.** Vulkan options that would run on CPU are removed, start
-  scripts are followed to binary they start, and `gl32=off` profile runs title on emulated
-  x86 Mesa for titles forwarding breaks.
-- **It installs into desktop account, not root.** First regular account by default,
-  another with `GAMEUSER`.
-
-## How this differs from other ways to run Steam on ARM64
-
-|                        | What it runs                           | Where it runs    | Graphics                                                         |
-|------------------------|----------------------------------------|------------------|------------------------------------------------------------------|
-| Arm64 Steam snap       | x86 client, wrapped in emulation layer | snap sandbox     | reported to fail on RK3588 with `failed to load driver: panthor` |
-| Box86 and Box64 guides | x86 client under Box64                 | host             | works, with client itself emulated as well                       |
-| This                   | native ARM64 client                    | host, no sandbox | host's Mesa drivers, used directly                               |
-
-Two structural differences. Client is native, so only title's x86 code passes through
-emulation, not interface, overlay, input stack or downloader. And it installs
-onto host rather than into sandbox, which is what gives it host's own Vulkan and
-OpenGL drivers.
-
-Part that takes longest to work out on your own is not client, which package
-manager installs; it is what has to be in place before titles start:
-
-- Vulkan layer for device features Direct3D translation layer requires and some
-  drivers do not expose, without which Proton titles fail at device creation
-- Remote Play decode settings, without which session on GPU with no Vulkan Video
-  never finishes negotiating
-- private copy of Mesa GLX library for titles that bind one OpenGL context from several
-  threads
-- controller rules covering every pad kernel `xpad` driver recognises, duplicate
-  joystick fix, and memory map limit Proton expects
-
-Those ship here as selectable components, and deselecting one on later run removes it again.
-
-## Components
-
-| Component         | What it does                                                                                                              | Scope          |
-|-------------------|---------------------------------------------------------------------------------------------------------------------------|----------------|
-| `glx-lax`         | Private copy of Mesa GLX client library, for titles that bind one OpenGL context from several threads                     | Mesa           |
-| `vk-spoof`        | Reports Vulkan device features Direct3D layer requires and driver does not expose, then removes them from device creation | Mali and PanVK |
-| `map-count`       | Raises `vm.max_map_count` to value Proton expects                                                                         | Generic        |
-| `xpad-dedup`      | Drops duplicate joystick node of third-party Xbox 360 style pads                                                          | Generic        |
-| `pad-hidraw`      | Hands pad's `/dev/hidraw` node and `/dev/uinput` to logged-in user                                                        | Generic        |
-| `pad-xbox`        | Presents XInput pads from other makers as Xbox 360 pads                                                                   | Generic        |
-| `desktop`         | Menu entry "Steam ARM", and title bar for client's desktop interface windows                                              | Generic        |
-| `desktop-mode`    | Menu entry "Steam ARM (Desktop mode)" that opens client in its desktop interface                                          | Generic        |
-| `icon-bigpicture` | "Steam ARM" icon on desktop                                                                                               | Generic        |
-| `icon-desktop`    | "Steam ARM (Desktop mode)" icon on desktop                                                                                | Generic        |
-| `tray`            | Steam icon in panel tray                                                                                                  | Generic        |
-| `page-size`       | On 16K page kernel, selects firmware's 4K page kernel in `config.txt`; reboot, then run again                             | Raspberry Pi   |
-
-## Requirements
-
-ARM64 system, Debian or Ubuntu family distribution, and working Vulkan driver.
-Emulation tool is installed from Ubuntu PPA `ppa:fex-emu/fex`, so Ubuntu family
-distribution is tested path; on Debian that tool has to come from elsewhere first.
-
-Installer has no hardcoded GPU render node, no hardcoded card index and no board
-detection outside `page-size`, which reads device model to recognise Raspberry Pi firmware.
-
-Setup checks page size before it installs anything. Emulation needs 4K pages; on 16K or 64K kernel it stops and names fix for that system, and on Raspberry Pi `page-size` component applies that fix. `STEAM_ARM_IGNORE_PAGESIZE=1` skips check, for system that runs x86 side inside its own 4K environment.
-
-## What it does not do
-
-- Titles protected by anti-cheat do not run.
-- There is no VR support. Client build comes from VR headset, VR runtime does not;
-  launcher removes client's VR argument from streaming client.
-- It has been tested on one device: RK3588 board with Mali-G610 GPU, on Armbian based
-  image. Other RK3588 boards with same GPU are closest match and are untested. Boards
-  with another SoC or another GPU are untested.
-- No published account of native client rendering through Panthor and PanVK on Mali-G610
-  was found while this was built. Corrections are welcome.
-
-## Issues and questions
-
-Report problems and ask questions in this repository's Issues. Include board,
-distribution, output of `bash steam-arm-install.sh --list` (or `steam-arm-setup --list`
-under package), and what installer printed.
-
-## Removing it
-
-Optional components are removed by re-running installer with them deselected, script
-or package command either one. Client itself, with its games, is removed only by
-deleting client's directory in account it installed into (`~/.local/share/steam-arm`
-by default). That deletes every installed game in it.
-
-Package path only, removes command and its documentation, leaves client and games in
-place:
-
-```bash
-sudo apt-get purge steam-arm-setup
-```
-
-Script has no uninstall option beyond component deselection above.
-
-## Building package
-
-`build-deb.sh` assembles package tree from files in this repository and builds it with
-`dpkg-deb`. It needs `dpkg` package, so it runs on Debian family system;
-architecture of build machine does not matter.
-
-```bash
-./build-deb.sh          # writes steam-arm-setup_<version>_arm64.deb beside it
-```
-
-Layout: `steam-arm-install.sh` is installer and becomes
-`/usr/share/steam-arm-setup/install.sh`, `bin/steam-arm-setup` is command that runs it,
-`debian/` holds package control files, and `doc/` holds what lands in
-`/usr/share/doc/steam-arm-setup`.
-
-## Credits
-
-This installer arranges other people's work: Valve's ARM64 client and Proton, FEX-Emu, Mesa
-with Panfrost and PanVK, Panthor kernel driver, DXVK, bubblewrap and others. None of it is
-bundled here. See **[CREDITS.md](CREDITS.md)**.
+This README is instruction booklet. Section 1 covers install and first game; use index to
+jump to details.
 
 ---
 
-This is unofficial, community-built tool. It is not affiliated with, endorsed by or
-supported by Armbian project or any board manufacturer.
+## Contents
+
+1. Install, then play
+2. Read this first
+3. Requirements
+4. Install
+5. Setup menu (steam-arm-config)
+6. GPU detection
+7. First start
+8. Component selection
+9. Graphics route per title
+10. Page size
+11. Playing games
+    - Linux x86 titles
+    - Windows titles
+    - Shader pre-caching
+    - PhysX install step
+    - Linux build installed as Windows build
+    - Title profiles and launch options
+12. Fixing games
+13. Remote Play
+14. Updating
+15. Settings backup and restore
+16. Uninstall
+17. Advanced settings
+18. Custom driver archive
+19. Driver archive build
+    - On x86-64 PC
+    - On GitHub (Actions)
+20. Troubleshooting
+21. What this does not do
+22. Other documents
+23. Credits
+24. Disclaimers
+
+---
+
+## Install, then play
+
+1. Check system: `bash steam-arm-install.sh --detect` prints GPU family, drivers, page
+   size and default components; it installs nothing and needs no root. Page size must
+   read `4096`; other results: see GPU detection and Page size.
+2. Run installer in terminal:
+
+   ```
+   sudo bash steam-arm-install.sh
+   ```
+
+   Settings menu opens. Pick Install / Setup and confirm detected hardware, page size,
+   Vulkan, parts and account; summary page starts install. `--defaults` in place of menu
+   installs recommended components with no questions.
+3. When installer ends with notice that account gained groups, log out and log back in
+   (or restart) before first start.
+4. Start "Steam ARM" from application menu, or run `steam-arm`. First start downloads
+   client package and restarts client once; this takes several minutes.
+5. Sign in from Big Picture, or from "Steam ARM (Desktop mode)" menu entry.
+6. Install game, press Play.
+
+Re-running installer, changing components and uninstalling keep installed games, sign-in
+and settings, unless you ask for their removal.
+
+## Read this first
+
+This installs Steam Frame's Steam client. x86 code runs through emulation tool client
+downloads. Windows titles run through Valve's ARM64 Proton build.
+
+Nothing downloads before installer runs. Steam client, emulation tool and Proton build
+download when installer runs and client is set up.
+
+Installing, re-running installer and changing components leave game library
+(`steamapps`), sign-in and settings untouched; only client's own program folder is
+replaced, and only when it is missing or damaged.
+
+## Requirements
+
+- ARM64 system. GPU family detection sets defaults per GPU; Windows titles need Vulkan
+  driver, native OpenGL titles run without one. See GPU detection.
+- Debian or Ubuntu family distribution, since installer uses `apt`. FEX, emulation tool
+  for x86 game code, installs from Ubuntu PPA `ppa:fex-emu/fex`; other systems need FEX
+  from another source.
+- Mesa graphics stack for `glx-lax`. `vk-spoof` and `gpu-in-emulation` are written for
+  Mali (Panfrost and PanVK) and are on by default on Mali GPUs only. Tested with Mesa
+  26.1.
+- 4K memory pages, or Raspberry Pi where installer switches kernel; see Page size.
+- Network during install: host packages, x86 root filesystem, client package and driver
+  archive download from their sources.
+
+Checks to run before install, and results on test device: `COMPATIBILITY.md`.
+
+## Install
+
+One script, readable before running:
+
+```
+sudo bash steam-arm-install.sh             # settings menu (terminal)
+sudo bash steam-arm-install.sh --defaults  # recommended components, no questions
+```
+
+With no options in terminal, installer opens settings menu `steam-arm-config` with itself
+as installer; Install / Setup there runs guided install. With no options and no terminal
+in graphical session, installer shows component checklist through zenity.
+
+Installer installs into desktop user account, not root, and defaults to account of last
+run, else first regular account on system (uid 1000).
+`sudo env GAMEUSER=name bash steam-arm-install.sh` picks another account. Setup refuses
+root as game account, and names with characters other than letters, digits, `.`, `_`, `@`
+and `-`. When named account does not exist, setup creates it: password from
+`--password-stdin` (first line of standard input, never printed or logged), else
+14-character password setup makes and prints once; with no terminal, that password goes
+to `/root/steam-arm-password-<name>.txt`, readable by root only. When account gains
+`video`, `render`, `input` or `audio` group, installer says so; log out and log back in
+before first start. Options: `--help`.
+
+`.deb` package built from GitHub source installs command `steam-arm-setup` with same
+options. `steam-arm-setup --detect`, `--list` and `--help` run without root.
+
+## Setup menu (steam-arm-config)
+
+`steam-arm-config` is menu app for settings after install, installed as
+`/usr/local/bin/steam-arm-config`. Front end: built-in full-screen screens (Python
+`curses`) with textured background and light dialog box, when `python3` with `curses` is
+present and terminal can place cursor; else `dialog` when installed, else `whiptail`, else
+plain prompts. `STEAM_ARM_DIALOG=builtin|dialog|whiptail|read` picks one. `NO_COLOR` turns
+colour off in built-in screens. Each menu opens with cursor on item chosen last. Changes
+ask for administrator rights through `sudo`: screen clears, heading
+`Administrator password for <user> (sudo):` comes first, sudo asks on next line, then menu
+returns. On system without `sudo`, menu says to log in as root (`su -`), then run
+`steam-arm-config`. Keys: arrows move, Enter selects, TAB
+reaches buttons, SPACE toggles list items.
+
+Main menu, built-in screens: `installer-menu.png`.
+
+Sections:
+
+1. Information: system (board, GPU, drivers), Steam ARM status, notes for this
+   hardware. Status names custom driver tree as
+   `present (custom drivers, sha <first 12>…)`.
+2. Install / Setup: guided install. Hardware (detected choice first), page size, Vulkan,
+   parts (recommended, minimal or custom), account, then summary. Account step lists
+   existing accounts (normal accounts with login shell and home folder; current user and
+   desktop user marked) with cursor on current or desktop user; last entry
+   `Create a new account...` asks for name, then password twice (empty: setup makes one
+   and shows it at end). With no normal account on system, step opens on new account. Summary names client download (several GB) only when client folder
+   holds no client yet; otherwise it says setup keeps present client.
+3. Components: checklist of installed parts; turning one off removes it, games stay.
+4. Graphics: default route for all games, and route per game: automatic, A (forwarding),
+   B (Mali drivers in emulation), or forced Linux or Windows build. Automatic also
+   clears forced build of that game (Steam closed). B is offered on Mali
+   GPU, or with custom driver tree in place; elsewhere menu notes that route B needs Mali
+   GPU or custom driver archive, and shows earlier B setting as
+   `b (not used on this GPU)`, which can be changed. B on Mali GPU without
+   `gpu-in-emulation` is kept, with note that games use forwarding until it is installed.
+5. Games: per installed game: Steam overlay, MangoHud, extra environment, extra arguments,
+   "Rules used at last start", remove all settings of that game. Windows titles (Proton
+   set in Steam's compatibility tool list, or Windows build installed) show rules and
+   remove-all only, with note to use Steam launch options; profiles reach Linux titles
+   only.
+6. Controllers: connected pads and their rules; `pad-xbox` on or off.
+7. Remote Play: settings state, how pairing works, apply settings now.
+8. Maintenance: Update / Repair (setup again with same parts), view logs, hardware
+   report, free `/dev/shm` now, back up settings, restore settings (see Settings backup
+   and restore).
+9. Uninstall: remove Steam ARM and keep games, or remove it with all games.
+10. Help / About: `Fixing a game` page (see Fixing games) and About.
+
+Command line, same settings from scripts:
+
+| Command                                | Effect                                                  |
+|----------------------------------------|---------------------------------------------------------|
+| `info`                                 | System, Steam ARM status and hardware notes             |
+| `report`                               | Hardware report to `~/steam-arm-report.txt`             |
+| `gfx <appid> auto\|a\|b`               | Graphics route of one game                              |
+| `gfx-default auto\|a\|b`               | Route for games without their own setting               |
+| `profile <appid> key=value ...`        | Profile keys; `key=` removes one, `--clear` all         |
+| `compat <appid> linux\|windows\|clear` | Force Linux or Windows build, or clear it; Steam closed |
+| `components a,b,...`                   | Install exactly these parts (runs setup)                |
+| `backup [DIR] [options]`               | Settings backup file in DIR (default: home)             |
+| `restore FILE [options]`               | Restore parts of backup file                            |
+| `help fixing`                          | Prints `Fixing a game` page                             |
+| `--help`                               | Usage                                                   |
+
+Profiles from menu and command line go to `/etc/steam-arm/titles.conf`. Logs of setup
+runs started from menu: `~/.cache/steam-arm/`. `STEAM_ARM_INSTALLER=file` names setup
+script menu runs (default: `steam-arm-setup`, else
+`/usr/local/share/steam-arm/steam-arm-install.sh`, which setup writes, else
+`steam-arm-install.sh` beside menu app).
+
+## GPU detection
+
+Installer reads kernel driver name of each render node, Mali GPU id from Panthor or
+Panfrost, device tree compatible string and PCI vendor, and picks GPU family of
+highest ranked node, so discrete card wins over integrated GPU. `/dev/mali0` with no
+render node means Arm's closed `kbase` driver. When `vulkaninfo` is installed, it names
+Vulkan driver and device. Family sets default state of `vk-spoof`, `gpu-in-emulation`
+and `glx-lax`; every other component keeps its own default.
+
+| Family            | GPU                             | On by default                 |
+|-------------------|---------------------------------|-------------------------------|
+| `mali-csf-v10`    | Mali-G610, G310 (Panthor)       | all three                     |
+| `mali-csf-5thgen` | Mali-G720, G725 class (Panthor) | all three                     |
+| `mali-csf`        | other Panthor Malis, Mali-G1    | `glx-lax`                     |
+| `mali-valhall-jm` | Mali-G57, G77, G78 (Panfrost)   | `gpu-in-emulation`, `glx-lax` |
+| `mali-bifrost`    | Mali-G31, G52, G76 (Panfrost)   | `gpu-in-emulation`, `glx-lax` |
+| `mali-midgard`    | Mali-T600 to T880 (Panfrost)    | `gpu-in-emulation`, `glx-lax` |
+| `mali-panfrost`   | other Panfrost Mali models      | `gpu-in-emulation`, `glx-lax` |
+| `mali-utgard`     | Mali-400, 450 (Lima)            | `glx-lax`                     |
+| `mali-kbase`      | Mali on closed `kbase` driver   | none                          |
+| `adreno-a8xx`     | Adreno 8xx (msm)                | `glx-lax`                     |
+| `adreno-a7xx`     | Adreno 7xx (msm)                | `glx-lax`                     |
+| `adreno-a6xx`     | Adreno 6xx (msm)                | `glx-lax`                     |
+| `adreno`          | Adreno, model not read (msm)    | `glx-lax`                     |
+| `adreno-a702`     | Adreno 702                      | `glx-lax`                     |
+| `adreno-legacy`   | Adreno 5xx and older            | `glx-lax`                     |
+| `apple-agx`       | Apple GPU (Asahi)               | `glx-lax`                     |
+| `broadcom-v3d71`  | Raspberry Pi 5                  | `glx-lax`                     |
+| `broadcom-v3d42`  | Raspberry Pi 4                  | `glx-lax`                     |
+| `broadcom-vc4`    | Raspberry Pi 0 to 3             | `glx-lax`                     |
+| `vivante`         | Vivante (etnaviv)               | `glx-lax`                     |
+| `img-powervr`     | PowerVR                         | none                          |
+| `amd-radv`        | AMD (amdgpu)                    | `glx-lax`                     |
+| `amd-radeon`      | AMD, older cards (radeon)       | `glx-lax`                     |
+| `nvidia-nouveau`  | NVIDIA (nouveau)                | `glx-lax`                     |
+| `nvidia-prop`     | NVIDIA driver                   | none                          |
+| `intel`           | Intel (i915, xe)                | `glx-lax`                     |
+| `virtio-gpu`      | virtual machine                 | `glx-lax`                     |
+| `none`            | no GPU driver                   | `glx-lax`                     |
+| `unknown`         | driver not in this list         | `glx-lax`                     |
+
+Notes installer prints per family:
+
+- `mali-csf-v10`: test device's family (RK3588). `mali-csf-5thgen`: untested.
+- `mali-csf`: Mesa does not support this Mali model yet; titles run through forwarding.
+- Panfrost families: no default Vulkan driver; native OpenGL titles, Windows titles
+  unlikely. Mali drivers in emulation serve Java titles there.
+- `mali-utgard`: not suitable for Steam games. `mali-kbase`: warning; install needs
+  Mesa's Panfrost or Panthor kernel driver.
+- Adreno 6xx to 8xx: Windows titles through DXVK expected to work; x86 Adreno drivers for
+  32-bit titles not included. `adreno-a702`, Raspberry Pi 4 and 5: Vulkan too limited for
+  most Windows titles. `adreno-legacy`: no Vulkan driver, native OpenGL titles only.
+- `apple-agx`: runs inside `muvm` on 16K page hosts. `broadcom-vc4`: not supported.
+  `vivante`: no Vulkan driver, most titles do not run.
+- `img-powervr`: Vulkan driver in development, OpenGL through Zink. `nvidia-prop`:
+  `glx-lax` not applicable.
+- AMD, NVIDIA on nouveau and Intel: forwarding covers them; x86 root filesystem's Mesa
+  has their drivers too. `amd-radeon`: OpenGL only, too old for most titles.
+- `none`: warning, software rendering only. `unknown`: safe defaults.
+
+`bash steam-arm-install.sh --detect` prints one `key: value` per line: GPU line, family
+(with "set by user" when chosen by hand), detected family, GPU name, kernel driver,
+Vulkan driver, page size, distribution, state of each component, and family note or
+warning. Installs nothing, needs no root. Installer and component checklist show same
+GPU line.
+
+`GPU_FAMILY=id` in environment uses that family in place of detection, and setup keeps
+it for later runs (`GPU_FAMILY_SET=user` in settings file). `GPU_FAMILY=auto` detects
+again. Id not in table above stops install with list of valid ids; with `--detect` it
+prints warning and valid ids, shows detected family and exits with status 0. Launch
+handler reads
+same family: Mali drivers route applies to Mali families only, and 32-bit Vulkan titles
+switch to it on `mali-csf-v10` and `mali-csf-5thgen` only.
+
+```
+sudo env GPU_FAMILY=mali-bifrost bash steam-arm-install.sh --defaults
+```
+
+## First start
+
+Start "Steam ARM" from menu, or run `steam-arm`. First start downloads client package and
+restarts itself; this takes several minutes. Sign in from Big Picture, or from
+"Steam ARM (Desktop mode)". `steam-arm` refuses to run as root; start it from desktop
+account that plays games.
+
+When client exits after applying its own update (exit status 42, or bootstrap log ending
+in "Update complete, launching" with no client left running), launcher starts it again, at
+most twice per start.
+
+Installer downloads client from Valve's stable ARM64 channel and checks it against
+checksum in Valve's manifest. On first start client's Steam Frame mode moves it to its
+own ARM update channel, and client updates itself from there.
+
+Client starts in Big Picture. Power menu's Switch to Desktop, and desktop mode entry,
+restart it in desktop interface; Big Picture entry switches back.
+
+Menu and desktop icons appear during first start, once client has downloaded its own icon
+file. Icons are Steam's round icon on dark, grainy green disc with small squares of vivid
+colour: chartreuse logo for Big Picture, bone logo for desktop mode.
+
+## Component selection
+
+Installer offers set of optional components. Choose them with one of:
+
+- settings menu: Install / Setup (recommended, minimal or custom), or Components
+- `--select` followed by list of component names
+- `--skip` followed by list of component names to leave out of recommended set
+- `--defaults` to accept recommended selection without prompting
+- `--keep` to reuse components saved by last run without prompting
+- desktop dialog with checklist, when installer starts with no options and no
+  controlling terminal in graphical session and zenity is present
+
+`--list` prints components; `--help` marks components on by default on this system.
+Defaults: `pad-xbox` and `shader-cache` off; `vk-spoof`, `gpu-in-emulation` and `glx-lax`
+follow GPU family (see GPU detection); all others on.
+
+When GPU family changes between runs, `vk-spoof`, `gpu-in-emulation` and `glx-lax` take
+new family's defaults, except parts set by hand in checklist, menu, `--select` or `--skip`
+(`COMPONENTS_USER_SET` in settings file). `--defaults` clears that record. First run after
+upgrade from 1.2, which saved no family record, only turns such parts off.
+
+- `glx-lax`: Installs private copy of Mesa GLX client library, for titles that bind one
+  OpenGL context from several threads. Rebuilt after every package upgrade that changes
+  system Mesa. (scope: Mesa specific)
+- `vk-spoof`: Installs Vulkan layer that reports device features Direct3D translation
+  layer requires and Mali driver does not expose, then removes them again from device
+  creation. (scope: written for PanVK on Mali; on by default on Mali-G610 class and Mali
+  5th gen)
+- `gpu-in-emulation`: Installs Mali drivers inside x86 emulation, in second copy of root
+  filesystem; launch handler picks them for titles that fail on forwarding. See Graphics
+  route per title. (scope: Mali; on by default on Mali GPUs with open drivers Mesa
+  supports)
+- `shader-cache`: Off by default on every GPU family. Turns on Steam's shader pre-caching,
+  so Windows titles play in-game videos; downloads several GB and processes for long time
+  on first start. See Shader pre-caching. (scope: Generic)
+- `physx-skip`: On by default on every GPU family. Launcher marks PhysX install step of
+  Windows titles done in their Proton prefix, else stops PhysX installer after 60 seconds.
+  Turning it off stops only that launcher step and removes no files. See PhysX install
+  step. (scope: Generic)
+- `map-count`: Raises `vm.max_map_count` to value Proton expects. (scope: Generic)
+- `xpad-dedup`: Drops duplicate joystick node that third-party Xbox 360 style pads expose.
+  (scope: Generic)
+- `pad-hidraw`: Installs Valve's controller rules (`steam-devices`), plus rules for 241
+  pads from kernel `xpad` table that Valve's list lacks, matched on vendor and product, so
+  client reads pads directly for rumble and battery level. Sony and Nintendo pads match
+  by kernel pad driver (`hid-playstation`, `hid-sony`, `hid-nintendo`), so keyboards and
+  mice of those makers stay out; on kernel without that driver module, all hidraw devices
+  of that maker get access. (scope: Generic)
+- `pad-xbox`: Off by default. Presents XInput pads from other makers as Xbox 360 pads.
+  (scope: Generic)
+- `desktop`: Adds application menu entry "Steam ARM", and window rule that gives client's
+  desktop interface windows title bar. (scope: Generic)
+- `desktop-mode`: Adds menu entry "Steam ARM (Desktop mode)", which opens client in its
+  desktop interface, for signing in and store pages. Found by searching "desktop" or "sign
+  in". (scope: Generic)
+- `icon-bigpicture`: Places "Steam ARM" icon on desktop. (scope: Generic)
+- `icon-desktop`: Places "Steam ARM (Desktop mode)" icon on desktop. (scope: Generic)
+- `tray`: Steam icon in panel tray with Open, Open in desktop mode and Stop; client build
+  shows none of its own. (scope: Generic)
+- `page-size`: On Raspberry Pi with 16K page kernel, adds `kernel=kernel8.img` to firmware
+  `config.txt`, so firmware boots its 4K page kernel; reboot, then run installer again.
+  Listed only on Raspberry Pi 5 class boards, on other Raspberry Pi with page size other
+  than 4K, or while its `config.txt` block is in place; off and hidden elsewhere. (scope:
+  Raspberry Pi)
+
+## Graphics route per title
+
+x86 Linux titles reach GPU on one of two routes, which launch handler picks per title at
+start, with no launch options:
+
+- **Forwarding (A):** OpenGL and Vulkan calls go to system's ARM64 Mesa (FEX thunks).
+  Used for every title no rule below picks. FEX forwards Vulkan for 64-bit code only.
+- **Mali drivers in emulation (B):** x86-64 and i386 builds of Mesa 26.1.8 with Panfrost
+  and PanVK, in second copy of x86 root filesystem, same layout Valve uses on Steam
+  Frame. Handler picks this route on Mali GPU families for:
+  - Java titles: bundled Java runtime detected in game folder. LWJGL 2 titles also get
+    `-DLWJGL_DISABLE_XRANDR=true`; Java 21 and newer get FEX Multiblock off, unless
+    `FEX_APP_CONFIG` launch option sets Multiblock.
+  - 32-bit titles started with `-vulkan` or `-force-vulkan`, on `mali-csf-v10` and
+    `mali-csf-5thgen`: option kept, title renders on GPU in place of CPU renderer. On
+    other families handler removes option (profile key `vk32=keep` keeps it).
+
+Game log line `steam-arm: graphics:` names route and reason. Override per title with
+profile key `gfx=a` (forwarding) or `gfx=b` (Mali drivers in emulation), or with
+`steam-arm-config gfx <appid> a|b`; `GFX_DEFAULT` sets route for titles without own
+setting (see Advanced settings). On non-Mali GPU with published driver archive,
+`steam-arm-config` refuses `b`, and `gfx=b` written by hand logs warning and title stays
+on forwarding; with custom driver archive (see Custom
+driver archive), `gfx=b` and `GFX_DEFAULT=b` apply on any GPU, while automatic rules stay
+Mali-only. Windows titles run through ARM64 Proton on system Vulkan and use neither route.
+
+`gpu-in-emulation` component provides second route; on by default on Mali GPUs (see GPU
+detection). Installer downloads driver archive
+`steam-arm-fex-mesa-26.1.8-x86_64-i386.tar.zst` (about 75 MB) from this project's
+release (release address first, then same file name under `releases/latest/download`),
+checks its SHA-256, and builds `/opt/fex-rootfs/Ubuntu_24_04-mali`: hard-link
+copy of root filesystem with archive's Mesa, about 330 MB extra disk. Root filesystem
+used for forwarding stays unchanged. PanVK in archive reports features DXVK and vkd3d ask
+for, same set `vk-spoof` reports, for those two engines only. Deselecting component or
+uninstalling deletes second tree. Without it, 32-bit titles lose `-vulkan` and Java
+titles stay on forwarding. When both addresses answer HTTP 404, setup stops with message
+that names missing release file and `STEAM_ARM_PROVIDER_TARBALL`, for pointing setup at
+downloaded copy.
+
+Test results, 2026-10-01, test device (RK3588 board with Mali-G610 GPU), 90-second runs
+per title:
+
+- Every title type that ran on forwarding also ran on Mali drivers route.
+- Java titles crash on forwarding and run on Mali drivers route; handler picked it for
+  Java 25 (LWJGL 3) and Java 17 (LWJGL 2) titles with no profile, LWJGL 2 option added
+  automatically.
+- 32-bit title started with `-vulkan` switched to Mali drivers route and created its
+  DXVK device on GPU; title still stops at loading screen, as with its OpenGL renderer.
+- Titles with no rule stayed on forwarding in same client session; Windows titles
+  unaffected.
+- Frame rate on Mali drivers route, against forwarding: 64-bit Unity 5+ OpenGL title 409
+  against 505 fps (vsync off); Unreal Engine 3 title 19.6 against 38.6 fps; Unreal Engine
+  2 title 112.3 against 138.7 fps; Godot 3 title menu 5.6 against 15.8 fps; 32-bit Unity
+  title 61.8 against 84.9 fps over 10 minutes, 82 against 69 fps over 90 seconds.
+- GPU driver logs page-fault message at exit of one 32-bit Unity title on Mali drivers
+  route; same message was logged on test device before that route existed; title
+  unaffected.
+
+Results per game type and frame rates on both routes: `GAMES.md`.
+
+## Page size
+
+Setup checks page size before it installs anything. Emulation needs 4K pages; on 16K or
+64K kernel it stops and names fix for that system, and on Raspberry Pi `page-size`
+component applies that fix. `STEAM_ARM_IGNORE_PAGESIZE=1` skips check, for system that
+runs x86 side inside its own 4K environment.
+
+## Playing games
+
+### Linux x86 titles
+
+Linux titles built for x86 run through FEX. Launch handler decides per title, with no
+launch options:
+
+- Steam overlay: x86 overlay for Linux x86 titles by default.
+- MangoHud: `mangohud %command%` or `MANGOHUD=1 %command%`, OpenGL and Vulkan.
+- Unity and Godot 4 titles get renderer settings Mali driver can run, found from game
+  files.
+- Graphics route: forwarding, or Mali drivers in emulation for Java titles and 32-bit
+  Vulkan titles; see Graphics route per title.
+
+Without Mali drivers in emulation, 32-bit titles reach GPU through OpenGL only; Vulkan in
+32-bit titles falls back to CPU renderer, so handler removes `-vulkan` and `-force-vulkan`
+from them (profile key `vk32=keep` keeps it). Titles started through start script (Source
+engine style) are detected by binary script starts. Source 2 titles get warning in log,
+no change.
+
+Value rule would set that launch option or environment already sets stays; log then
+names both: `launch option kept: NAME=value (rule wanted ...)`. Route set in title
+profile wins over rules: `title setting kept: gfx=...`. On Mali drivers route, FEX
+`Multiblock` set through `FEX_APP_CONFIG` launch option stays (`launch option kept`);
+Steam's own per-title FEX setting (`STEAM_COMPAT_FEX_CONFIG`) counts as default, not as
+user choice. GL or Vulkan thunk, graphics provider and GLX vendor set in launch options
+are replaced, since that route needs its own (`overridden for Mali route`). Profile
+`gl32=off` sets GLX vendor `mesa` same way. Unity and Godot log lines name values in
+effect, launch options included: renderer and reported GL version, for example
+`unity: OpenGL core, GL 4.5 report` or `godot 4: OpenGL renderer, GL 3.3 report`.
+Handler log of each start: `/tmp/fex-compat-tool-<pid>.log`; menu shows lines of last
+start under Games, "Rules used at last start".
+
+### Windows titles
+
+Windows titles run through ARM64 Proton, which client downloads. Direct3D 8 titles run
+through DXVK's `d3d8`; `PROTON_DXVK_D3D8=0 %command%` restores Proton's default. Launch
+handler does not run for Proton titles, so fixes for them go into Steam launch options.
+
+Direct3D 11 titles run at feature level 10_1 on Mali. Titles that need 11_0 (Unreal
+Engine 4, Unity HDRP) and Direct3D 12 titles do not run; see `COMPATIBILITY.md`.
+
+### Shader pre-caching
+
+Windows titles that play in-game videos through Proton show colour bars in place of videos
+while Steam's shader pre-caching is off, since client then downloads no transcoded videos.
+Component `shader-cache` turns it on: launcher starts client without `-noshaders`, and
+sets `DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1`, because Steam's ARM64 pipeline caching
+layer stops Proton titles at Vulkan device creation.
+
+Costs, from test run on RK3588 board:
+
+- download: several GB into `steamapps/shadercache` (1.5 GB within 3 minutes of first
+  start)
+- processing: after first start, installs and updates, `fossilize_replay` runs on all
+  cores (8 processes, about 45 minutes for large title); Steam offers to skip it
+- heat: SoC reached 87.7 °C during processing
+
+Off by default on every GPU family. To turn it on, tick `shader-cache` in settings menu,
+Components, or in installer checklist, then start Steam ARM again. Turning it off later
+keeps downloaded cache, and turning it on again reuses it. Settings menu shows size of
+`steamapps/shadercache` in each library folder when part is turned off (main library:
+`.local/share/Steam/steamapps/shadercache` in client home). Deleting that folder by hand
+stops Steam from downloading those caches again: client's records in `config.vdf` still
+list them as present, and videos then show colour bars with part on.
+
+### PhysX install step
+
+Some older Windows titles run legacy PhysX installer on first start, which waits with no
+window under emulation. Launcher marks that install step done in title's Proton prefix,
+with value title's own install script asks for, so Steam skips it from next start. When
+prefix does not exist yet, PhysX installer running longer than 60 seconds gets stopped and
+Steam continues to title. Each step is logged in `steam-arm.log` in client home.
+
+Component `physx-skip` controls this step, on by default on every GPU family. Turning it
+off in settings menu, Components, or in installer checklist stops step from next client
+start and removes no files. `STEAM_ARM_PHYSX_SKIP=0` turns it off for one client session,
+`STEAM_ARM_PHYSX_SKIP=1` turns it on for one client session.
+
+### Linux build installed as Windows build
+
+Client can install Windows build of title that also has Linux build. To switch it to Linux
+build: exit client, run `steam-arm-compatmap <appid> steamlinuxruntime` as game account
+(or `steam-arm-config compat <appid> linux`), start client again. Steam then swaps
+title's files for Linux build. `proton-stable-arm64` in place of `steamlinuxruntime`
+(`compat <appid> windows`) forces Windows build. `steam-arm-compatmap <appid> --remove`
+(`compat <appid> clear`, or Graphics > Route per game > automatic) clears forced build;
+Steam then picks build again.
+
+`steam-arm-compatmap` refuses while Steam ARM runs, since client rewrites its
+configuration on exit. It also refuses app id that is not number, tool name with
+characters other than letters, digits, `_`, `.` and `-`, and `config.vdf` without
+expected blocks, and any edit that would leave braces unbalanced; file then stays
+unchanged. `--remove` on title without entry also leaves file unchanged. First original
+`config.vdf` stays beside it as `config.vdf.bak-steam-arm`; later runs never overwrite
+that copy.
+
+### Title profiles and launch options
+
+Title profiles, one Steam app id per line, later files override earlier ones:
+`/usr/local/share/steam-arm/titles.conf` (included), `/etc/steam-arm/titles.conf`
+(system; `steam-arm-config` writes here) and `~/.config/steam-arm/titles.conf` in client
+home. Line: `<appid> key=value ...`.
+
+| Key        | Values                 | Effect                                           |
+|------------|------------------------|--------------------------------------------------|
+| `overlay`  | `x86`, `vulkan`, `off` | Steam overlay kind for title                     |
+| `mangohud` | `on`, `off`            | MangoHud for title                               |
+| `godot`    | `gl`, `vulkan`         | Godot 4 renderer                                 |
+| `unity`    | `vulkan`, `gl`         | Unity renderer                                   |
+| `env`      | `NAME=VALUE;...`       | Extra environment                                |
+| `args`     | `ARG;ARG`              | Extra arguments                                  |
+| `gl32`     | `off`                  | x86 Mesa in emulation, no GL forwarding (32-bit) |
+| `vk32`     | `keep`                 | 32-bit title keeps `-vulkan`                     |
+| `gfx`      | `a`, `b`               | Graphics route: forwarding or Mali drivers       |
+
+Values hold no spaces and no `#`. Launch options `STEAM_ARM_OVERLAY=x86|vulkan|off` and
+`STEAM_ARM_PRELOAD_KEEP=a,b` override profiles; `STEAM_ARM_VK_SPOOF_DISABLE=1 %command%`
+turns `vk-spoof` layer off for one title.
+
+Compatibility by game type, and tested titles: `GAMES.md`. Researched, untested settings
+per GPU family, engine and title, with what to change: `RESEARCH.md`.
+
+## Fixing games
+
+Same text as Help page `Fixing a game` in `steam-arm-config` (`steam-arm-config help
+fixing`).
+
+What works:
+
+- Steam launch options (game Properties, General, Launch options), for example:
+  - `PROTON_USE_WINED3D=1 %command%`: Windows game on OpenGL (WineD3D) in place of
+    Vulkan (DXVK).
+  - `-vulkan`: game's own Vulkan switch, where it has one.
+  - `MESA_GL_VERSION_OVERRIDE=4.5 %command%`: reports newer OpenGL version to game.
+  Launch option wins over automatic rules; game log then says "launch option kept".
+- Games section of menu: overlay, MangoHud, extra environment and arguments, per Linux
+  game.
+- Graphics, Route per game: A (forwarding to host drivers) or B (Mali drivers inside
+  emulation), for x86 Linux games.
+
+What to avoid:
+
+- `MANGOHUD=1` or `mangohud %command%` on Windows games (Proton ARM64): game crashes.
+- Options made for NVIDIA or AMD graphics cards.
+- Installing packages inside emulation (`apt` or `dpkg` under FEX): FEX writes fall
+  through to host system and can damage it. Setup replaces `apt`, `apt-get` and `dpkg` of
+  x86 root filesystem with refusal that changes nothing and points to this page;
+  read-only `dpkg` queries still answer. Original stays as `<tool>.steam-arm-real` for
+  experts; uninstall puts originals back.
+
+What cannot be fixed here:
+
+- Direct3D 12 games.
+- Unreal Engine 4 and 5 games.
+- Games with kernel anti-cheat.
+
+Reading "Rules used at last start" (Games, then game):
+
+- "graphics: forwarding" or "graphics: Mali drivers in emulation": route of last start,
+  reason in brackets.
+- "launch option kept: NAME=value (rule wanted ...)": launch option won over rule.
+- "title setting kept: gfx=...": route set for this game won over rules.
+- No lines: game has not started since setup, or it is Windows game (Proton keeps its own
+  logs).
+
+## Remote Play
+
+Remote Play streaming client decodes through Vulkan Video, which Mali driver does not
+provide. Installer has `steam-arm-remoteplay`, which pins hardware decoding and HEVC off
+in client's stored configuration, so host keeps to H.264 and software decoder. Launcher
+applies this setting before every client start once account has signed in, so first
+stream already runs with it. `steam-arm-remoteplay --check` reports without changing
+anything; menu section Remote Play shows same state.
+
+Game window in background on host renders nothing new, so stream shows one frame and takes
+no input. Keep game in foreground on host during Remote Play session.
+
+## Updating
+
+Run newer `steam-arm-install.sh`, or Maintenance, Update / Repair in `steam-arm-config`.
+Client, library, sign-in, component choices and GPU family set by hand are kept. To
+remove one component, re-run with that component deselected.
+
+Install, Update / Repair and component changes refuse to run while Steam ARM runs for
+game account (message `Steam is running for '<user>'`); close client first. Second setup
+run started while another one, install or removal, is in progress stops with notice.
+
+Custom driver archive chosen with `STEAM_ARM_PROVIDER_SHA256` stays in use on every later
+run, Update / Repair included; `--provider-default` switches back to published archive.
+Custom settings are cleared only once published tree is built; when that fails, custom
+settings and tree stay and setup says so.
+
+Downloads show curl's progress bar on terminal only; setup logs and menu screens get
+error lines only.
+
+Other variant of this installer present: setup stops and names it. `--replace-other`
+retires it first and writes two archives: its system files go into
+`/var/backups/steam-arm-replaced-<date>.tar`, files from its account's home into
+`/var/backups/steam-arm-replaced-<date>-<user>.tar`, owned by that account. Then setup
+continues. Client folder of other variant stays in use, with its games and sign-in,
+when neither `ARMHOME_DIR` nor settings file names another folder; its account stays
+in use when `GAMEUSER` names none. Setup prints commands, in order, that bring other
+variant back: `sudo tar -xpf <system archive> -C /` and
+`sudo -u <user> tar -xpf <account archive> -C /`. `--detect-other` prints whether other
+variant is present (status 0 when present), needs no root. Install in `steam-arm-config`
+asks before it replaces other variant.
+
+## Settings backup and restore
+
+Maintenance, Back up settings writes one file into folder of your choice (input starts at
+your home folder; missing folder is created on request). Name:
+`steam-arm-settings-<date>-<time>.tar.gz`, with no host or account name. File is readable
+by you only (mode 600) and owned by you, also when menu runs through `sudo`. It holds no
+sign-in data, Steam files, accounts or passwords.
+
+Checklist picks parts; all are ticked:
+
+| Part                   | Contents                                                    |
+|------------------------|-------------------------------------------------------------|
+| Setup choices          | `/etc/steam-arm/steam-arm.conf`                             |
+| System game profiles   | `/etc/steam-arm/titles.conf`                                |
+| Personal game profiles | `.config/steam-arm/titles.conf` in client folder of account |
+| Proton/tool per game   | App id and tool name of each `CompatToolMapping` entry      |
+| FEX per-game settings  | `.fex-emu/AppConfig/*.json` in client folder, valid JSON    |
+| MangoHud settings      | `.config/MangoHud/*.conf` in client folder                  |
+
+Last four parts belong to one account. When one of them is ticked, account list follows:
+existing normal accounts only, cursor on current account, else game account. Archive
+stores these parts without account name, so restore can put them into any account.
+
+Maintenance, Restore settings lists backups in last-used folder and home folder, or takes
+typed path. Before anything changes, restore checks file: manifest present with known
+format version, expected file names only, no links, no paths outside archive, size
+limits. Checklist then shows parts file holds, all ticked; personal parts ask for account
+again. Summary of every change comes before Restore / Back. Restore needs administrator
+rights and refuses while Steam ARM runs.
+
+- Setup choices: `COMPONENTS_ON`, `COMPONENTS_OFF`, `COMPONENTS_USER_SET`, `GFX_DEFAULT`,
+  and `GPU_FAMILY` when set by hand (`GPU_FAMILY_SET=user`). State of this machine
+  (`GAMEUSER`, `ARMHOME_DIR`, `VERSION`, `FSTAB_ADDED`, `RFS_CREATED`, `ACCOUNT_CREATED`,
+  `LINGER_SET`, `COMPONENTS_FAMILY`, `PROVIDER_CUSTOM_*`) stays; summary lists skipped
+  keys. When part lists change, menu offers `setup --keep` so installed parts match.
+- Game profiles, asked for system and personal file separately: Merge (default) adds
+  lines of games missing here; Replace takes backup file as is. Merge conflict (game set
+  here and in backup with other lines): Backup wins for all, Keep current for all, or one
+  by one with both lines shown. Current file stays as `titles.conf.bak-restore`.
+- Proton/tool per game: written through `steam-arm-compatmap` helper, same checks. Valve
+  tools (`proton_*`, `proton-stable-arm64`, `steamlinuxruntime*`) count as installed,
+  since client fetches them; other tools need entry in `compatibilitytools.d`. Tools not
+  installed are left out and listed. Needs client settings of that account (sign in
+  once).
+- FEX and MangoHud files: changed files replace current ones, which stay as
+  `<file>.bak-restore`.
+
+Backup and restore never create, change or delete accounts, passwords or groups.
+
+Command line:
+
+```
+steam-arm-config backup [DIR] [--account NAME] [--parts a,b,...]
+steam-arm-config restore FILE [--account NAME] [--parts a,b,...] [--merge|--replace]
+                 [--system-profiles merge|replace] [--personal-profiles merge|replace]
+                 [--take-system IDS|all] [--take-personal IDS|all] [--yes]
+```
+
+Part names: `setup`, `system-profiles`, `personal-profiles`, `compat-tools`, `fex`,
+`mangohud` (default: all). `--account` takes existing normal account only. Restore
+merges by default and keeps current lines on conflict, listed in summary;
+`--take-system` and `--take-personal` let backup win for named app ids or `all`. Without
+terminal, restore needs `--yes`.
+
+Archive format 1: members under `steam-arm-settings/`: `manifest` (`FORMAT=1`,
+`VERSION`, `DATE`, `GPU_FAMILY`, `PARTS`), `system/steam-arm.conf`, `system/titles.conf`,
+`personal/titles.conf`, `personal/compattools.txt` (`appid tool` per line),
+`personal/fex-appconfig/*.json`, `personal/mangohud/*.conf`. Every later version reads
+every earlier format.
+
+## Uninstall
+
+```
+sudo bash steam-arm-install.sh --remove
+```
+
+Also from `steam-arm-config`, Uninstall. Package install: `sudo steam-arm-setup --remove`
+before removing package; package removal alone leaves client installed and prints
+removal command. Close client first; removal refuses to run while it is up, and while
+another setup run is in progress.
+
+Removed: launcher, helpers, settings menu `steam-arm-config`, installer copy in
+`/usr/local/share/steam-arm`, menu and desktop entries, icons, controller rules,
+services, sudo rule, window rule, apt hook, settings in `/etc/steam-arm`, setup logs,
+second graphics tree `/opt/fex-rootfs/Ubuntu_24_04-mali`.
+
+Restored: `vm.max_map_count` value from before setup; Raspberry Pi `config.txt` (block
+removed, then its `config.txt.steam-arm.bak` backup deleted); Valve's FEX tool files,
+with `<file>.steam-arm-orig` and `<file>.steam-arm-sha` records removed (Steam also
+restores them at tool's next update); Valve's streaming client in kept client
+folder; package tools of x86 root filesystem; user services stop at logout again, only
+when setup turned lingering on; `/etc/fstab` without `/dev/shm` line, only when setup
+added it. `graphics_provider.json` and `~/.fex-emu/Config.json` go only while unchanged
+since setup.
+
+Setup adds `/dev/shm` line to `/etc/fstab` only when nothing else mounts `/dev/shm` at
+boot (no `/dev/shm` line of its own, no `dev-shm.mount` unit), and records that as
+`FSTAB_ADDED=1`; removal takes out that line only.
+
+Saved: game profiles from `/etc/steam-arm/titles.conf` go to
+`/var/backups/steam-arm-titles-<date>.conf` before `/etc/steam-arm` is removed.
+
+Kept by default:
+
+- Client folder with installed games, sign-in and settings. Removal asks; deleting it
+  needs typed `DELETE`. Re-install picks kept folder up again.
+- x86 root filesystem at `/opt/fex-rootfs` (about 2 GB).
+- Account setup created; removal prints `sudo userdel -r <name>` to delete it with its
+  home folder.
+- Distribution packages and FEX package source; removal prints `apt remove` line for
+  packages nothing else needs.
+- Account groups.
+- `/dev/shm` line in `/etc/fstab` that setup did not add (earlier version, or added by
+  hand); removal lists it under "Kept".
+
+Client folder is deleted, from prompt or with `--purge`, only when it holds marker file
+`.steam-arm-client`. Setup writes that marker from 2.0 on, on install and Update / Repair,
+and only into folder that was new or empty, already holds marker, or is client folder of
+earlier Steam ARM install (its `steamrtarm64` folder present, same account and folder
+name in settings file). Folder holding `steamapps` or `ubuntu12_32` at its top level
+belongs to another Steam install: setup refuses it and asks for other `ARMHOME_DIR`.
+Folder that held other files gets no marker; setup says so and records it in settings
+file (`ARMHOME_FOREIGN=1`), so later runs never mark it, even once client lives there.
+Folder without marker, or recorded that way, stays on removal: removal says so and prints
+`rm -rf` line for deleting it by hand after checking its contents. Client folder of 1.2
+install gets marker from Update / Repair run once before removal only under default name
+`.local/share/steam-arm`; under other name it is kept.
+
+`sudo bash steam-arm-install.sh --remove --purge` also deletes client folder with every
+installed game, and x86 root filesystem, after typed `DELETE`. Root filesystem goes only
+when setup downloaded it (`RFS_CREATED=1`, or download note in its `.steam-arm-rootfs`
+file) and other variant of this installer is not installed; otherwise removal keeps it and
+prints `sudo rm -rf` line. Without terminal to type into, nothing is deleted.
+
+## Advanced settings
+
+Environment for installer:
+
+- `GAMEUSER=name`: account to install into (default: account of last run, else uid
+  1000). Root, and names with characters other than letters, digits, `.`, `_`, `@` and
+  `-`, are refused.
+- `ARMHOME_DIR=path`: client folder relative to home of that account, first install only
+  (default `.local/share/steam-arm`). Plain relative path: no `..`, spaces or special
+  characters, and not shared folder such as `.local` or `Documents`.
+- `GPU_FAMILY=id|auto`: GPU family by hand, kept for later runs; `auto` detects again.
+- `STEAM_ARM_IGNORE_PAGESIZE=1`: skips 4K page size check.
+- `STEAM_ARM_PROVIDER_TARBALL=file`: `gpu-in-emulation` takes driver archive from local
+  file in place of its download; checksum is still checked. Other steps still need
+  network.
+- `STEAM_ARM_PROVIDER_SHA256=sha256`: with `STEAM_ARM_PROVIDER_TARBALL`, custom driver
+  archive in place of published one; see Custom driver archive.
+- `--provider-default` (option): back from custom driver archive to published one.
+
+```
+sudo env STEAM_ARM_PROVIDER_TARBALL=$PWD/steam-arm-fex-mesa-26.1.8-x86_64-i386.tar.zst \
+  bash steam-arm-install.sh --defaults
+```
+
+Settings file `/etc/steam-arm/steam-arm.conf`, one `KEY=value` per line, no spaces or
+quotes (launcher reads it as shell):
+
+| Key                      | Written by  | Meaning                                          |
+|--------------------------|-------------|--------------------------------------------------|
+| `ARMHOME_DIR`            | setup       | Client folder relative to home                   |
+| `GAMEUSER`               | setup       | Game account                                     |
+| `COMPONENTS_ON`          | setup       | Components selected at last run                  |
+| `COMPONENTS_OFF`         | setup       | Components left out at last run                  |
+| `COMPONENTS_USER_SET`    | setup       | GPU components set by hand                       |
+| `COMPONENTS_FAMILY`      | setup       | GPU family GPU components last followed          |
+| `GPU_FAMILY`             | setup       | GPU family in use                                |
+| `GPU_FAMILY_SET`         | setup       | `user` when family was set by hand               |
+| `GFX_DEFAULT`            | setup, menu | Default graphics route (below)                   |
+| `VERSION`                | setup       | Installer version of last run                    |
+| `ACCOUNT_CREATED`        | setup       | `1` when setup created game account              |
+| `LINGER_SET`             | setup       | `1` when setup turned lingering on               |
+| `FSTAB_ADDED`            | setup       | `1` when setup added `/dev/shm` fstab line       |
+| `RFS_CREATED`            | setup       | `1` when setup downloaded x86 root filesystem    |
+| `ARMHOME_FOREIGN`        | setup       | `1` when client folder held other files at setup |
+| `PROVIDER_CUSTOM_SHA256` | setup       | SHA-256 of custom driver archive in use          |
+| `PROVIDER_CUSTOM_FILE`   | setup       | Path of that archive                             |
+| `STEAM_ARM_UI`           | you         | `desktop`: `steam-arm` opens desktop interface   |
+| `STEAM_ARM_HOME`         | you         | Client folder (absolute path) for launcher, tray |
+
+`GFX_DEFAULT`, for x86 titles without `gfx=` of their own:
+
+- `auto` (default; empty means same): forwarding, with automatic switch for Java and
+  32-bit Vulkan titles.
+- `a` (`forward` reads same): every title on forwarding, no automatic switch.
+- `b`: every title on Mali drivers in emulation, on Mali GPU, or on any GPU with custom
+  driver archive. Frame rates per route on test device: `GAMES.md`. `steam-arm-config`
+  refuses `b` on other GPUs.
+- Any other value: automatic rules, and game log names unknown value.
+
+`steam-arm-config gfx-default auto|a|b` and menu Graphics, Default route write same
+values.
+
+Environment for launcher (`steam-arm`) and its helpers:
+
+- `STEAM_ARM_HOME=path`: client folder in place of saved one (absolute path).
+- `STEAM_ARM_PHYSX_SKIP=0` or `=1`: turns `physx-skip` off or on for that client
+  session, over saved component setting: `STEAM_ARM_PHYSX_SKIP=0 steam-arm`.
+- `STEAM_ARM_VK_SPOOF_DEBUG=1`: troubleshooting; `vk-spoof` layer prints its decisions
+  to game's output.
+- `steam-arm --desktop` and `steam-arm --bigpicture` start client in that interface, or
+  restart running client in it.
+
+Per-title launch options (`STEAM_ARM_OVERLAY`, `STEAM_ARM_PRELOAD_KEEP`,
+`STEAM_ARM_VK_SPOOF_DISABLE`, `PROTON_DXVK_D3D8`): see Playing games.
+
+## Custom driver archive
+
+For advanced users. Results depend on Mesa version in archive and on kernel GPU driver
+and kernel version of system; published archive is only one tested on test device.
+
+`gpu-in-emulation` uses published driver archive by default. Custom archive, for example
+own Mesa build, replaces it only when both file and its SHA-256 are given.
+
+1. Build archive (see Driver archive build), or take one from other source, and note its
+   SHA-256 (`sha256sum <file>`).
+2. Copy `.tar.zst` file to ARM64 system. Its path may hold only letters, digits and
+   `. _ - + /`, since setup saves it.
+3. Run setup with file and checksum:
+
+   ```
+   sudo env STEAM_ARM_PROVIDER_TARBALL=/path/to/archive.tar.zst \
+     STEAM_ARM_PROVIDER_SHA256=<sha256> bash steam-arm-install.sh --keep
+   ```
+
+   On GPU where `gpu-in-emulation` is off by default, select it in same run: `--select`
+   with full component list, `gpu-in-emulation` included, in place of `--keep`.
+4. Setup checks SHA-256, then layout: only `usr/`, `etc/` and `graphics_provider.json` at
+   top level, and Mesa driver library (`libgallium-*.so`, `libvulkan_*.so` or
+   `dri/*_dri.so`) in `usr/lib/x86_64-linux-gnu` or `usr/lib/i386-linux-gnu`. It prints
+   warning that custom archive, not published one, is in use. Archive that fails either
+   check changes nothing.
+5. Start title; game log line reads `graphics: custom drivers inside the emulation`.
+
+Behaviour with custom archive:
+
+- Setup saves path and SHA-256 (`PROVIDER_CUSTOM_FILE`, `PROVIDER_CUSTOM_SHA256`), so
+  repair, update and component changes keep custom archive. When file is gone or no
+  longer matches, setup stops and prints both ways on: point setup at file again, or
+  switch back with `--provider-default`.
+- `--provider-default` clears these settings after published tree is built. When download
+  or check of published archive fails, custom settings and tree stay, and setup says so.
+- `gfx=b` and `GFX_DEFAULT=b` apply on any GPU family. Automatic rules (Java, 32-bit
+  Vulkan) stay Mali-only.
+- `STEAM_ARM_PROVIDER_SHA256` without `STEAM_ARM_PROVIDER_TARBALL` is refused; downloads
+  are always published archive.
+
+Back to published archive:
+
+```
+sudo bash steam-arm-install.sh --keep --provider-default
+```
+
+## Driver archive build
+
+Recipe `tools/build-driver-archive.sh` is part of GitHub source (not of release zip). It
+builds x86-64 and i386 Mesa driver archive inside two Ubuntu 24.04 build roots. Defaults
+reproduce published archive: Mesa 26.1.8, Panfrost and PanVK, CPU fallbacks, two Steam
+ARM Mesa patches.
+
+### On x86-64 PC
+
+Needs:
+
+- x86-64 Linux PC; recipe refuses other processors.
+- About 25 GB free disk for build folder.
+- Network: Ubuntu base image, Ubuntu package snapshot, Mesa source.
+- Host tools `bash`, `curl`, `tar`, `xz`, `zstd`, `patch`, `sha256sum`, `unshare`
+  (util-linux), and `git` for `--mesa-ref` only.
+- No root: unprivileged run uses user namespaces, and needs them enabled and subordinate
+  id range for account in `/etc/subuid`. Run as root works too.
+
+| Option              | Effect                                                      |
+|---------------------|-------------------------------------------------------------|
+| `--mesa VERSION`    | Mesa release from archive.mesa3d.org (default 26.1.8)       |
+| `--mesa-sha256 SHA` | SHA-256 of that release tarball (known for default release) |
+| `--mesa-ref REF`    | Mesa git tag, branch or commit in place of release          |
+| `--gallium LIST`    | Gallium drivers (default `panfrost,llvmpipe,softpipe,zink`) |
+| `--vulkan LIST`     | Vulkan drivers (default `panfrost,swrast`)                  |
+| `--no-patches`      | Build without two Steam ARM Mesa patches                    |
+| `--snapshot STAMP`  | Ubuntu package snapshot (default `20260929T000000Z`)        |
+| `--work DIR`        | Build folder (default `./driver-build`)                     |
+| `--out DIR`         | Output folder (default `./driver-out`)                      |
+| `--jobs N`          | Parallel compile jobs (default: all processors)             |
+| `--clean`           | Delete build and output folders first                       |
+| `--dry-run`         | Check options and host tools, print plan, build nothing     |
+
+```
+bash tools/build-driver-archive.sh --dry-run
+bash tools/build-driver-archive.sh --mesa 26.1.8
+```
+
+Output in `--out` folder: `steam-arm-fex-mesa-<version>-x86_64-i386.tar.zst`, its
+`.tar.zst.sha256`, and check logs `verify-x86_64.log` and `verify-i386.log`. Build stops
+when checks fail (libraries resolve, LLVM linked in, and `llvmpipe` GL context when
+`llvmpipe` is built). Mesa release other than 26.1.8 without `--mesa-sha256` is not
+pinned; recipe prints its SHA-256. Patch that does not apply to chosen Mesa stops build;
+`--no-patches` builds without them.
+
+### On GitHub (Actions)
+
+Workflow "Build driver archive" (`.github/workflows/build-driver-archive.yml`) runs same
+recipe on GitHub's `ubuntu-24.04` runner, as root, with 6-hour limit and read-only access
+to repository.
+
+1. Fork repository on GitHub.
+2. In fork, open Actions; enable workflows when GitHub asks.
+3. Pick "Build driver archive", then "Run workflow".
+4. Enter Mesa version (default 26.1.8); optional: SHA-256 of Mesa release tarball, and
+   extra recipe options such as `--no-patches`. Start run.
+5. When run ends, open its summary page: it shows archive's SHA-256. Download artifact
+   `steam-arm-fex-mesa-<version>-x86_64-i386` and unzip it; it holds `.tar.zst`,
+   `.tar.zst.sha256` and check logs.
+6. Copy `.tar.zst` to ARM64 system and run setup with it, as in Custom driver archive:
+
+   ```
+   sudo env STEAM_ARM_PROVIDER_TARBALL=/path/to/archive.tar.zst \
+     STEAM_ARM_PROVIDER_SHA256=<sha256> bash steam-arm-install.sh --keep
+   ```
+
+## Troubleshooting
+
+- Client stays on "Starting launch", or shows black "Abort game" screen, after title exits
+  on its own or after first-launch On-Screen Keyboard notice: exit client from power menu
+  or tray, then start it again. Installed games and settings stay.
+- `steam-arm` stops with "Steam ARM is set up for account NAME": client lives in home of
+  account chosen at setup. Log in as that account, or run `sudo steam-arm-config`, Install / Setup,
+  and pick current account.
+- `steam-arm` stops with "Steam client not installed": setup did not finish. Run it again with
+  `sudo steam-arm-config`, Maintenance > Update / Repair. On Raspberry Pi 5, reboot first when
+  setup switched to 4K page kernel.
+- Game does not start or draws wrong: see Fixing games.
+- Hardware report for compatibility report: `steam-arm-config report`.
+
+## What this does not do
+
+- Titles protected by kernel-level anti-cheat do not run.
+- Direct3D 12 titles, Unreal Engine 5 titles and Direct3D 11 titles that need feature
+  level 11_0 do not run on Mali; see `COMPATIBILITY.md`.
+- No VR runtime is included; Steam Frame's runtime is not part of this installer.
+- Test device: RK3588 board with Mali-G610 GPU. Status of other GPU families:
+  `COMPATIBILITY.md`.
+
+## Other documents
+
+- `HOW-IT-WORKS.md` (GitHub repository): Flow from setup command to game, graphics routes
+- `FEATURES.md`: Full feature list
+- `COMPATIBILITY.md`: Requirements, pre-install checks, GPU families, unsupported titles
+- `GAMES.md`: Compatibility by game type, tested titles
+- `RESEARCH.md`: Researched, untested settings and what to change (AI-assisted research)
+- `COMPARISON.md`: Other routes to Steam on ARM64
+- `CHANGELOG.md`: Changes per version
+- `CREDITS.md`: Projects this installer builds on
+
+## Credits
+
+This installer arranges other people's work: Valve's ARM64 Steam client and Proton,
+FEX-Emu, Mesa with Panfrost and PanVK, Panthor kernel driver, DXVK and others. Each part
+is installed from its own source. Only exception is `gpu-in-emulation` archive:
+Mesa built for x86 by this project, published with its release. See `CREDITS.md`.
+
+## Disclaimers
 
 This project is not affiliated with, endorsed by or sponsored by Valve Corporation. Steam,
 Proton, Steam Deck and Steam Frame are trademarks of Valve Corporation.
+
+This is unofficial, community-built tool. It is not affiliated with, endorsed by or
+supported by Armbian project or any board manufacturer.

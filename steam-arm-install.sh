@@ -1,6 +1,7 @@
 #!/bin/bash
 # steam-arm-setup: installs Valve's native ARM64 Steam client (host packages, RootFS, launcher, optional components); run as root, then launch via steam-arm. See --help.
 set -u
+SA_VERSION=2.0
 # Banner: self-contained (no board helper needed); TTY-gated, honours NO_COLOR.
 steam_banner() {
     [ -t 1 ] || return 0
@@ -15,13 +16,58 @@ steam_banner() {
 
 say(){ printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 warn(){ printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
-die(){ printf '\033[1;31m[fail]\033[0m %s\n' "$*"; exit 1; }
-GAMEPASS="${GAMEPASS:-}"
-# pad-xbox stays off by default: the client's own Steam Input re-identifies pads.
-DEFAULT_OFF="${DEFAULT_OFF:-pad-xbox}"
+die(){ printf '\033[1;31m[fail]\033[0m %s\n' "$*"; [ -n "${DIE_NOTE:-}" ] && printf '       %s\n' "$DIE_NOTE"; exit 1; }
+# curl progress bar only on a terminal; logs and the menu's screens get errors only.
+CURL_SHOW=(-sS); [ -t 2 ] && CURL_SHOW=(--progress-bar)
+# Temporary files and folders of this run, removed on any exit; UCLEANUP ones (in the game user's home) by that user.
+CLEANUP=(); UCLEANUP=()
+trap 'rm -rf "${CLEANUP[@]}"; [ ${#UCLEANUP[@]} -gt 0 ] && as_user rm -rf "${UCLEANUP[@]}"' EXIT
+trap 'exit 130' INT; trap 'exit 143' TERM
+# As root: private temp folder and root's own home (sudo -E and su keep the caller's folders, which that account can change).
+if [ "$(id -u)" = 0 ]; then
+  SA_TMP=$(mktemp -d /tmp/steam-arm.XXXXXX) || die "could not create a folder in /tmp; free some space and run this again"
+  CLEANUP+=("$SA_TMP")
+  HOME=$(getent passwd 0 | cut -d: -f6)
+  export TMPDIR="$SA_TMP" HOME="${HOME:-/root}"
+  unset XDG_RUNTIME_DIR XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME
+fi
+# Files in the game user's home are written by that user, so a link placed there never redirects a root write.
+# Account switch without a PAM session: pam_systemd writes OSC 3008 escapes straight to the terminal.
+as_acct(){
+  local u=$1 h s; shift
+  command -v setpriv >/dev/null 2>&1 || { runuser -u "$u" -- "$@"; return; }
+  h=$(getent passwd "$u" | cut -d: -f6); s=$(getent passwd "$u" | cut -d: -f7)
+  setpriv --reuid="$u" --regid="$(id -g "$u")" --init-groups env HOME="$h" SHELL="${s:-/bin/sh}" USER="$u" LOGNAME="$u" "$@"
+}
+as_user(){ as_acct "$GAMEUSER" env -u TMPDIR "$@"; }
+# Command line as the game user, login-style environment, from its home folder (as su - did).
+login_sh(){
+  local h; h=$(getent passwd "$GAMEUSER" | cut -d: -f6)
+  ( cd "${h:-/}" 2>/dev/null || cd /; as_acct "$GAMEUSER" env -i HOME="$h" USER="$GAMEUSER" LOGNAME="$GAMEUSER" \
+      SHELL=/bin/sh PATH=/usr/local/bin:/usr/bin:/bin LANG="${LANG:-C.UTF-8}" sh -c "$1" )
+}
+# stdin into file $1 (mode $2, default 644) as the game user; new file renamed over the old one.
+user_write(){
+  # shellcheck disable=SC2016
+  as_user sh -c 't=$(mktemp "$1.XXXXXX") && cat > "$t" && chmod "$2" "$t" && mv -f "$t" "$1" || { rm -f "$t"; exit 1; }' sh "$1" "${2:-644}"
+}
+GAMEPASS=""
+# Opt-in components (all others default on). pad-xbox: client's own Steam Input re-identifies pads.
+# shader-cache: several GB download and long first-run processing.
+DEFAULT_OFF="pad-xbox shader-cache"
 # Client home: env, then saved setting, then default; re-run never moves the client away from its games.
+ARMHOME_ENV=${ARMHOME_DIR:-}; GAMEUSER_ENV=${GAMEUSER:-}
 ARMHOME_DIR="${ARMHOME_DIR:-$(sed -n 's/^ARMHOME_DIR=//p' /etc/steam-arm/steam-arm.conf 2>/dev/null | tail -1)}"
 ARMHOME_DIR="${ARMHOME_DIR:-.local/share/steam-arm}"
+ARMHOME_DIR="${ARMHOME_DIR%/}"
+# Client folder: plain relative path below the home, never the home itself or a shared folder in it.
+armhome_ok(){
+  case "$1" in ''|/*|.|./*|..|../*|*/..|*/../*|*/.|*/./*|*//*|*[!A-Za-z0-9._/-]*) return 1;; esac
+  case "$1" in .local|.local/share|.local/state|.local/bin|.config|.cache|.var|.var/app|.steam|.ssh|.gnupg|.mozilla|snap|bin|\
+    Desktop|Documents|Downloads|Music|Pictures|Public|Templates|Videos) return 1;; esac
+  return 0
+}
+ARMHOME_BAD="ARMHOME_DIR=$ARMHOME_DIR is not usable. It must be a folder path relative to the home folder, such as .local/share/steam-arm, without '..', spaces or special characters, and not a shared folder such as .local or Documents. Correct ARMHOME_DIR in /etc/steam-arm/steam-arm.conf or in the environment, then run this again."
 # Settings file is also read by the launcher/tray; conf_set updates its own key in place, keeping the rest.
 CONF=/etc/steam-arm/steam-arm.conf
 conf_get(){ sed -n "s/^$1=//p" "$CONF" 2>/dev/null | tail -1; }
@@ -30,6 +76,13 @@ conf_set(){
   t=$(mktemp "$CONF.XXXXXX") || die "could not write $CONF"
   awk -v k="$1=" -v v="$1=$2" 'index($0, k) == 1 { if (!d) print v; d = 1; next } { print } END { if (!d) print v }' "$CONF" > "$t" \
     && chmod 644 "$t" && mv -f "$t" "$CONF" || { rm -f "$t"; die "could not write $CONF"; }
+}
+conf_del(){
+  local t; grep -qs "^$1=" "$CONF" || return 0
+  t=$(mktemp "$CONF.XXXXXX") || die "could not write $CONF"
+  if ! { awk -v k="$1=" 'index($0, k) != 1' "$CONF" > "$t" && chmod 644 "$t" && mv -f "$t" "$CONF"; }; then
+    rm -f "$t"; die "could not write $CONF"
+  fi
 }
 # GAMEUSER: env, then saved account, then account whose home already holds the client, then uid 1000; created if none exists.
 # Only an env GAMEUSER or the final steamarm fallback may create an account; a conf/detected
@@ -40,7 +93,7 @@ if [ -n "${GAMEUSER:-}" ]; then
 else
   GAMEUSER="$(conf_get GAMEUSER)"
   if [ -n "$GAMEUSER" ] && ! getent passwd "$GAMEUSER" >/dev/null 2>&1; then
-    warn "conf GAMEUSER='$GAMEUSER' has no account on this box; ignored"
+    warn "conf GAMEUSER='$GAMEUSER' has no account on this system; ignored"
     GAMEUSER=
   fi
 fi
@@ -53,13 +106,338 @@ GAMEUSER="${GAMEUSER:-$(getent passwd 1000 2>/dev/null | cut -d: -f1)}"
 if [ -z "$GAMEUSER" ]; then GAMEUSER=steamarm; GAMEUSER_MAY_CREATE=1; fi
 RFS=/opt/fex-rootfs/Ubuntu_24_04
 FEXPPA="ppa:fex-emu/fex"
-MANIFEST=https://client-update.fastly.steamstatic.com/steam_client_publicbeta_linuxarm64
+# Stable arm64 manifest for the first download; -deckard moves the client to its own ARM channel on first start.
+MANIFEST=https://client-update.steamstatic.com/steam_client_linuxarm64
 CDN=https://client-update.steamstatic.com
+# gpu-in-emulation: x86-64 + i386 Mesa (Mali drivers) in a second RootFS tree; sha256 pinned, local file via STEAM_ARM_PROVIDER_TARBALL.
+PROVIDER_URL=https://github.com/Scrumpper/Steam-ARM/releases/download/steam-arm-v2.0/steam-arm-fex-mesa-26.1.8-x86_64-i386.tar.zst
+PROVIDER_SHA256=3ba2c461bc069dc702af7f8ee81e7c5343604148977bdddde41b1d3826cb7495
+PROVIDER_FILE=${PROVIDER_URL##*/}
+# Second address: same file name in the newest release.
+PROVIDER_FALLBACK=https://github.com/Scrumpper/Steam-ARM/releases/latest/download/$PROVIDER_FILE
+# --provider-default: custom driver archive settings cleared, published archive used again.
+PROVIDER_DEFAULT=0
+# Second tree: hard-link copy of $RFS with the archive's Mesa; handler picks it per title (steam-arm-handler.py MALI_ROOT).
+MALI=/opt/fex-rootfs/Ubuntu_24_04-mali
+MALI_MARK="$MALI/.steam-arm-mali"
+# Pre-release builds laid the drivers over $RFS itself; state dir of that layout.
+PSTATE="$RFS/.steam-arm-fex-mesa"
+PROVIDER_MESA_PKGS="libgl1-mesa-dri libglx-mesa0 libegl-mesa0 libgbm1 mesa-vulkan-drivers mesa-libgallium mesa-va-drivers mesa-vdpau-drivers"
+# Marks the copy of Valve's controller rules this installer wrote (removed only when it matches).
+VALVE_MARK='MIT licence; installed by steam-arm-setup'
+GLX_HOOK=/etc/apt/apt.conf.d/80steam-arm-glx-lax
+# zz- sorts after 99-sysctl.conf (else its vm.max_map_count would win at boot); drop-in saves the prior value as a comment.
+MC=/etc/sysctl.d/zz-steam-arm.conf
+MC_PRIOR='# steam-arm-setup map-count; value before setup: '
+# Drop the map-count drop-in and put back the value from before setup; $1 prefixes the message.
+mc_restore(){
+  local prior
+  rm -f /etc/sysctl.d/99-steam-arm.conf
+  [ -f "$MC" ] || return 0
+  prior=$(sed -n "s/^$MC_PRIOR//p" "$MC" | head -1)
+  rm -f "$MC"
+  case "$prior" in
+    ''|*[!0-9]*|2147483642) echo "  $1vm.max_map_count returns to system setting at next boot";;
+    *) sysctl -q -w vm.max_map_count="$prior" 2>/dev/null || true
+       echo "  $1vm.max_map_count back to $prior";;
+  esac
+}
+# /dev/shm line setup adds to /etc/fstab (recorded as FSTAB_ADDED=1, so --remove takes only that line out).
+FSTAB_LINE='tmpfs /dev/shm tmpfs rw,nosuid,nodev,mode=1777 0 0'
+# /etc/fstab through a new file renamed over it: $1 add appends the line, drop removes it.
+fstab_edit(){
+  local t
+  [ -L /etc/fstab ] && return 1
+  t=$(mktemp /etc/.fstab.XXXXXX) || return 1
+  if { if [ "$1" = add ]; then cat /etc/fstab && { [ -z "$(tail -c1 /etc/fstab)" ] || echo; } && echo "$FSTAB_LINE"
+       else grep -vxF "$FSTAB_LINE" /etc/fstab || [ $? = 1 ]; fi; } > "$t" \
+     && chmod --reference=/etc/fstab "$t" && chown --reference=/etc/fstab "$t" && sync "$t" && mv -f "$t" /etc/fstab; then
+    return 0
+  fi
+  rm -f "$t"; return 1
+}
+# KWin only re-reads kwinrulesrc when told; without a reconfigure signal, rules wait until next login.
+kwin_reload(){
+  local u; u=$(id -u "$GAMEUSER" 2>/dev/null) || return 0
+  login_sh "XDG_RUNTIME_DIR=/run/user/$u DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$u/bus dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure" >/dev/null 2>&1 || true
+}
+# Take a window rule group (default steam-arm-frame) out of the game user's KWin rules: list entry and every key setup writes.
+kwin_rule_remove(){
+  local rid=${1:-steam-arm-frame} cur new n k cmd=""
+  command -v kwriteconfig6 >/dev/null 2>&1 || return 0
+  cur=$(login_sh "kreadconfig6 --file kwinrulesrc --group General --key rules" 2>/dev/null)
+  case ",$cur," in *",$rid,"*)
+    new=$(printf '%s' "$cur" | tr ',' '\n' | grep -vx "$rid" | paste -sd, -)
+    n=$(printf '%s' "$new" | awk -F, '{print NF}'); n=${n:-0}
+    cmd="kwriteconfig6 --file kwinrulesrc --group General --key rules '$new'; kwriteconfig6 --file kwinrulesrc --group General --key count $n; ";;
+  esac
+  for k in Description wmclass wmclassmatch wmclasscomplete types noborder noborderrule; do
+    cmd="${cmd}kwriteconfig6 --file kwinrulesrc --group $rid --key $k --delete; "
+  done
+  login_sh "$cmd" 2>/dev/null
+  kwin_reload
+}
+# Files shared with other tools: sha256 of what setup wrote, so --remove deletes them only while unchanged.
+OWNED=/etc/steam-arm/owned.sha
+own_mark(){
+  local t
+  mkdir -p "${OWNED%/*}" && t=$(mktemp "$OWNED.XXXXXX") || return 0
+  { awk -v p="$1" 'substr($0, 67) != p' "$OWNED" 2>/dev/null; sha256sum "$1"; } > "$t" && chmod 644 "$t" && mv -f "$t" "$OWNED" || rm -f "$t"
+}
+own_ok(){ [ -f "$1" ] && grep -qxF "$(sha256sum "$1" 2>/dev/null)" "$OWNED" 2>/dev/null; }
+# graphics_provider.json of $RFS, architecture list form.
+gp_list_json(){ printf '{\n  "graphics_provider_v0": {\n    "architectures": ["x86_64-linux-gnu", "i386-linux-gnu"]\n  }\n}\n'; }
+# Write it through a new file, so no other hard link to the old one changes.
+gp_list_write(){
+  local t; t=$(mktemp "$RFS/.graphics_provider.json.XXXXXX") || return 1
+  if ! { gp_list_json > "$t" && chmod 644 "$t" && mv -f "$t" "$RFS/graphics_provider.json"; }; then rm -f "$t"; return 1; fi
+}
+# Pre-release layout: its driver files out of $RFS, distro Mesa back from the saved tar, list-form json back.
+legacy_mesa_restore(){
+  [ -d "$PSTATE" ] || return 0
+  [ -f "$PSTATE/installed.list" ] && unlink_in "$RFS" < "$PSTATE/installed.list"
+  if [ -f "$PSTATE/distro-mesa.tar" ] && ! { tar -tf "$PSTATE/distro-mesa.tar" | paths_inside "$RFS" \
+       && tar -xpf "$PSTATE/distro-mesa.tar" -C "$RFS"; }; then
+    warn "distro Mesa files could not be put back into $RFS; saved copy kept in $PSTATE, run this again"
+    return 1
+  fi
+  gp_list_write || return 1
+  rm -rf "$PSTATE"
+  echo "  distro Mesa restored in the x86-64 root filesystem"
+}
+# $RFS identity: directory inode + x86-64 libc; changes when the RootFS is fetched again.
+rfs_id(){ printf '%s %s' "$(stat -c %i "$RFS" 2>/dev/null)" "$(stat -Lc %i:%Y "$RFS/usr/lib/x86_64-linux-gnu/libc.so.6" 2>/dev/null)"; }
+# Parent folder of path $3 (relative to $2), resolved; status 1 when it lies outside $2 (resolved: $1).
+parent_in(){
+  local d
+  d=$(readlink -m "$2/$(dirname "$3")") || return 1
+  case "$d/" in "$1"/*) echo "$d";; *) return 1;; esac
+}
+# Unlink paths read from stdin (relative to $1) that resolve inside $1; unlink never writes a shared inode.
+unlink_in(){
+  local rr x d f
+  rr=$(readlink -f "$1") || return 1
+  while IFS= read -r x; do
+    [ -n "$x" ] || continue
+    d=$(parent_in "$rr" "$1" "$x") || continue
+    f="$d/${x##*/}"
+    [ -L "$f" ] && [ -d "$f" ] && continue
+    if [ -L "$f" ] || [ -f "$f" ]; then rm -f "$f"; fi
+  done
+}
+# Status 1 when an archive member read from stdin (relative to $1) would land outside $1 through a link in its parent path.
+paths_inside(){
+  local rr x bad=0
+  rr=$(readlink -f "$1") || return 1
+  while IFS= read -r x; do
+    [ -n "$x" ] || continue
+    case "/$x/" in */../*) bad=1; echo "  archive member outside $1: $x" >&2; continue;; esac
+    parent_in "$rr" "$1" "$x" >/dev/null || { bad=1; echo "  archive member outside $1: $x" >&2; }
+  done
+  return $bad
+}
+# Status 0 while a Steam client of the game user runs.
+steam_up(){ id "$GAMEUSER" >/dev/null 2>&1 && pgrep -u "$GAMEUSER" -x steam >/dev/null 2>&1; }
+steam_up_die(){ die "Steam is running for '$GAMEUSER'. Close it first (exit from its menu, or Stop Steam in the tray), then run this again."; }
+# Driver archive in use: PSRC_KIND published (download, or STEAM_ARM_PROVIDER_TARBALL) or custom (file and sha256 given, saved for later runs).
+provider_source(){
+  PSRC_KIND=published; PSRC_SHA=$PROVIDER_SHA256; PSRC_FILE=${STEAM_ARM_PROVIDER_TARBALL:-}; PSRC_SAVED=0
+  if [ -n "${STEAM_ARM_PROVIDER_SHA256:-}" ]; then
+    PSRC_KIND=custom; PSRC_SHA=$STEAM_ARM_PROVIDER_SHA256
+  elif [ "$PROVIDER_DEFAULT" != 1 ] && [ -n "$(conf_get PROVIDER_CUSTOM_SHA256)" ]; then
+    PSRC_KIND=custom; PSRC_SHA=$(conf_get PROVIDER_CUSTOM_SHA256); PSRC_SAVED=1
+    [ -n "$PSRC_FILE" ] || PSRC_FILE=$(conf_get PROVIDER_CUSTOM_FILE)
+  fi
+}
+# Saved custom archive unusable: the two ways on.
+provider_custom_stop(){
+  die "Mali drivers inside the emulation come from a custom driver archive (sha256 $PSRC_SHA), and $1.
+       Point setup at that file again:
+         sudo env STEAM_ARM_PROVIDER_TARBALL=/path/to/file STEAM_ARM_PROVIDER_SHA256=$PSRC_SHA bash steam-arm-install.sh --keep
+       or go back to the published drivers:
+         sudo bash steam-arm-install.sh --keep --provider-default"
+}
+# Published archive: release address, then the newest release's file of the same name; 404 at both = file not published.
+provider_download(){
+  local u code n404=0 pd=""
+  # --provider-default with saved custom keys: the rerun needs the flag too, or the custom archive comes back
+  [ "$PROVIDER_DEFAULT" = 1 ] && grep -qs '^PROVIDER_CUSTOM_' "$CONF" && pd=" --provider-default"
+  for u in "$PROVIDER_URL" "$PROVIDER_FALLBACK"; do
+    code=$(curl -fL --proto =https --proto-redir =https "${CURL_SHOW[@]}" -w '%{http_code}' -o "$1" "$u") && return 0
+    [ "$code" = 404 ] && n404=$((n404 + 1))
+    echo "  no download from $u (HTTP ${code:-000})"
+  done
+  rm -f "$1"
+  [ "$n404" = 2 ] && die "release file $PROVIDER_FILE is not published on GitHub (HTTP 404 at both addresses).
+       Download it when it is available, then point setup at it:
+         sudo env STEAM_ARM_PROVIDER_TARBALL=/path/to/$PROVIDER_FILE bash steam-arm-install.sh --keep$pd
+       or deselect gpu-in-emulation."
+  die "driver download failed. $NETHINT Or deselect gpu-in-emulation."
+}
+# Custom archive layout: only usr/, etc/ and graphics_provider.json at the top, and an x86-64 or i386 Mesa driver library.
+provider_layout_ok(){
+  local l bad
+  l=$(tar --zstd -tf "$1" | sed 's#^\./##') || return 1
+  bad=$(printf '%s\n' "$l" | awk -F/ '$1 != "" && $1 != "usr" && $1 != "etc" && $0 != "graphics_provider.json" { print $1 }' | sort -u | head -5 | tr '\n' ' ')
+  [ -z "$bad" ] || { echo "  unexpected top-level entries: $bad" >&2; return 1; }
+  printf '%s\n' "$l" | grep -qE '^usr/lib/(x86_64|i386)-linux-gnu/(libgallium-[^/]*\.so|libvulkan_[^/]*\.so|dri/[^/]*_dri\.so)$' \
+    || { echo "  no Mesa driver library in usr/lib/x86_64-linux-gnu or usr/lib/i386-linux-gnu" >&2; return 1; }
+}
+# Second graphics tree $MALI: hard-link copy of $RFS, distro Mesa unlinked, archive Mesa unpacked as new files.
+mali_tree_build(){
+  local want pkg tmp="" p a f n t miss="" part="$MALI.part" av extra
+  provider_source
+  want="archive $PSRC_SHA rootfs $(rfs_id)"
+  [ "$PSRC_KIND" = custom ] && want="custom $PSRC_SHA rootfs $(rfs_id)"
+  if [ -f "$MALI/graphics_provider.json" ] && [ "$(cat "$MALI_MARK" 2>/dev/null)" = "$want" ]; then
+    echo "  Mali drivers inside the emulation already in place ($MALI)"
+    [ "$PSRC_KIND" = custom ] && echo "  custom driver archive, not the published one (sha256 $PSRC_SHA)"
+    rfs_guard "$MALI" || warn "could not guard package tools in $MALI; run this again"
+    [ "$PSRC_KIND" = custom ] && [ "$PSRC_SAVED" = 0 ] && provider_custom_save
+    return 0
+  fi
+  [ -e "$MALI" ] && echo "  driver archive or x86-64 root filesystem changed: rebuilding $MALI"
+  if [ "$PSRC_KIND" = custom ] && [ ! -f "$PSRC_FILE" ]; then
+    [ "$PSRC_SAVED" = 1 ] && provider_custom_stop "its file ${PSRC_FILE:-(not recorded)} is not there"
+    die "STEAM_ARM_PROVIDER_TARBALL=$PSRC_FILE: file not found. Point it at the .tar.zst file."
+  fi
+  av=$(df -Pm "${MALI%/*}" 2>/dev/null | awk 'NR==2 {print $4}')
+  [ "${av:-0}" -ge 400 ] 2>/dev/null || die "Mali drivers inside the emulation need about 400 MB free in ${MALI%/*} (${av:-?} MB free). Free some space and run this again, or deselect gpu-in-emulation."
+  tmp=$(mktemp /var/tmp/steam-arm-fex-mesa.XXXXXX) || die "could not create a file in /var/tmp; free some space and run this again"
+  CLEANUP+=("$tmp")
+  # local archive: root's own copy is checked and unpacked, so the file cannot change in between
+  if [ -n "$PSRC_FILE" ]; then
+    [ -f "$PSRC_FILE" ] || die "STEAM_ARM_PROVIDER_TARBALL=$PSRC_FILE: file not found. Point it at the .tar.zst file, or unset it to download."
+    cp -- "$PSRC_FILE" "$tmp" \
+      || { rm -f "$tmp"; die "could not copy $PSRC_FILE to /var/tmp. Free some space and run this again."; }
+  else
+    echo "  downloading Mali drivers for the emulation (about 75 MB)"
+    provider_download "$tmp"
+  fi
+  pkg=$tmp
+  if [ "$(sha256sum "$pkg" | cut -c1-64)" != "$PSRC_SHA" ]; then
+    rm -f "$tmp"
+    [ "$PSRC_SAVED" = 1 ] && provider_custom_stop "$PSRC_FILE no longer matches it"
+    [ "$PSRC_KIND" = custom ] && die "$PSRC_FILE does not match STEAM_ARM_PROVIDER_SHA256=$PSRC_SHA. Nothing changed."
+    die "${PSRC_FILE:-downloaded driver archive} does not match the checksum this installer expects. Download it again, or deselect gpu-in-emulation."
+  fi
+  if [ "$PSRC_KIND" = custom ]; then
+    warn "custom driver archive, not the published one: $PSRC_FILE (sha256 $PSRC_SHA)"
+    provider_layout_ok "$pkg" || { rm -f "$tmp"; die "$PSRC_FILE does not have the layout of a driver archive (above). Nothing changed."; }
+  fi
+  echo "  building second graphics tree $MALI (about 330 MB extra disk; unchanged files shared with $RFS)"
+  rm -rf "$part"; CLEANUP+=("$part")
+  if ! cp -al "$RFS" "$part"; then
+    rm -rf "$part"; rm -f "$tmp"
+    die "could not copy $RFS to $part. Free some space and run this again, or deselect gpu-in-emulation."
+  fi
+  rm -rf "$part/.steam-arm-fex-mesa" "$part/.steam-arm-mali"
+  # Distro Mesa files of both arches, listed from the RootFS package database.
+  for p in $PROVIDER_MESA_PKGS; do
+    for a in amd64 i386; do
+      f=$part/var/lib/dpkg/info/$p:$a.list
+      [ -f "$f" ] || f=$part/var/lib/dpkg/info/$p.list
+      [ -f "$f" ] && grep -v -e '^/usr/share/doc/' -e '^/usr/share/lintian/' "$f" | sed 's#^/##'
+    done
+  done | sort -u | unlink_in "$part"
+  # Archive targets unlinked first: tar then creates new files, never writes into $RFS through a shared inode.
+  tar --zstd -tf "$pkg" | sed -n 's#^\./##; /[^/]$/p' | unlink_in "$part"
+  # a link in a member's parent path would make tar write outside the tree
+  if ! tar --zstd -tf "$pkg" | sed 's#^\./##' | paths_inside "$part"; then
+    rm -rf "$part"; rm -f "$tmp"
+    die "driver archive would write outside $part (a folder link in $RFS points elsewhere). Check $RFS, or deselect gpu-in-emulation."
+  fi
+  if ! tar --zstd -xpf "$pkg" -C "$part" --no-same-owner || [ ! -f "$part/graphics_provider.json" ]; then
+    rm -rf "$part"; rm -f "$tmp"
+    die "could not unpack the driver archive. Run this again, or deselect gpu-in-emulation."
+  fi
+  rm -f "$tmp"
+  chmod 644 "$part/graphics_provider.json"
+  # Libraries the drivers load from the RootFS, both arches.
+  for t in x86_64 i386; do
+    for n in libX11-xcb.so.1 libX11.so.6 libXext.so.6 libXxf86vm.so.1 libdrm.so.2 libexpat.so.1 libgcc_s.so.1 \
+             libstdc++.so.6 libtinfo.so.6 libxcb-dri3.so.0 libxcb-glx.so.0 libxcb-present.so.0 libxcb-randr.so.0 \
+             libxcb-shm.so.0 libxcb-sync.so.1 libxcb-xfixes.so.0 libxcb.so.1 libxshmfence.so.1 libz.so.1 libzstd.so.1 \
+             libGLX.so.0 libEGL.so.1 libGLdispatch.so.0 libvulkan.so.1; do
+      [ -e "$part/usr/lib/$t-linux-gnu/$n" ] || [ -e "$part/lib/$t-linux-gnu/$n" ] || miss="$miss $t/$n"
+    done
+  done
+  [ -z "$miss" ] || warn "x86-64 root filesystem lacks:$miss. Titles of that architecture may not start on the Mali drivers inside the emulation; gfx=a in their titles.conf line keeps them on forwarding."
+  rfs_guard "$part" || die "could not guard package tools in $part. Free some space and run this again."
+  printf '%s\n' "$want" > "$part/.steam-arm-mali"
+  steam_up && steam_up_die
+  [ -n "${DIE_NOTE:-}" ] && DIE_NOTE="Custom driver archive settings kept. Run this again with --provider-default."
+  { rm -rf "$MALI" && mv "$part" "$MALI"; } || die "could not move $part to $MALI; run this again"
+  [ "$PSRC_KIND" = custom ] && provider_custom_save
+  extra=$(du -sm "$RFS" "$MALI" 2>/dev/null | awk 'NR==2 {print $1}')
+  echo "  Mali drivers inside the emulation ready: $MALI (${extra:-?} MB extra disk)"
+}
+# Custom archive recorded, so later runs keep it or stop instead of switching back to the published one.
+provider_custom_save(){
+  conf_set PROVIDER_CUSTOM_SHA256 "$PSRC_SHA"
+  conf_set PROVIDER_CUSTOM_FILE "$(readlink -f -- "$PSRC_FILE" 2>/dev/null || printf '%s' "$PSRC_FILE")"
+}
+# Delete the second graphics tree; status 1 when there was none.
+mali_tree_remove(){
+  { [ -e "$MALI" ] || [ -e "$MALI.part" ]; } || return 1
+  rm -rf "$MALI" "$MALI.part"
+}
+# Package tools of an x86 tree ($1) replaced by a refusal: under emulation they write to the host system.
+# Original kept as <tool>.steam-arm-real (expert escape hatch); wrappers are new files, never written through a shared inode.
+GUARD_MARK='steam-arm-guard'
+rfs_guard(){
+  local b p t
+  for b in apt apt-get dpkg; do
+    p="$1/usr/bin/$b"
+    # tool missing but original kept: an earlier run stopped between the two renames
+    { [ -e "$p" ] || [ -L "$p" ] || [ -e "$p.steam-arm-real" ] || [ -L "$p.steam-arm-real" ]; } || continue
+    t=$(mktemp "$p.XXXXXX") || return 1
+    { printf '#!/bin/sh\n# %s: %s of this x86 root filesystem is off; %s.steam-arm-real is the original.\n' "$GUARD_MARK" "$b" "$b"
+      # read-only dpkg queries still answer (architecture, versions), also after --admindir= style options
+      # shellcheck disable=SC2016
+      [ "$b" = dpkg ] && printf '%s\n' 'a=; for x in "$@"; do case "$x" in --admindir=*|--root=*|--instdir=*) ;; *) a=$x; break;; esac; done' \
+        'case "$a" in --print-architecture|--print-foreign-architectures|--version|-l|--list|-s|--status|-L|--listfiles|-S|--search|-W|--show|--compare-versions|--get-selections|-p|--print-avail|--assert-*) exec "$0.steam-arm-real" "$@";; esac'
+      printf '%s\nexit 1\n' "echo \"Package installs inside the x86 emulation write to the real system and can damage it. Nothing was changed. See 'Fixing a game' in steam-arm-config (Help) for what to do instead.\" >&2"
+    } > "$t" && chmod 755 "$t"
+    [ -x "$t" ] || { rm -f "$t"; return 1; }
+    if grep -qs "$GUARD_MARK" "$p"; then
+      # own file of this tree with current text: nothing to do
+      [ "$(stat -c %h "$p")" = 1 ] && cmp -s "$t" "$p" && { rm -f "$t"; continue; }
+    elif [ -e "$p" ] || [ -L "$p" ]; then
+      mv -f "$p" "$p.steam-arm-real" || { rm -f "$t"; return 1; }
+    fi
+    mv -f "$t" "$p" || { rm -f "$t"; return 1; }
+  done
+}
+# Originals back in place of the wrappers; status 1 when nothing was guarded.
+rfs_unguard(){
+  local b p r=1
+  for b in apt apt-get dpkg; do
+    p="$1/usr/bin/$b"
+    { [ -e "$p.steam-arm-real" ] || [ -L "$p.steam-arm-real" ]; } || continue
+    if grep -qs "$GUARD_MARK" "$p" || [ ! -e "$p" ]; then mv -f "$p.steam-arm-real" "$p" && r=0; fi
+  done
+  return $r
+}
 # ---------------------------------------------------------------------------
-COMPONENTS="glx-lax vk-spoof map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray page-size"
+COMPONENTS_ALL="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray page-size"
+# page-size applies to Raspberry Pi 5 class boards (16K page kernel), or where its boot line is still in place.
+ps_relevant(){
+  case "$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null)" in
+    "Raspberry Pi 5"*|"Raspberry Pi Compute Module 5"*) return 0;;
+    "Raspberry Pi"*) [ "$(getconf PAGESIZE 2>/dev/null)" != 4096 ] && return 0;;
+  esac
+  grep -qs '^# steam-arm-setup page-size:' /boot/firmware/config.txt /boot/config.txt
+}
+# Components listed and saved on this system; page-size only where it applies.
+COMPONENTS=$COMPONENTS_ALL
+ps_relevant || COMPONENTS=${COMPONENTS% page-size}
 desc_of(){ case "$1" in
   glx-lax)    echo "Private Mesa GLX copy, for GL contexts bound from several threads";;
   vk-spoof)   echo "Vulkan feature layer: DXVK device on the Mali driver (Proton titles)";;
+  gpu-in-emulation) echo "Mali drivers in emulation, auto for titles that need them (Java, 32-bit Vulkan)";;
+  shader-cache) echo "Shader pre-caching: in-game videos in Windows games; downloads GBs, long first-run processing";;
+  physx-skip) echo "PhysX install step: mark done / stop after 60 s (Windows titles)";;
   map-count)  echo "vm.max_map_count raised to the SteamOS value (Proton warns below it)";;
   xpad-dedup) echo "Drop the duplicate joystick node of third-party Xbox 360 style pads";;
   pad-hidraw) echo "Let the client read pads directly, for rumble and battery level";;
@@ -72,14 +450,3555 @@ desc_of(){ case "$1" in
   page-size)  echo "Raspberry Pi 5: boot firmware's 4K page kernel (no effect elsewhere)";;
 esac; }
 var_of(){ echo "OPT_$(echo "$1" | tr 'a-z-' 'A-Z_')"; }
-for c in $COMPONENTS; do eval "$(var_of "$c")=1"; done
+for c in $COMPONENTS_ALL; do eval "$(var_of "$c")=1"; done
 # DEFAULT_OFF components stay opt-in (pad-xbox grabs the physical pad, starving direct reads).
 for c in ${DEFAULT_OFF:-}; do eval "$(var_of "$c")=0"; done
+ps_relevant || eval "$(var_of page-size)=0"
+# GPU family: sets default states of vk-spoof, gpu-in-emulation and glx-lax. GPU_FAMILY=<id> (env) picks one by hand, GPU_FAMILY=auto detects.
+GPU_FAMILIES="mali-csf-v10 mali-csf-5thgen mali-csf mali-valhall-jm mali-bifrost mali-midgard mali-panfrost mali-utgard mali-kbase
+  adreno-a8xx adreno-a7xx adreno-a6xx adreno-a702 adreno-legacy adreno apple-agx broadcom-v3d71 broadcom-v3d42 broadcom-vc4
+  vivante img-powervr amd-radv amd-radeon nvidia-nouveau nvidia-prop intel virtio-gpu none unknown"
+# Kernel driver name and Mali GPU id per render node (DRM_IOCTL_VERSION, panthor DEV_QUERY, panfrost GET_PARAM); lines "node driver id".
+gpu_ioctl_probe(){
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - 2>/dev/null <<'GPUPY'
+import ctypes, fcntl, glob, os, struct
+
+
+def iowr(nr, size):
+    return 0xC0000000 | (size << 16) | (0x64 << 8) | nr
+
+
+class Ver(ctypes.Structure):
+    _fields_ = [("major", ctypes.c_int), ("minor", ctypes.c_int), ("patch", ctypes.c_int),
+                ("name_len", ctypes.c_size_t), ("name", ctypes.c_void_p),
+                ("date_len", ctypes.c_size_t), ("date", ctypes.c_void_p),
+                ("desc_len", ctypes.c_size_t), ("desc", ctypes.c_void_p)]
+
+
+for n in sorted(glob.glob("/dev/dri/renderD*")):
+    try:
+        fd = os.open(n, os.O_RDWR | os.O_CLOEXEC)
+    except OSError:
+        continue
+    try:
+        nb, db, eb = (ctypes.create_string_buffer(80) for _ in range(3))
+        v = Ver(0, 0, 0, 79, ctypes.addressof(nb), 79, ctypes.addressof(db), 79, ctypes.addressof(eb))
+        fcntl.ioctl(fd, iowr(0x00, ctypes.sizeof(Ver)), v)
+        drv, gid = nb.value.decode("ascii", "replace").strip() or "-", "-"
+        try:
+            if drv == "panthor":
+                # DEV_QUERY GPU_INFO into a buffer larger than the struct (kernel zero-fills the rest); gpu_id is first field
+                buf = ctypes.create_string_buffer(256)
+                fcntl.ioctl(fd, iowr(0x40, 16), struct.pack("IIQ", 0, 256, ctypes.addressof(buf)))
+                gid = "%08x" % struct.unpack_from("I", buf.raw)[0]
+            elif drv == "panfrost":
+                # GET_PARAM GPU_PROD_ID
+                gid = "%x" % struct.unpack("IIQ", fcntl.ioctl(fd, iowr(0x44, 16), struct.pack("IIQ", 0, 0, 0)))[2]
+        except OSError:
+            pass
+        print(os.path.basename(n), drv.replace(" ", "_"), gid, flush=True)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+GPUPY
+}
+# Family and rank (higher wins) of one render node: $1 kernel driver, $2 DT compatible, $3 Mali GPU id (hex), $4 PCI vendor.
+gpu_family_of(){
+  local a=0 p=0 n f
+  case "$1" in
+    panthor|tyr)
+      # arch major and product major from gpu_id; Mesa knows G610 (10.7) and G310 (10.4) of arch 10
+      case "$3" in ''|-) ;; *) a=$(( 16#$3 >> 28 )); p=$(( 16#$3 >> 16 & 0xf ));; esac
+      case "$a.$p/$2" in
+        10.[47]/*|0*/*rk3588-mali*) echo mali-csf-v10 60;;
+        1[23].*/*|0*/*mt8196-mali*) echo mali-csf-5thgen 58;;
+        *) echo mali-csf 55;;
+      esac;;
+    panfrost)
+      case "$3" in
+        ''|-) ;;
+        600|620|720) a=4;;
+        750|820|830|860|880) a=5;;
+        *) a=$(( 16#$3 >> 12 ));;
+      esac
+      case "$a/$2" in
+        9/*|0/*mali-valhall-jm*) echo mali-valhall-jm 40;;
+        [67]/*|0/*mali-bifrost*) echo mali-bifrost 40;;
+        [45]/*|0/*arm,mali-t[0-9]*) echo mali-midgard 30;;
+        *) echo mali-panfrost 38;;
+      esac;;
+    lima) echo mali-utgard 10;;
+    msm|msm_dpu|msm_mdp|mdp4|adreno)
+      # Adreno generation from GPU node compatible: qcom,adreno-XYZ.W or chip id qcom,adreno-CCMMmmpp
+      n=$(cat /sys/bus/platform/drivers/adreno/*/of_node/compatible \
+            /sys/firmware/devicetree/base/soc*/gpu@*/compatible \
+            /sys/firmware/devicetree/base/gpu@*/compatible 2>/dev/null | tr '\0' '\n' \
+          | grep -m1 -oE '^qcom,adreno-[0-9][0-9a-f.]*$'); n=${n#qcom,adreno-}
+      case "$n" in
+        44??????|8??.*) f="adreno-a8xx 82";;
+        0700????|702.*) f="adreno-a702 45";;
+        43??????|07??????|7??.*) f="adreno-a7xx 80";;
+        06??????|6??.*) f="adreno-a6xx 75";;
+        '') f="adreno 70";;
+        *) f="adreno-legacy 35";;
+      esac
+      echo "$f";;
+    asahi) echo apple-agx 85;;
+    v3d) case "$2" in *2712-v3d*) echo broadcom-v3d71 25;; *) echo broadcom-v3d42 20;; esac;;
+    vc4|vc4-drm) echo broadcom-vc4 5;;
+    etnaviv|etnaviv-gpu) echo vivante 8;;
+    powervr) echo img-powervr 15;;
+    amdgpu) echo amd-radv 100;;
+    radeon) echo amd-radeon 88;;
+    nouveau) echo nvidia-nouveau 90;;
+    nvidia|nvidia-drm) echo nvidia-prop 95;;
+    i915|xe) echo intel 90;;
+    virtio_gpu) echo virtio-gpu 50;;
+    vgem|vkms|simpledrm|-) echo none 0;;
+    *) case "$4" in
+         0x1002) echo amd-radv 100;;
+         0x10de) echo nvidia-nouveau 90;;
+         0x8086) echo intel 90;;
+         0x1af4) echo virtio-gpu 50;;
+         *) echo unknown 1;;
+       esac;;
+  esac
+}
+# Detected family into GPU_DETECTED, with GPU_DRV and GPU_NAME.
+gpu_detect(){
+  local r node sdrv idrv gid compat vendor fam rank f2 r2 best=-1 io p a
+  GPU_DETECTED=none; GPU_DRV=""; GPU_NAME=""
+  io=$(gpu_ioctl_probe)
+  for r in /sys/class/drm/renderD*; do
+    [ -e "$r" ] || continue
+    node=${r##*/}
+    sdrv=$(basename "$(readlink -f "$r/device/driver" 2>/dev/null)" 2>/dev/null)
+    [ -e "$r/device/driver" ] || sdrv=-
+    idrv=$(printf '%s\n' "$io" | awk -v n="$node" '$1 == n {print $2}')
+    gid=$(printf '%s\n' "$io" | awk -v n="$node" '$1 == n {print $3}')
+    compat=$(tr '\0' ' ' 2>/dev/null < "$r/device/of_node/compatible")
+    vendor=$(cat "$r/device/vendor" 2>/dev/null)
+    # Kernel's own name wins; tyr registers as panthor, so its sysfs name is kept for display
+    read -r fam rank <<< "$(gpu_family_of "${idrv:-$sdrv}" "$compat" "$gid" "$vendor")"
+    [ "$fam" = unknown ] && [ "$sdrv" != - ] && [ -n "$idrv" ] && [ "$idrv" != "$sdrv" ] \
+      && read -r f2 r2 <<< "$(gpu_family_of "$sdrv" "$compat" "$gid" "$vendor")" && [ "$f2" != unknown ] && { fam=$f2; rank=$r2; }
+    [ "$rank" -gt "$best" ] || continue
+    best=$rank; GPU_DETECTED=$fam
+    GPU_DRV=${idrv:-$sdrv}; [ "$sdrv" = tyr ] && GPU_DRV=tyr
+    [ "$GPU_DRV" = - ] && GPU_DRV=""
+    GPU_NAME=""
+    case "$fam/$gid" in
+      mali-csf*/[0-9a-f]*)
+        p=$(( 16#$gid >> 16 & 0xf )); a=$(( 16#$gid >> 28 ))
+        case "$a.$p" in
+          10.2) GPU_NAME=Mali-G710;; 10.3) GPU_NAME=Mali-G510;; 10.4) GPU_NAME=Mali-G310;; 10.7) GPU_NAME=Mali-G610;;
+          11.*) GPU_NAME=Mali-G715/G615;; 12.*) GPU_NAME=Mali-G720/G620;; 13.*) GPU_NAME=Mali-G725/G625/G925;; 14.*) GPU_NAME=Mali-G1;;
+          *) GPU_NAME="Mali (arch v$a)";;
+        esac;;
+      mali-*/[0-9a-f]*) GPU_NAME="Mali (product 0x$gid)";;
+    esac
+    [ -n "$GPU_NAME" ] || case "$fam" in
+      mali-csf-v10) GPU_NAME="Mali-G610 class";;
+      mali-*) GPU_NAME=Mali;;
+      adreno-legacy) GPU_NAME="Adreno 5xx or older";;
+      adreno*) GPU_NAME="Adreno${fam#adreno}"; GPU_NAME=${GPU_NAME/-a/ };;
+      apple-agx) GPU_NAME="Apple AGX";;
+      broadcom-v3d71) GPU_NAME="VideoCore VII";;
+      broadcom-v3d42) GPU_NAME="VideoCore VI";;
+      broadcom-vc4) GPU_NAME="VideoCore IV";;
+      vivante) GPU_NAME=Vivante;;
+      img-powervr) GPU_NAME="Imagination PowerVR";;
+      amd-*) GPU_NAME=AMD;;
+      nvidia-*) GPU_NAME=NVIDIA;;
+      intel) GPU_NAME=Intel;;
+      virtio-gpu) GPU_NAME="virtio GPU";;
+      *) GPU_NAME="unknown GPU";;
+    esac
+  done
+  # Arm's closed kbase driver: /dev/mali0, no render node
+  if [ "$best" -le 0 ] && { [ -e /dev/mali0 ] || [ -e /sys/class/misc/mali0 ]; }; then
+    GPU_DETECTED=mali-kbase; GPU_DRV=mali_kbase; GPU_NAME=Mali
+  fi
+  [ "$GPU_DETECTED" = none ] && { GPU_DRV=""; GPU_NAME="no GPU"; }
+  return 0
+}
+# Vulkan driver of detected GPU from vulkaninfo, when installed: GPU_VK "<driver> <version>", Vulkan device name into GPU_NAME.
+gpu_vulkan(){
+  local want out
+  GPU_VK=""
+  command -v vulkaninfo >/dev/null 2>&1 || return 0
+  case "$GPU_DETECTED" in
+    mali-*) want=0x13b5;; adreno*) want=0x5143;; broadcom-*) want=0x14e4;; apple-agx) want=0x106b;;
+    img-powervr) want=0x1010;; amd-*) want=0x1002;; nvidia-*) want=0x10de;; intel) want=0x8086;; virtio-gpu) want=0x1af4;;
+    *) return 0;;
+  esac
+  out=$(timeout 20 vulkaninfo --summary 2>/dev/null | awk -v w="$want" '
+    /^GPU[0-9]+:/ { if (v == w && !done) { print n "\t" d " " ver; done = 1 } v = n = d = ver = "" }
+    $1 == "vendorID" { v = tolower($3) }  $1 == "deviceName" { sub(/^[^=]*= /, ""); n = $0 }
+    $1 == "driverName" && d == "" { d = tolower($3) }  $1 == "driverVersion" { ver = $3 }
+    $1 == "driverID" { d = $3; sub(/^DRIVER_ID_(MESA_)?/, "", d)
+      d = d == "INTEL_OPEN_SOURCE_MESA" ? "anv" : d == "IMAGINATION_OPEN_SOURCE_MESA" ? "pvr" : d == "NVIDIA_PROPRIETARY" ? "nvidia" : tolower(d) }
+    END { if (v == w && !done) print n "\t" d " " ver }')
+  [ -n "$out" ] || return 0
+  GPU_VK=${out#*$'\t'}
+  out=${out%%$'\t'*}; out=${out% (*)}
+  [ -n "$out" ] && GPU_NAME=$out
+  return 0
+}
+# Default states (1 on, 0 off) of vk-spoof, gpu-in-emulation, glx-lax for family $1, with GPU_NOTE and GPU_WARN.
+gpu_defaults(){
+  GPU_NOTE=""; GPU_WARN=""
+  case "$1" in
+    mali-csf-v10) GPU_DEF="1 1 1";;
+    mali-csf-5thgen) GPU_DEF="1 1 1"; GPU_NOTE="Mali 5th gen: untested";;
+    mali-csf) GPU_DEF="0 0 1"; GPU_NOTE="Mesa does not support this Mali model yet; titles run through forwarding";;
+    mali-valhall-jm|mali-bifrost|mali-midgard|mali-panfrost)
+      GPU_DEF="0 1 1"; GPU_NOTE="no default Vulkan driver for this Mali: native OpenGL titles; Windows titles unlikely";;
+    mali-utgard) GPU_DEF="0 0 1"; GPU_NOTE="Mali-400/450: not suitable for Steam games";;
+    mali-kbase) GPU_DEF="0 0 0"; GPU_WARN="closed Mali driver found: install needs Mesa's panfrost/panthor kernel driver";;
+    adreno-a8xx|adreno-a7xx|adreno-a6xx|adreno)
+      GPU_DEF="0 0 1"; GPU_NOTE="Adreno: Windows titles through DXVK expected to work; x86 Adreno drivers for 32-bit titles not included yet";;
+    adreno-a702) GPU_DEF="0 0 1"; GPU_NOTE="Adreno 702: entry-level GPU, Vulkan too limited for most Windows titles";;
+    adreno-legacy) GPU_DEF="0 0 1"; GPU_NOTE="Adreno 5xx or older: no Vulkan driver; native OpenGL titles only";;
+    apple-agx) GPU_DEF="0 0 1"; GPU_NOTE="Apple GPU: runs inside muvm on 16K-page hosts";;
+    broadcom-v3d71|broadcom-v3d42) GPU_DEF="0 0 1"; GPU_NOTE="Raspberry Pi GPU: Vulkan too limited for most Windows titles";;
+    broadcom-vc4) GPU_DEF="0 0 1"; GPU_NOTE="VideoCore IV (Raspberry Pi 0-3): not supported";;
+    vivante) GPU_DEF="0 0 1"; GPU_NOTE="Vivante GPU: no Vulkan driver, OpenGL ES class; most titles do not run";;
+    img-powervr) GPU_DEF="0 0 0"; GPU_NOTE="PowerVR: Vulkan driver in development; OpenGL through Zink; glx-lax not applicable";;
+    amd-radv) GPU_DEF="0 0 1"; GPU_NOTE="AMD GPU: forwarding covers it; x86 root filesystem's Mesa has its drivers too";;
+    nvidia-nouveau) GPU_DEF="0 0 1"; GPU_NOTE="NVIDIA GPU on nouveau: forwarding covers it; x86 root filesystem's Mesa has its drivers too";;
+    intel) GPU_DEF="0 0 1"; GPU_NOTE="Intel GPU: forwarding covers it; x86 root filesystem's Mesa has its drivers too";;
+    amd-radeon) GPU_DEF="0 0 1"; GPU_NOTE="legacy radeon driver: OpenGL only, too old for most titles";;
+    nvidia-prop) GPU_DEF="0 0 0"; GPU_NOTE="NVIDIA driver: glx-lax not applicable";;
+    virtio-gpu) GPU_DEF="0 0 1"; GPU_NOTE="virtual machine";;
+    none) GPU_DEF="0 0 1"; GPU_WARN="no GPU driver found: software rendering only";;
+    *) GPU_DEF="0 0 1"; GPU_NOTE="unknown GPU (driver ${GPU_DRV:-none}): safe defaults";;
+  esac
+}
+gpu_known(){ local f; for f in $GPU_FAMILIES; do [ "$f" = "$1" ] && return 0; done; return 1; }
+# Family in use: env GPU_FAMILY, else family saved by hand on an earlier run, else detected; then component defaults.
+gpu_pick(){
+  local d1 d2 d3 env=${GPU_FAMILY:-}
+  gpu_detect
+  GPU_SRC=detected; GPU_FAMILY=$GPU_DETECTED
+  local valid; valid=$(printf '%s auto' "$GPU_FAMILIES" | tr -s ' \n' ' ' | fold -s -w 78 | sed 's/ *$//; s/^/       /')
+  if [ -n "$env" ] && [ "$env" != auto ] && ! gpu_known "$env" && [ "${MODE:-}" = detect ]; then
+    # --detect only reports: detected family, with the valid values
+    warn "GPU_FAMILY=$env is not a known GPU family; detected family shown. Valid values:
+$valid" >&2
+  elif [ -n "$env" ] && [ "$env" != auto ]; then
+    gpu_known "$env" || die "GPU_FAMILY=$env is not a known GPU family. Valid values:
+$valid"
+    GPU_FAMILY=$env; GPU_SRC=user
+  elif [ -z "$env" ] && [ "$(conf_get GPU_FAMILY_SET)" = user ] && gpu_known "$(conf_get GPU_FAMILY)"; then
+    GPU_FAMILY=$(conf_get GPU_FAMILY); GPU_SRC=user
+  fi
+  gpu_defaults "$GPU_FAMILY"
+  read -r d1 d2 d3 <<< "$GPU_DEF"
+  [ "$d1" = 1 ] || eval "$(var_of vk-spoof)=0"
+  [ "$d2" = 1 ] || eval "$(var_of gpu-in-emulation)=0"
+  [ "$d3" = 1 ] || eval "$(var_of glx-lax)=0"
+}
+# Plain installer line: GPU: <name> (<kernel driver>[, Vulkan: <driver> <version>])
+gpu_line(){
+  local d=${GPU_DRV:-no driver}
+  [ -n "${GPU_VK:-}" ] && d="$d, Vulkan: $GPU_VK"
+  GPU_LINE="GPU: $GPU_NAME ($d)"
+  GPU_MSG=${GPU_WARN:-$GPU_NOTE}
+}
+# --detect: one "key: value" per line.
+gpu_report(){
+  local c v
+  echo "$GPU_LINE"
+  if [ "$GPU_SRC" = user ]; then echo "family: $GPU_FAMILY (set by user)"; else echo "family: $GPU_FAMILY"; fi
+  echo "detected family: $GPU_DETECTED"
+  echo "gpu: $GPU_NAME"
+  echo "kernel driver: ${GPU_DRV:-none}"
+  if [ -n "$GPU_VK" ]; then v=$GPU_VK
+  elif command -v vulkaninfo >/dev/null 2>&1; then v="none found"
+  else v="unknown (vulkaninfo not installed)"; fi
+  echo "vulkan: $v"
+  echo "page size: $(getconf PAGESIZE 2>/dev/null || echo unknown)"
+  v=$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null | tr -d '"')
+  echo "distro: ${v:-unknown}"
+  for c in $COMPONENTS; do
+    if eval "[ \"\$$(var_of "$c")\" = 1 ]"; then v=on; else v=off; fi
+    echo "component $c: $v"
+  done
+  [ -n "$GPU_NOTE" ] && echo "note: $GPU_NOTE"
+  [ -n "$GPU_WARN" ] && echo "warning: $GPU_WARN"
+  return 0
+}
+# Settings menu, installed as /usr/local/bin/steam-arm-config.
+menu_app(){ cat <<'STEAMARMCONFIG'
+#!/bin/bash
+# steam-arm-config: menu-driven settings for Steam ARM (built-in screens, dialog, whiptail or plain prompts). See --help.
+set -u
+
+SA_VERSION=2.0
+SA_DOCS=https://github.com/Scrumpper/Steam-ARM
+SA_CONF=/etc/steam-arm/steam-arm.conf
+SA_TITLES_SHARE=/usr/local/share/steam-arm/titles.conf
+SA_TITLES_ETC=/etc/steam-arm/titles.conf
+SA_LAUNCHER=/usr/local/bin/steam-arm
+SA_COMPATMAP=/usr/local/bin/steam-arm-compatmap
+SA_COMPATMAP_PY=/usr/local/lib/steam-arm-compatmap.py
+SA_REMOTEPLAY=/usr/local/bin/steam-arm-remoteplay
+SA_SHARE_INSTALLER=/usr/local/share/steam-arm/steam-arm-install.sh
+SA_RFS=/opt/fex-rootfs/Ubuntu_24_04
+SA_MALI=/opt/fex-rootfs/Ubuntu_24_04-mali
+# As root: root's own home and a private temp folder (sudo -E and su keep the caller's folders, which that account can change).
+SA_TMP=""
+if [ "$(id -u)" = 0 ]; then
+  SA_ROOTHOME=$(getent passwd 0 | cut -d: -f6); SA_ROOTHOME=${SA_ROOTHOME:-/root}
+  SA_TMP=$(mktemp -d /tmp/steam-arm.XXXXXX) || { echo "steam-arm-config: could not create a folder in /tmp; free some space and run this again" >&2; exit 1; }
+  trap 'rm -rf "$SA_TMP"' EXIT
+  trap 'exit 130' INT; trap 'exit 143' TERM
+fi
+# Report goes to the home of the account that runs this menu (the sudo caller when run through sudo).
+if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+  SA_REPORT="$(getent passwd "$SUDO_USER" | cut -d: -f6)/steam-arm-report.txt"
+elif [ "$(id -u)" = 0 ]; then
+  SA_REPORT="$SA_ROOTHOME/steam-arm-report.txt"
+else
+  SA_REPORT="${HOME:-/root}/steam-arm-report.txt"
+fi
+# Setup logs and temporary files: private folders, never fixed names in /tmp.
+if [ "$(id -u)" = 0 ]; then SA_CACHE="$SA_ROOTHOME/.cache/steam-arm"
+else SA_CACHE="${XDG_CACHE_HOME:-${HOME:-/root}/.cache}/steam-arm"; fi
+SA_SETUP_LOG=""
+SA_RULE_HIDRAW=/etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules
+SA_RULE_DEDUP=/etc/udev/rules.d/71-steam-arm-xpad-dedup.rules
+SA_PADXBOX_UNIT=/etc/systemd/system/steam-arm-pad-xbox.service
+SA_FEXLOG_GLOB='/tmp/fex-compat-tool-*.log'
+# Fallback component list when the installer cannot be asked.
+SA_COMPONENTS="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray page-size"
+SA_DEFAULT_OFF="pad-xbox shader-cache"
+SA_MALI_ONLY="vk-spoof gpu-in-emulation"
+SA_TOOL_RE='^(FEX|Proton|Steam Linux Runtime|Steamworks Common|Steamworks Shared)'
+
+DIALOG=""
+BT=""
+DETECT_CACHE=""
+DETECT_DONE=0
+SUDO_OK=0
+
+# ===========================================================================
+# Common helpers
+# ===========================================================================
+have(){ command -v "$1" >/dev/null 2>&1; }
+self_path(){ readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}"; }
+strip_ansi(){ sed 's/\x1b\[[0-9;]*[A-Za-z]//g'; }
+dot(){ case "$(locale charmap 2>/dev/null)" in UTF-8|utf8) printf ' \xc2\xb7 ';; *) printf ' | ';; esac; }
+trim(){ sed 's/^[[:space:]]*//; s/[[:space:]]*$//'; }
+# Temp file (tmpf -d: folder): root's private folder, else XDG_RUNTIME_DIR or TMPDIR when this account owns and can write it, else /tmp.
+tmpf(){
+  local d
+  if [ -n "$SA_TMP" ]; then mktemp "$@" "$SA_TMP/steam-arm-config.XXXXXX"; return; fi
+  for d in "${XDG_RUNTIME_DIR:-}" "${TMPDIR:-}" /tmp; do
+    if [ -z "$d" ] || [ ! -d "$d" ] || [ ! -w "$d" ]; then continue; fi
+    if [ "$d" != /tmp ] && [ ! -O "$d" ]; then continue; fi
+    mktemp "$@" "$d/steam-arm-config.XXXXXX" 2>/dev/null && return 0
+  done
+  return 1
+}
+TMP_FAIL="No temporary file could be created (XDG_RUNTIME_DIR, TMPDIR and /tmp tried). Free some space in /tmp, then try again."
+# Comma list wrapped to 55 columns, continuation lines indented under a 15-column label.
+wrap_list(){ sed 's/,/, /g' | fold -s -w 55 | sed '2,$s/^/               /'; }
+
+conf_get(){ sed -n "s/^$1=//p" "$SA_CONF" 2>/dev/null | tail -1 | sed "s/^[\"']//; s/[\"']\$//"; }
+# Set one key in the settings file, keeping every other line; atomic.
+conf_set(){
+  local t
+  mkdir -p "$(dirname "$SA_CONF")" || return 1
+  [ -f "$SA_CONF" ] || : > "$SA_CONF" || return 1
+  t=$(mktemp "$SA_CONF.XXXXXX") || return 1
+  if awk -v k="$1=" -v v="$1=$2" 'index($0, k) == 1 { if (!d) print v; d = 1; next } { print } END { if (!d) print v }' \
+       "$SA_CONF" > "$t" && chmod 644 "$t" && mv -f "$t" "$SA_CONF"; then return 0; fi
+  rm -f "$t"; return 1
+}
+
+is_installed(){ [ -x "$SA_LAUNCHER" ] && [ -f "$SA_CONF" ]; }
+
+game_user(){
+  local u; u=$(conf_get GAMEUSER)
+  [ -n "$u" ] && getent passwd "$u" >/dev/null 2>&1 && { echo "$u"; return; }
+  [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != root ] && { echo "$SUDO_USER"; return; }
+  [ "$(id -u)" != 0 ] && { id -un; return; }
+  getent passwd 1000 2>/dev/null | cut -d: -f1
+}
+game_home(){ getent passwd "$(game_user)" 2>/dev/null | cut -d: -f6; }
+# Client folder: ARMHOME_DIR relative to the game home (setup refuses other forms, so they read as the default).
+armhome_rel(){
+  local d; d=$(conf_get ARMHOME_DIR)
+  case "$d" in ''|/*|..|../*|*/..|*/../*) d=.local/share/steam-arm;; esac
+  echo "${d%/}"
+}
+arm_home(){ echo "$(game_home)/$(armhome_rel)"; }
+steam_dir(){ echo "$(arm_home)/.local/share/Steam"; }
+titles_user(){ echo "$(arm_home)/.config/steam-arm/titles.conf"; }
+titles_files(){ printf '%s\n' "$SA_TITLES_SHARE" "$SA_TITLES_ETC" "$(titles_user)"; }
+# Shorten home paths for display.
+tilde(){ local h; h=$(game_home); if [ -n "$h" ]; then sed "s#${h}#~#g"; else cat; fi; }
+
+steam_running(){ pgrep -x steam >/dev/null 2>&1; }
+
+# Installer: explicit env, packaged command, embedded copy, file beside this app.
+find_installer(){
+  local d
+  if [ -n "${STEAM_ARM_INSTALLER:-}" ] && [ -f "$STEAM_ARM_INSTALLER" ]; then echo "$STEAM_ARM_INSTALLER"; return 0; fi
+  if have steam-arm-setup; then command -v steam-arm-setup; return 0; fi
+  [ -f "$SA_SHARE_INSTALLER" ] && { echo "$SA_SHARE_INSTALLER"; return 0; }
+  d=$(dirname "$(self_path)")
+  [ -f "$d/steam-arm-install.sh" ] && { echo "$d/steam-arm-install.sh"; return 0; }
+  return 1
+}
+# Run installer with args (caller adds sudo/env).
+installer_cmd(){
+  local i; i=$(find_installer) || return 1
+  case "$i" in *.sh) echo "bash"; echo "$i";; *) echo "$i";; esac
+}
+
+# ===========================================================================
+# Detection
+# ===========================================================================
+# Raw --detect output of installer, for family $1 (GPU_FAMILY override) or detected (cached); empty when unsupported.
+detect_raw(){
+  local -a cmd; local out=""
+  if [ -z "${1:-}" ] && [ "$DETECT_DONE" = 1 ]; then printf '%s\n' "$DETECT_CACHE"; return; fi
+  mapfile -t cmd < <(installer_cmd)
+  if [ "${#cmd[@]}" -gt 0 ]; then
+    if [ -n "${1:-}" ]; then out=$(timeout 60 env GPU_FAMILY="$1" "${cmd[@]}" --detect 2>/dev/null </dev/null | strip_ansi)
+    else out=$(timeout 60 "${cmd[@]}" --detect 2>/dev/null </dev/null | strip_ansi); fi
+  fi
+  printf '%s' "$out" | grep -qiE '^(detected )?family[:=]|^page size[:=]' || out=""
+  [ -z "${1:-}" ] && { DETECT_DONE=1; DETECT_CACHE=$out; }
+  printf '%s\n' "$out"
+}
+# Last value of key(s) in "key: value" / "KEY=value" lines on stdin; case, spaces, _ and - ignored.
+detect_parse(){
+  awk -v want="$*" '
+    BEGIN { n = split(tolower(want), w, " "); for (i = 1; i <= n; i++) ok[w[i]] = 1 }
+    { p = match($0, /[:=]/); if (!p) next
+      k = tolower(substr($0, 1, p - 1)); gsub(/[ \t_-]/, "", k)
+      if (k in ok) { v = substr($0, p + 1); sub(/^[ \t"]+/, "", v); sub(/[ \t"]+$/, "", v); r = v; f = 1 } }
+    END { if (f) print r }'
+}
+detect_get(){ detect_raw | detect_parse "$@"; }
+# Note and warning lines ("note: x", "warning: x", or indented lines under "notes:").
+detect_notes(){
+  detect_raw | awk '
+    { l = $0; p = match(l, /[:=]/); k = p ? tolower(substr(l, 1, p - 1)) : ""; gsub(/[ \t_-]/, "", k) }
+    k ~ /^(notes?|warnings?)$/ { v = substr(l, p + 1); sub(/^[ \t]+/, "", v)
+      if (v != "") print (k ~ /^warn/ ? "Warning: " : "") v; inn = 1; next }
+    inn && /^[ \t]+[^ \t]/ { sub(/^[ \t]+(- )?/, ""); print; next }
+    { inn = 0 }'
+}
+# Components on by default for family $1 ("" = detected): "component NAME: on" lines, or a "defaults: a,b" line.
+detect_components(){
+  detect_raw "${1:-}" | awk '
+    tolower($1) == "component" { n = $2; sub(/:$/, "", n); if (tolower($3) == "on") { printf "%s%s", s, n; s = " " } ; c = 1; next }
+    { p = match($0, /[:=]/); k = p ? tolower(substr($0, 1, p - 1)) : ""; gsub(/[ \t_-]/, "", k)
+      if (k == "defaults" || k == "defaultcomponents") { d = substr($0, p + 1); gsub(/[ \t]/, "", d); gsub(/,/, " ", d) } }
+    END { if (!c && d != "") printf "%s", d; print "" }'
+}
+
+hw_model(){
+  local m
+  m=$(tr -d '\0' < "/proc/device-tree/model" 2>/dev/null)
+  [ -z "$m" ] && m=$(cat "/sys/class/dmi/id/sys_vendor" "/sys/class/dmi/id/product_name" 2>/dev/null | tr '\n' ' ' | trim)
+  echo "${m:-unknown}"
+}
+hw_soc(){
+  local c
+  c=$(tr '\0' '\n' < "/proc/device-tree/compatible" 2>/dev/null | tail -1)
+  if [ -n "$c" ]; then echo "${c#*,}" | tr '[:lower:]' '[:upper:]'; return; fi
+  grep -m1 -E '^(model name|Hardware)' "/proc/cpuinfo" 2>/dev/null | cut -d: -f2- | trim
+}
+# Kernel drivers bound to DRM devices (display-only drivers included).
+gpu_drivers(){
+  local d
+  for d in /sys/class/drm/card*/device/driver /sys/class/drm/renderD*/device/driver; do
+    [ -L "$d" ] && basename "$(readlink "$d")"
+  done | sort -u
+  [ -e "/sys/class/misc/mali0" ] && echo mali_kbase
+}
+# Installer GPU family id of a kernel driver (fallback when installer gives none).
+family_of_driver(){ case "$1" in
+  panthor|tyr)  case "$(tr '\0' ' ' < "/proc/device-tree/compatible" 2>/dev/null)" in
+                  *rk3588*) echo mali-csf-v10;; *mt8196*) echo mali-csf-5thgen;; *) echo mali-csf;; esac;;
+  panfrost)     echo mali-panfrost;;
+  lima)         echo mali-utgard;;
+  mali_kbase)   echo mali-kbase;;
+  msm|msm_dpu|adreno) echo adreno;;
+  v3d)          case "$(tr '\0' ' ' < "/proc/device-tree/compatible" 2>/dev/null)" in *2712*) echo broadcom-v3d71;; *) echo broadcom-v3d42;; esac;;
+  vc4|vc4-drm)  echo broadcom-vc4;;
+  etnaviv)      echo vivante;;
+  powervr)      echo img-powervr;;
+  asahi)        echo apple-agx;;
+  amdgpu)       echo amd-radv;;
+  radeon)       echo amd-radeon;;
+  nouveau)      echo nvidia-nouveau;;
+  nvidia|nvidia-drm) echo nvidia-prop;;
+  i915|xe)      echo intel;;
+  virtio_gpu|virtio-pci) echo virtio-gpu;;
+  *) return 1;;
+esac; }
+# GPU kernel driver: installer's answer, else first GPU driver bound in sysfs.
+gpu_driver(){
+  local v d
+  v=$(detect_get kerneldriver); [ -n "$v" ] && { echo "$v"; return; }
+  for d in $(gpu_drivers); do family_of_driver "$d" >/dev/null && { echo "$d"; return; }; done
+  echo none
+}
+gpu_family(){
+  local v
+  v=$(detect_get family); [ -n "$v" ] && { echo "$v" | awk '{print $1}'; return; }
+  family_of_driver "$(gpu_driver)" || echo none
+}
+gpu_name(){
+  local v; v=$(detect_get gpu | sed 's/ (.*//')
+  [ -n "$v" ] && { echo "$v"; return; }
+  vk_summary | cut -d, -f1
+}
+is_mali(){ case "$1" in mali-kbase|mali-utgard) return 1;; mali-*) return 0;; esac; return 1; }
+family_label(){
+  local v
+  case "$1" in
+    mali-kbase) v="Mali, closed driver";; mali-*) v="Mali";; adreno*) v="Adreno";; apple-agx) v="Apple GPU";;
+    broadcom-*) v="Raspberry Pi VideoCore";; vivante) v="Vivante";; img-powervr) v="PowerVR";;
+    amd-*) v="AMD";; nvidia-*) v="NVIDIA";; intel) v="Intel";; virtio-gpu) v="Virtual GPU";;
+    none|'') echo "no GPU driver found"; return;; *) v="unknown GPU";;
+  esac
+  echo "$v ($1)"
+}
+page_size(){ getconf PAGESIZE 2>/dev/null || echo 4096; }
+# page-size part applies on Raspberry Pi 5 class boards (16K kernel), or while its boot line is in place.
+page_size_applies(){
+  case "$(hw_model)" in
+    "Raspberry Pi 5"*|"Raspberry Pi Compute Module 5"*) return 0;;
+    "Raspberry Pi"*) [ "$(page_size)" != 4096 ] && return 0;;
+  esac
+  grep -qs '^# steam-arm-setup page-size:' /boot/firmware/config.txt /boot/config.txt
+}
+page_label(){ case "$1" in 4096) echo "4K";; 16384) echo "16K";; 65536) echo "64K";; *) echo "$1 bytes";; esac; }
+# Vulkan driver: installer's answer, else first non-CPU device from vulkaninfo.
+vk_summary(){
+  local v
+  v=$(detect_get vulkan); [ -n "$v" ] && { echo "$v"; return; }
+  have vulkaninfo || { echo "unknown (vulkaninfo not installed)"; return; }
+  timeout 15 vulkaninfo --summary 2>/dev/null | awk -F'= *' '
+    /^GPU[0-9]+:/ { if (name != "" && type !~ /CPU/) exit; name = drv = info = api = type = "" }
+    /apiVersion/ { api = $2 } /deviceType/ { type = $2 } /deviceName/ { name = $2 }
+    /driverName/ { drv = $2 } /driverInfo/ { info = $2 }
+    END { if (name == "" || type ~ /CPU/) print "none found"; else printf "%s, %s %s, API %s\n", name, drv, info, api }'
+}
+vk_ok(){ case "$(vk_summary)" in none*|unknown*|*llvmpipe*|*lavapipe*) return 1;; esac; return 0; }
+distro(){ sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null | tr -d '"'; }
+pkg_ver(){ dpkg-query -W -f='${Version}\n' "$@" 2>/dev/null | grep -v '^$' | head -1; }
+mesa_ver(){
+  local v
+  have glxinfo && v=$(timeout 10 glxinfo -B 2>/dev/null | grep -o 'Mesa [0-9][0-9.]*' | head -1 | cut -d' ' -f2)
+  [ -z "${v:-}" ] && v=$(pkg_ver libgl1-mesa-dri mesa-libgallium libglx-mesa0)
+  echo "${v:-unknown}"
+}
+fex_ver(){
+  local v
+  have FEXInterpreter && v=$(FEXInterpreter --version 2>/dev/null | head -1)
+  [ -z "${v:-}" ] && v=$(dpkg-query -W -f='${Package} ${Version}\n' 'fex-emu*' 2>/dev/null | grep -v ' $' | head -1)
+  echo "${v:-not installed}"
+}
+disk_free(){ df -h --output=avail,target "$1" 2>/dev/null | tail -1 | awk '{print $1 " free on " $2}'; }
+
+# Hardware entries of the install flow: id|label|GPU family ("?" = asks which GPU).
+hw_table(){ cat <<'HW'
+rk3588|Rockchip RK3588 / RK3588S|mali-csf-v10
+rk356x|Rockchip RK3566 / RK3568 / RK3576|mali-bifrost
+mediatek|MediaTek (Mali)|?
+snapdragon|Qualcomm Snapdragon (Adreno)|?
+rpi5|Raspberry Pi 5|broadcom-v3d71
+rpi4|Raspberry Pi 4|broadcom-v3d42
+asahi|Apple Silicon (Asahi)|apple-agx
+pc|PC graphics card (AMD/NVIDIA)|?
+vm|Virtual machine|virtio-gpu
+other|Other...|?
+HW
+}
+# Board entry matching this system, empty when unknown.
+hw_guess(){
+  local c m
+  c=$(tr '\0' ' ' < "/proc/device-tree/compatible" 2>/dev/null); m=$(hw_model)
+  case "$c $m" in
+    *rk3588*) echo rk3588;; *rk3566*|*rk3568*|*rk3576*) echo rk356x;;
+    *"Raspberry Pi 5"*) echo rpi5;; *"Raspberry Pi 4"*) echo rpi4;;
+    *mediatek*) echo mediatek;; *qcom*) echo snapdragon;; *apple,*) echo asahi;;
+    *) case "$(gpu_family)" in virtio-gpu) echo vm;; amd-*|nvidia-*|intel) echo pc;; esac;;
+  esac
+}
+hw_label(){ hw_table | awk -F'|' -v id="$1" '$1 == id { print $2 }'; }
+hw_short(){ local m; m=$(hw_model); [ "$m" = unknown ] && m=$(hw_label "$(hw_guess)"); echo "${m:0:28}"; }
+
+# ===========================================================================
+# Settings readers
+# ===========================================================================
+# GFX_DEFAULT in settings: auto (or empty) = rules decide, a (or forward) = route A for all, b = route B for all.
+gfx_default(){ case "$(conf_get GFX_DEFAULT)" in a|forward) echo a;; b) echo b;; *) echo auto;; esac; }
+gfx_label(){ case "$1" in a) echo "Forwarding";; b) echo "Mali drivers";; *) echo "Automatic";; esac; }
+gfx_default_label(){ case "$1" in a) echo "Forwarding for all";; b) echo "Mali drivers for all";; *) echo "Automatic";; esac; }
+comps_on(){ conf_get COMPONENTS_ON | tr ',' ' '; }
+# Parts on as setup would see them: saved choice; parts in neither saved list, and GPU parts not set by hand
+# once the GPU family changed, at the recommended state (family not saved: GPU parts only turn off).
+comps_effective(){
+  local on off rec user prev fam c out="" g
+  on=" $(comps_on) "; off=" $(conf_get COMPONENTS_OFF | tr ',' ' ') "
+  user=",$(conf_get COMPONENTS_USER_SET),"; prev=$(conf_get COMPONENTS_FAMILY); fam=$(gpu_family)
+  rec=" $(comp_recommended "$fam" yes) "
+  for c in $(comp_all); do
+    case "$c" in vk-spoof|gpu-in-emulation|glx-lax) g=1;; *) g=0;; esac
+    if [ "$g" = 1 ] && [ "$prev" != "$fam" ] && [[ "$user" != *",$c,"* ]]; then
+      if [ -z "$prev" ]; then [[ "$on" == *" $c "* && "$rec" == *" $c "* ]] && out="$out $c"
+      else [[ "$rec" == *" $c "* ]] && out="$out $c"; fi
+    elif [[ "$on" == *" $c "* ]]; then out="$out $c"
+    elif [[ "$off" != *" $c "* && "$rec" == *" $c "* ]]; then out="$out $c"
+    fi
+  done
+  echo "$out" | trim
+}
+comp_is_on(){ case " $(comps_on) " in *" $1 "*) return 0;; esac; return 1; }
+installed_version(){
+  local v; v=$(conf_get VERSION)
+  [ -z "$v" ] && v=$(pkg_ver steam-arm-setup steam-arm)
+  echo "${v:-unknown}"
+}
+client_channel(){
+  local b; b=$(head -1 "$(steam_dir)/package/beta" 2>/dev/null | trim)
+  echo "${b:-stable}"
+}
+fex_tool_ver(){
+  local v; v=$(grep -o 'FEX-[0-9][0-9.]*' "$(steam_dir)/steamapps/common/FEX-Emu/VERSIONS.txt" 2>/dev/null | head -1)
+  echo "${v:-not downloaded yet}"
+}
+mali_tree(){
+  local m e="..."
+  if [ -f "$SA_MALI/.steam-arm-mali" ]; then
+    m=$(head -1 "$SA_MALI/.steam-arm-mali" 2>/dev/null)
+    case "$(locale charmap 2>/dev/null)" in UTF-8|utf8) e="…";; esac
+    case "$m" in custom\ *) m=${m#custom }; printf 'present (custom drivers, sha %s%s), ' "${m:0:12}" "$e";; *) printf 'present, ';; esac
+    echo "$(du -shc "$SA_RFS" "$SA_MALI" 2>/dev/null | sed -n 2p | awk '{print $1}') extra (shared files counted once)"
+  elif [ -d "$SA_MALI" ]; then echo "incomplete (run Update / Repair)"
+  else echo "not installed"; fi
+}
+mali_ready(){ [ -f "$SA_MALI/.steam-arm-mali" ] && [ -f "$SA_MALI/graphics_provider.json" ]; }
+mali_custom(){ case "$(head -1 "$SA_MALI/.steam-arm-mali" 2>/dev/null)" in custom\ *) return 0;; esac; return 1; }
+# GPU families the Mali tree covers (MALI_FAMILIES of the launch handler); family as the handler reads it.
+SA_MALI_FAMILIES="mali-csf-v10 mali-csf-5thgen mali-csf mali-valhall-jm mali-bifrost mali-midgard mali-panfrost"
+route_family(){ local f; f=$(conf_get GPU_FAMILY); echo "${f:-$(gpu_family)}"; }
+mali_family(){ case " $SA_MALI_FAMILIES " in *" $(route_family) "*) return 0;; esac; return 1; }
+# Route B offered on a Mali GPU, or with a custom driver tree in place (handler applies it there too).
+route_b_ok(){ mali_family || { mali_ready && mali_custom; }; }
+SA_NO_ROUTE_B="Route B (Mali drivers in emulation) needs a Mali GPU or a custom driver archive."
+SA_NO_MALI="Mali drivers in emulation are not installed (Components); games use forwarding until it is."
+# Warning after choosing route B on a Mali GPU without the tree.
+route_b_note(){ [ "$1" = b ] && ! mali_ready && printf '%s' "$SA_NO_MALI"; return 0; }
+status_line(){
+  local d s; d=$(dot)
+  s="not installed"; is_installed && s="installed"
+  BT="Steam ARM $SA_VERSION${d}$(hw_short)${d}$s${d}graphics: $(gfx_default_label "$(gfx_default)")"
+}
+
+# ===========================================================================
+# titles.conf editing
+# ===========================================================================
+# Effective profile of appid over all profile files: key=value lines, later files win.
+tc_effective(){
+  local f
+  while IFS= read -r f; do [ -r "$f" ] && cat "$f"; done < <(titles_files) | awk -v id="$1" '
+    { d = $0; sub(/#.*/, "", d); n = split(d, w, /[ \t]+/); s = (w[1] == "" ? 2 : 1)
+      if (w[s] != id) next
+      for (i = s + 1; i <= n; i++) { p = index(w[i], "="); if (p) { k = substr(w[i], 1, p - 1); v[k] = substr(w[i], p + 1); if (!(k in o)) o[k] = ++c } } }
+    END { for (k in o) ord[o[k]] = k; for (i = 1; i <= c; i++) print ord[i] "=" v[ord[i]] }'
+}
+tc_get(){ tc_effective "$1" | sed -n "s/^$2=//p" | tail -1; }
+# File that sets key for appid last (later wins), empty if none.
+tc_source(){
+  local f src=""
+  while IFS= read -r f; do
+    [ -r "$f" ] && awk -v id="$1" -v k="$2=" '{ d = $0; sub(/#.*/, "", d); n = split(d, w, /[ \t]+/); s = (w[1] == "" ? 2 : 1)
+      if (w[s] != id) next; for (i = s + 1; i <= n; i++) if (index(w[i], k) == 1) f = 1 } END { exit !f }' "$f" && src=$f
+  done < <(titles_files)
+  echo "$src"
+}
+# Set (or with empty value remove) key for appid in file; other lines and keys kept, atomic write.
+tc_set(){
+  local file=$1 id=$2 key=$3 val=${4:-} t
+  mkdir -p "$(dirname "$file")" || return 1
+  [ -f "$file" ] || : > "$file" || return 1
+  t=$(mktemp "$file.XXXXXX") || return 1
+  if TC_ID=$id TC_KEY=$key TC_VAL=$val awk '
+      BEGIN { id = ENVIRON["TC_ID"]; key = ENVIRON["TC_KEY"]; val = ENVIRON["TC_VAL"] }
+      { line[NR] = $0; d = $0; c = ""; p = index(d, "#"); if (p) { c = substr(d, p); d = substr(d, 1, p - 1) }
+        n = split(d, w, /[ \t]+/); s = (w[1] == "" ? 2 : 1)
+        if (w[s] == id) { hit[NR] = 1; last = NR; out = id
+          for (i = s + 1; i <= n; i++) if (w[i] != "" && index(w[i], key "=") != 1) out = out " " w[i]
+          body[NR] = out; com[NR] = c } }
+      END { if (val != "" && last) body[last] = body[last] " " key "=" val
+        for (i = 1; i <= NR; i++) {
+          if (!hit[i]) { print line[i]; continue }
+          if (body[i] == id && com[i] == "") continue
+          print body[i] (com[i] != "" ? " " com[i] : "") }
+        if (val != "" && !last) print id " " key "=" val }' "$file" > "$t" \
+     && chmod 644 "$t" && mv -f "$t" "$file"; then return 0; fi
+  rm -f "$t"; return 1
+}
+valid_appid(){ [[ "$1" =~ ^[0-9]{1,10}$ ]]; }
+# Profile values: no spaces or '#' (file format splits on them).
+valid_value(){ [[ "$1" != *[[:space:]#]* ]]; }
+
+# ===========================================================================
+# Games
+# ===========================================================================
+# Library folders: client library plus every "path" in libraryfolders.vdf.
+game_libraries(){
+  local s; s=$(steam_dir)
+  { echo "$s"; sed -n 's/^[[:space:]]*"path"[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$s/steamapps/libraryfolders.vdf" 2>/dev/null; } | awk '!seen[$0]++'
+}
+# Installed games: appid<TAB>name<TAB>installdir, tools and runtimes left out, sorted by name.
+games_list(){
+  local lib f
+  while IFS= read -r lib; do
+    for f in "$lib"/steamapps/appmanifest_*.acf; do
+      [ -r "$f" ] || continue
+      awk '/^[ \t]*"(appid|name|installdir)"/ { k = $1; gsub(/"/, "", k); v = $0; sub(/^[ \t]*"[a-z]+"[ \t]*"/, "", v); sub(/"[ \t]*$/, "", v); if (!(k in a)) a[k] = v }
+           END { if (a["appid"] != "") printf "%s\t%s\t%s\n", a["appid"], a["name"], a["installdir"] }' "$f"
+    done
+  done < <(game_libraries) | awk -F'\t' -v re="$SA_TOOL_RE" '!seen[$1]++ && $2 !~ re && $1 != 228980' | sort -t"$(printf '\t')" -k2,2f
+}
+game_name(){ games_list | awk -F'\t' -v id="$1" '$1 == id { print $2 }'; }
+game_dir(){ games_list | awk -F'\t' -v id="$1" '$1 == id { print $3 }'; }
+# FEX tool logs, newest first.
+# shellcheck disable=SC2012,SC2086
+fexlogs(){ ls -t $SA_FEXLOG_GLOB 2>/dev/null; }
+# shellcheck disable=SC2012
+setuplogs(){ ls -t "$SA_CACHE"/setup-*.log 2>/dev/null; }
+# Newest FEX tool log naming this title (AppId, profile line or its install folder).
+game_fexlog(){
+  local dir f; dir=$(game_dir "$1")
+  while IFS= read -r f; do
+    [ -r "$f" ] || continue
+    if grep -qE "AppId=$1([^0-9]|\$)|profile for $1 |SteamAppId=$1([^0-9]|\$)" "$f" 2>/dev/null \
+       || { [ -n "$dir" ] && grep -qF "/common/$dir/" "$f" 2>/dev/null; }; then echo "$f"; return 0; fi
+  done < <(fexlogs)
+  return 1
+}
+
+# ===========================================================================
+# Dialog layer (built-in screens, else dialog, else whiptail, else plain prompts)
+# ===========================================================================
+ui_pick(){
+  if [ -n "${STEAM_ARM_DIALOG:-}" ]; then DIALOG=$STEAM_ARM_DIALOG
+  elif [ -t 0 ] && [ -t 1 ] && tui_ok; then DIALOG=builtin
+  elif have dialog; then DIALOG=dialog
+  elif have whiptail; then DIALOG=whiptail
+  else DIALOG="read"; fi
+  [ "$DIALOG" = dialog ] && dialog_rc
+}
+# Built-in screens need python3 with curses and a terminal that can place the cursor.
+tui_ok(){ have python3 && python3 -c 'import curses, sys; curses.setupterm(); sys.exit(not curses.tigetstr("cup"))' >/dev/null 2>&1; }
+# Light backtitle for dialog (its default can be dark on blue).
+dialog_rc(){
+  local f; f=$(tmpf) || return 0
+  printf 'screen_color = (WHITE,BLUE,ON)\n' > "$f" && export DIALOGRC="$f" && SA_DIALOGRC=$f
+}
+SA_DIALOGRC=""
+tui(){ python3 -c "$(tui_py)" "$1" "$BT" "${@:2}"; }
+# Full-screen dialogs in Python curses: sparse purple texture, lily-white box.
+tui_py(){ cat <<'SATUI'
+import codecs, curses, locale, os, re, select, signal, sys, textwrap, time, unicodedata
+
+locale.setlocale(locale.LC_ALL, "")
+ENC = locale.nl_langinfo(locale.CODESET)
+UTF = ENC.upper().replace("-", "") == "UTF8"
+KIND, BT, ARGS = sys.argv[1], sys.argv[2], sys.argv[3:]
+NOCOLOR = bool(os.environ.get("NO_COLOR"))
+# Linux console fonts often lack the dashed rule glyph.
+CONSOLE = os.environ.get("TERM", "").startswith("linux")
+K, R, G, Y, B, M, C, W = range(8)
+BOLD, REV, UL = curses.A_BOLD, curses.A_REVERSE, curses.A_UNDERLINE
+# Role: (fg, bg, attr). 256 values: closest xterm-256 entry that keeps the hue.
+THEMES = {
+    "256": {
+        "base": (252, 233, 0), "edge": (54, 233, 0), "mid": (53, 233, 0), "dim": (236, 233, 0),
+        "hi": (98, 233, 0), "back": (252, 233, 0), "shadow": (16, 16, 0),
+        "box": (235, 255, 0), "title": (55, 255, BOLD), "rule": (103, 255, 0), "hint": (244, 255, 0),
+        "sel": (255, 98, BOLD), "soft": (235, 253, 0), "on": (255, 98, BOLD), "off": (235, 252, 0),
+        "field": (16, 253, 0), "gon": (255, 98, BOLD), "goff": (235, 252, 0), "log": (241, 255, 0),
+    },
+    "8": {
+        "base": (W, K, 0), "edge": (M, K, 0), "mid": (M, K, 0), "dim": (M, K, 0),
+        "hi": (M, K, BOLD), "back": (W, K, BOLD), "shadow": (K, K, 0),
+        "box": (K, W, 0), "title": (M, W, 0), "rule": (K, W, 0), "hint": (K, W, 0),
+        "sel": (W, M, BOLD), "soft": (K, C, 0), "on": (W, M, BOLD), "off": (K, W, 0),
+        "field": (K, C, 0), "gon": (W, M, BOLD), "goff": (W, K, 0), "log": (K, W, 0),
+    },
+    "mono": {
+        "base": (0, 0, 0), "edge": (0, 0, 0), "mid": (0, 0, 0), "dim": (0, 0, 0), "hi": (0, 0, 0),
+        "back": (0, 0, BOLD), "shadow": (0, 0, 0), "box": (0, 0, 0), "title": (0, 0, BOLD),
+        "rule": (0, 0, 0), "hint": (0, 0, 0), "sel": (0, 0, REV), "soft": (0, 0, UL), "on": (0, 0, REV),
+        "off": (0, 0, 0), "field": (0, 0, UL), "gon": (0, 0, REV), "goff": (0, 0, 0), "log": (0, 0, 0),
+    },
+}
+MODE = "mono"
+ATTR = {}
+TEX = {"hi": "█", "edge": "▓", "mid": "▒", "dim": "░", "dash": "╌"} if UTF else \
+      {"hi": "#", "edge": "#", "mid": ":", "dim": ".", "dash": "-"}
+TEX8 = {"hi": "#", "edge": ":", "mid": ":", "dim": ".", "dash": "."}
+LINE = "┌┐└┘─│" if UTF else "++++-|"
+ARROW = "↑↓" if UTF else "^v"
+
+
+def pick_mode(colours):
+    if NOCOLOR or colours < 8:
+        return "mono"
+    return "256" if colours >= 256 else "8"
+
+
+def noise(x, seed):
+    h = (x * 2654435761 + seed * 40503) & 0xFFFFFFFF
+    h ^= h >> 13
+    h = (h * 2246822519) & 0xFFFFFFFF
+    return ((h >> 8) & 0xFF) / 255.0
+
+
+# Sparse speckle, denser toward the side edges; fixed per cell so it never shifts.
+def speckle(x, y, w):
+    d = 1.0 - min(x, w - 1 - x) / max(1.0, (w - 1) / 2.0)
+    if noise(x, y + 978) < 0.006 + d * 0.01:
+        return "hi"
+    r, e = noise(x, y + 1), d * 0.083
+    for lim, tier in ((e, "edge"), (e + 0.027, "mid"), (e + 0.06, "dim"), (e + 0.093, "dash")):
+        if r < lim:
+            return tier
+    return None
+
+
+def cw(ch):
+    return 2 if unicodedata.east_asian_width(ch) in "WF" else 1
+
+
+def dw(s):
+    return sum(cw(c) for c in s)
+
+
+def clean(s):
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if ch in "\t\n":
+            out.append(ch)
+        elif 0xd800 <= o < 0xe000 or (not UTF and o > 126):
+            out.append("?")
+        elif o < 32 or 0x7f <= o < 0xa0 or unicodedata.combining(ch):
+            continue
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def cut(s, n):
+    out, used = [], 0
+    for ch in s:
+        if used + cw(ch) > n:
+            break
+        out.append(ch)
+        used += cw(ch)
+    return "".join(out)
+
+
+# Backtitle in n columns: whole " · " (or " | ") segments dropped from the right; ellipsis only when
+# the first segment alone is too wide.
+def fit_bt(s, n):
+    if dw(s) <= n:
+        return s
+    sep = " · " if " · " in s else " | "
+    parts = s.split(sep)
+    while len(parts) > 1:
+        parts.pop()
+        t = sep.join(parts)
+        if dw(t) <= n:
+            return t
+    ell = "…" if UTF else "..."
+    return cut(cut(parts[0], max(0, n - dw(ell))) + ell, n)
+
+
+def wrap(text, width):
+    width = max(8, width)
+    lines = clean(text).rstrip("\n").split("\n")
+    out = []
+    for line in lines:
+        line = line.expandtabs(8).rstrip()
+        if dw(line) <= width:
+            out.append(line)
+            continue
+        body = line.lstrip()
+        sub = line[:len(line) - len(body)] + ("  " if body.startswith(("- ", "* ")) else "")
+        if len(sub) > width // 2:
+            sub = ""
+        out.extend(textwrap.wrap(line, width, subsequent_indent=sub, break_on_hyphens=False) or [""])
+    return out
+
+
+class Grid:
+    def __init__(s, h, w):
+        s.h, s.w = h, w
+        s.c = [[" "] * w for _ in range(h)]
+        s.r = [["base"] * w for _ in range(h)]
+
+    def put(s, y, x, text, role, lim=None):
+        lim = s.w if lim is None else min(s.w, lim)
+        if not 0 <= y < s.h:
+            return x
+        for ch in text:
+            n = cw(ch)
+            if x + n > lim:
+                break
+            if x >= 0:
+                s.c[y][x], s.r[y][x] = ch, role
+                if n == 2:
+                    s.c[y][x + 1], s.r[y][x + 1] = "", role
+            x += n
+        return x
+
+    def fill(s, y, x, h, w, role, ch=" "):
+        for yy in range(max(0, y), min(s.h, y + h)):
+            for xx in range(max(0, x), min(s.w, x + w)):
+                s.c[yy][xx], s.r[yy][xx] = ch, role
+
+    def runs(s, y, last=None):
+        row, roles, x, end = s.c[y], s.r[y], 0, s.w if last is None else last
+        while x < end:
+            role, x0, buf = roles[x], x, []
+            while x < end and roles[x] == role:
+                ch = row[x]
+                if ch == "" and not (x > 0 and row[x - 1] and cw(row[x - 1]) == 2):
+                    ch = " "
+                buf.append(ch)
+                x += 1
+            yield x0, "".join(buf), role
+
+
+def background(g):
+    if MODE == "8":
+        # 8/16 colours: a third of the cells, plain magenta, ASCII dots
+        for y in range(g.h):
+            for x in range(g.w):
+                t = speckle(x, y, g.w)
+                if t and noise(x, y + 5113) < 0.34:
+                    if t == "hi" and noise(x, y + 7919) < 0.5:
+                        t = "mid"
+                    g.c[y][x], g.r[y][x] = TEX8[t], "dim"
+    elif MODE != "mono":
+        dash = "-" if CONSOLE else TEX["dash"]
+        for y in range(g.h):
+            for x in range(g.w):
+                t = speckle(x, y, g.w)
+                if t:
+                    g.c[y][x], g.r[y][x] = (dash if t == "dash" else TEX[t]), ("dim" if t == "dash" else t)
+    bt = fit_bt(clean(BT).replace("\t", " ").replace("\n", " "), g.w - 2)
+    if bt:
+        g.fill(0, 0, 1, dw(bt) + 3, "base")
+        g.put(0, 1, bt, "back")
+
+
+# Box with border, title and drop shadow; returns its top-left corner.
+def box(g, h, w, title, foot=""):
+    y0 = max(1, (g.h - h) // 2)
+    x0 = max(0, (g.w - w) // 2)
+    if MODE == "256":
+        g.fill(y0 + 1, x0 + w, h, 2, "shadow")
+        g.fill(y0 + h, x0 + 2, 1, w, "shadow")
+    g.fill(y0, x0, h, w, "box")
+    tl, tr, bl, br, hz, vt = LINE
+    g.put(y0, x0, tl + hz * (w - 2) + tr, "rule")
+    g.put(y0 + h - 1, x0, bl + hz * (w - 2) + br, "rule")
+    for y in range(y0 + 1, y0 + h - 1):
+        g.put(y, x0, vt, "rule")
+        g.put(y, x0 + w - 1, vt, "rule")
+    t = cut(clean(title).replace("\n", " "), w - 6)
+    if t:
+        g.put(y0, x0 + (w - dw(t) - 2) // 2, " " + t + " ", "title")
+    if foot:
+        g.put(y0 + h - 1, x0 + w - dw(foot) - 4, " " + foot + " ", "hint")
+    return y0, x0
+
+
+def chip(label):
+    return " %s " % label.center(max(6, dw(label))) if MODE == "256" else "<%s>" % label.center(max(6, dw(label)))
+
+
+def btn_width(labels):
+    return sum(dw(chip(l)) for l in labels) + 3 * (len(labels) - 1)
+
+
+def buttons(g, y, x0, w, labels, active):
+    x = x0 + (w - btn_width(labels)) // 2
+    for i, l in enumerate(labels):
+        x = g.put(y, x, chip(l), "on" if i == active else "off") + 3
+
+
+def small(g):
+    return g.h < 10 or g.w < 36
+
+
+def tiny(scr, g):
+    g.fill(0, 0, g.h, g.w, "base", " ")
+    g.put(0, 0, "Enlarge the terminal (Esc: Back)", "back")
+    show(scr, g)
+
+
+def show(scr, g, cursor=None):
+    for y in range(g.h):
+        for x, s, role in g.runs(y):
+            try:
+                scr.addstr(y, x, s, ATTR[role])
+            except curses.error:
+                pass
+    try:
+        if cursor:
+            curses.curs_set(1)
+            scr.move(*cursor)
+        else:
+            curses.curs_set(0)
+    except curses.error:
+        pass
+    scr.refresh()
+
+
+KEYS = {curses.KEY_ENTER: "enter", curses.KEY_UP: "up", curses.KEY_DOWN: "down", curses.KEY_LEFT: "left",
+        curses.KEY_RIGHT: "right", curses.KEY_PPAGE: "pgup", curses.KEY_NPAGE: "pgdn", curses.KEY_HOME: "home",
+        curses.KEY_END: "end", curses.KEY_BTAB: "btab", curses.KEY_BACKSPACE: "bs", curses.KEY_DC: "del",
+        curses.KEY_RESIZE: "resize", "\n": "enter", "\r": "enter", "\x1b": "esc", "\t": "tab", "\x7f": "bs",
+        "\b": "bs", " ": "space"}
+for _n, _k in (("KEY_A1", "home"), ("KEY_C1", "end"), ("KEY_A3", "pgup"), ("KEY_C3", "pgdn")):
+    if hasattr(curses, _n):
+        KEYS[getattr(curses, _n)] = _k
+
+
+def key(scr):
+    while True:
+        try:
+            k = scr.get_wch()
+        except curses.error:
+            continue
+        if k in KEYS:
+            return KEYS[k]
+        if isinstance(k, str) and k.isprintable():
+            return k
+        if isinstance(k, int) and k >= 0:
+            return None
+
+
+def frame(scr):
+    h, w = scr.getmaxyx()
+    g = Grid(h, w)
+    background(g)
+    return g
+
+
+def move(cur, n, k, page):
+    step = {"up": -1, "down": 1, "pgup": -page, "pgdn": page, "home": -n, "end": n}.get(k)
+    return cur if step is None else max(0, min(n - 1, cur + step))
+
+
+# menu and checklist: (status, output)
+def listbox(scr, title, text, items, check, labels, default=""):
+    top, focus, typed, tlast = 0, -1, "", 0.0
+    cur = next((i for i, it in enumerate(items) if default and it[0] == default), 0)
+    tagw = max([dw(clean(t)) for t, _, _ in items] + [0])
+
+    def row(i):
+        t, l, on = items[i]
+        t = clean(t)
+        s = t + " " * (tagw - dw(t) + 2) + clean(l).replace("\n", " ")
+        return ("[%s] " % ("x" if on else " ") + s) if check else s
+
+    def find(buf):
+        b = buf.lower()
+        for i, (t, _, _) in enumerate(items):
+            if t.lower() == b:
+                return i
+        order = list(range(cur + 1, len(items))) + list(range(0, cur + 1)) if len(b) == 1 else range(len(items))
+        for i in order:
+            if items[i][0].lower().startswith(b):
+                return i
+        for i in order:
+            if items[i][1].lower().startswith(b):
+                return i
+        return None
+
+    while True:
+        g = frame(scr)
+        if small(g):
+            tiny(scr, g)
+        else:
+            wmax = min(g.w - 4, 76)
+            lines = wrap(text, wmax - 6) if text else []
+            rows = [row(i) for i in range(len(items))]
+            bw = max([dw(l) + 6 for l in lines] + [dw(r) + 7 for r in rows] + [dw(clean(title)) + 8, btn_width(labels) + 6, 50])
+            bw = min(bw, wmax)
+            nt, nl = len(lines), max(1, len(items))
+            extra = 6 if nt else 5
+            avail = g.h - 2
+            if nt + nl + extra > avail:
+                nl = max(min(len(items), 3), avail - nt - extra)
+            if nt + nl + extra > avail:
+                nt = max(0, avail - nl - extra)
+                lines = lines[:nt]
+            bh = nt + nl + (6 if nt else 5)
+            if cur < top:
+                top = cur
+            if cur >= top + nl:
+                top = cur - nl + 1
+            top = max(0, min(top, max(0, len(items) - nl)))
+            y0, x0 = box(g, bh, bw, title)
+            y = y0 + 2
+            for l in lines:
+                g.put(y, x0 + 3, l, "box", x0 + bw - 2)
+                y += 1
+            if nt:
+                y += 1
+            lx, lw = x0 + 2, bw - 4
+            for i in range(top, min(len(items), top + nl)):
+                role = "box"
+                if i == cur:
+                    role = "sel" if focus == -1 else "soft"
+                    g.fill(y + i - top, lx, 1, lw, role)
+                g.put(y + i - top, lx + 1, rows[i], role, lx + lw - 2)
+            if top > 0:
+                g.put(y, lx + lw - 1, ARROW[0], "sel" if cur == top and focus == -1 else "hint")
+            if top + nl < len(items):
+                yy = y + nl - 1
+                g.put(yy, lx + lw - 1, ARROW[1], "sel" if cur == top + nl - 1 and focus == -1 else "hint")
+            buttons(g, y0 + bh - 2, x0, bw, labels, 0 if focus == -1 else focus)
+            show(scr, g)
+            page = nl
+        k = key(scr)
+        if k == "esc":
+            return 1, ""
+        if k in ("up", "down", "pgup", "pgdn", "home", "end") and items:
+            cur = move(cur, len(items), k, max(1, page - 1) if not small(g) else 1)
+        elif k == "tab":
+            focus = {-1: 0, 0: 1}.get(focus, -1)
+        elif k == "btab":
+            focus = {-1: 1, 1: 0}.get(focus, -1)
+        elif k in ("left", "right"):
+            focus = 1 if (focus in (-1, 0)) == (k == "right") else 0
+        elif k == "space" and check and focus == -1 and items:
+            items[cur][2] = not items[cur][2]
+        elif k == "enter" or (k == "space" and focus >= 0):
+            if focus == 1:
+                return 1, ""
+            if check:
+                return 0, "".join(t + "\n" for t, _, on in items if on)
+            return (0, items[cur][0]) if items else (1, "")
+        elif k and len(k) == 1 and items:
+            now = time.monotonic()
+            buf = typed + k if now - tlast < 1.0 else k
+            tlast = now
+            i = find(buf)
+            if i is None and len(buf) > 1:
+                buf, i = k, find(k)
+            typed = buf
+            if i is not None:
+                cur, focus = i, -1
+
+
+# msgbox, yesno, textbox, infobox: (status, output)
+def pager(scr, title, text, labels, focus, draw_only=False, g=None):
+    top = 0
+    while True:
+        if g is None:
+            g = frame(scr)
+        if small(g):
+            if draw_only:
+                return g
+            tiny(scr, g)
+            vis = 1
+        else:
+            wmax = min(g.w - 4, 76)
+            lines = wrap(text, wmax - 6)
+            bw = min(wmax, max([dw(l) + 6 for l in lines] + [dw(clean(title)) + 8, 50] + ([btn_width(labels) + 6] if labels else [])))
+            extra = 5 if labels else 4
+            vis = max(1, min(len(lines), g.h - 2 - extra))
+            top = max(0, min(top, len(lines) - vis))
+            foot = ""
+            if len(lines) > vis:
+                foot = "%s%s %d-%d/%d" % (ARROW[0] if top else " ", ARROW[1] if top + vis < len(lines) else " ",
+                                           top + 1, top + vis, len(lines))
+            bh = vis + extra
+            y0, x0 = box(g, bh, bw, title, foot)
+            for i, l in enumerate(lines[top:top + vis]):
+                g.put(y0 + 2 + i, x0 + 3, l, "box", x0 + bw - 2)
+            if draw_only:
+                return g
+            buttons(g, y0 + bh - 2, x0, bw, labels, focus)
+            show(scr, g)
+        g = None
+        k = key(scr)
+        if k == "esc":
+            return 1, ""
+        if k in ("up", "down", "pgup", "pgdn", "home", "end"):
+            n = len(wrap(text, min(scr.getmaxyx()[1] - 4, 76) - 6))
+            top = move(top, max(1, n - vis + 1), k, max(1, vis - 1))
+        elif k in ("tab", "right", "btab", "left") and len(labels) > 1:
+            focus = (focus + (1 if k in ("tab", "right") else -1)) % len(labels)
+        elif k in ("enter", "space"):
+            return (0 if focus == 0 else 1), ""
+
+
+# inputbox and passwordbox: (status, output)
+def entry(scr, title, text, value, mask):
+    val, pos, focus, off = list(value), len(value), -1, 0
+    labels = ["OK", "Back"]
+    while True:
+        g = frame(scr)
+        cursor = None
+        if small(g):
+            tiny(scr, g)
+        else:
+            wmax = min(g.w - 4, 76)
+            lines = wrap(text, wmax - 6)
+            bw = min(wmax, max([dw(l) + 6 for l in lines] + [dw(clean(title)) + 8, 50]))
+            nt = max(1, min(len(lines), g.h - 2 - 7))
+            bh = nt + 7
+            y0, x0 = box(g, bh, bw, title)
+            for i, l in enumerate(lines[:nt]):
+                g.put(y0 + 2 + i, x0 + 3, l, "box", x0 + bw - 2)
+            fy, fx, fw = y0 + 3 + nt, x0 + 3, bw - 6
+            s = "*" * len(val) if mask else clean("".join(val))
+            if pos - off >= fw:
+                off = pos - fw + 1
+            if pos < off:
+                off = pos
+            g.fill(fy, fx, 1, fw, "field")
+            g.put(fy, fx, s[off:off + fw], "field", fx + fw)
+            buttons(g, y0 + bh - 2, x0, bw, labels, 0 if focus == -1 else focus)
+            if focus == -1:
+                cursor = (fy, fx + dw(s[off:pos]))
+            show(scr, g, cursor)
+        k = key(scr)
+        if k == "esc":
+            return 1, ""
+        if k == "enter" or (k == "space" and focus >= 0):
+            return (1, "") if focus == 1 else (0, "".join(val))
+        if k == "tab":
+            focus = {-1: 0, 0: 1}.get(focus, -1)
+        elif k == "btab":
+            focus = {-1: 1, 1: 0}.get(focus, -1)
+        elif focus >= 0:
+            if k in ("left", "right"):
+                focus = 1 - focus
+        elif k == "left":
+            pos = max(0, pos - 1)
+        elif k == "right":
+            pos = min(len(val), pos + 1)
+        elif k == "home":
+            pos = 0
+        elif k == "end":
+            pos = len(val)
+        elif k == "bs" and pos > 0:
+            pos -= 1
+            del val[pos]
+        elif k == "del" and pos < len(val):
+            del val[pos]
+        elif k == "space" or (k and len(k) == 1):
+            val.insert(pos, " " if k == "space" else k)
+            pos += 1
+
+
+STEP = re.compile(r"^(==>)?\s*([0-9]+)/([0-9]+)\s+(.*)$")
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-Za-z]|\x1b[=>]")
+
+
+def plain(line):
+    parts = [p for p in ANSI.sub("", line).split("\r") if p.strip()]
+    return clean(parts[-1] if parts else "").expandtabs(8).rstrip()
+
+
+# Live log tail and step gauge from "N/total text" lines; returns at end of input.
+def progress(scr, title, feed):
+    os.set_blocking(feed, False)
+    dec = codecs.getincrementaldecoder("utf-8")("replace")
+    log, part, step, eof = [], "", None, False
+    scr.nodelay(True)
+    while True:
+        g = frame(scr)
+        if small(g):
+            tiny(scr, g)
+        else:
+            bw = min(g.w - 4, 76)
+            bh = min(g.h - 2, 18)
+            y0, x0 = box(g, bh, bw, title)
+            tail = bh - 6
+            rows = []
+            for l in log[-tail:] + ([plain(part)] if plain(part) else []):
+                rows.extend(wrap(l, bw - 6))
+            shown = rows[-tail:] if tail > 0 else []
+            for i, l in enumerate(shown):
+                g.put(y0 + 1 + i, x0 + 3, l, "log", x0 + bw - 3)
+            label, pct = "Starting...", 0
+            if step:
+                n, tot, txt = step
+                pct = max(0, min(100, n * 100 // tot))
+                label = "Step %d of %d: %s" % (n, tot, txt)
+            g.put(y0 + bh - 4, x0 + 3, label, "box", x0 + bw - 3)
+            gw = bw - 6
+            fill = gw * pct // 100
+            bar = ("%d%%" % pct).center(gw)
+            for i in range(gw):
+                ch = bar[i]
+                if MODE == "mono" and i >= fill and ch == " ":
+                    ch = "." if not UTF else "·"
+                g.put(y0 + bh - 3, x0 + 3 + i, ch, "gon" if i < fill else "goff")
+            show(scr, g)
+        if eof:
+            return 0, ""
+        r = select.select([feed, 0], [], [], 0.25)[0]
+        if feed in r:
+            try:
+                b = os.read(feed, 65536)
+            except BlockingIOError:
+                b = None
+            if b == b"":
+                eof, chunk = True, dec.decode(b"", True)
+            else:
+                chunk = dec.decode(b) if b else ""
+            part += chunk
+            *done, part = part.split("\n")
+            if eof and part:
+                done.append(part)
+                part = ""
+            for line in done:
+                p = plain(line)
+                m = STEP.match(p)
+                if m and int(m.group(3)) > 0:
+                    step = (int(m.group(2)), int(m.group(3)), m.group(4)[:60])
+                if p:
+                    log.append(p)
+            del log[:-300]
+        while scr.getch() != -1:
+            pass
+
+
+def colours():
+    global MODE, ATTR
+    n = 0
+    if not NOCOLOR and curses.has_colors():
+        curses.start_color()
+        n = curses.COLORS
+    MODE = pick_mode(n)
+    if MODE == "mono" and curses.has_colors():
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+        except curses.error:
+            pass
+    pairs = {}
+    for role, (fg, bg, a) in THEMES[MODE].items():
+        if MODE == "mono":
+            ATTR[role] = a
+            continue
+        if (fg, bg) not in pairs:
+            pairs[(fg, bg)] = len(pairs) + 1
+            curses.init_pair(pairs[(fg, bg)], fg, bg)
+        ATTR[role] = curses.color_pair(pairs[(fg, bg)]) | a
+
+
+def run(scr, feed):
+    colours()
+    scr.keypad(True)
+    a = ARGS + [""] * 6
+    if KIND in ("menu", "check"):
+        title, text = a[0], a[1]
+        if KIND == "menu":
+            labels, rest = ["Select", a[2] or "Back"], ARGS[4:]
+            items = [[rest[i], rest[i + 1], False] for i in range(0, len(rest) - 1, 2)]
+        else:
+            labels, rest = ["OK", "Back"], ARGS[2:]
+            items = [[rest[i], rest[i + 1], rest[i + 2].upper() == "ON"] for i in range(0, len(rest) - 2, 3)]
+        return listbox(scr, title, text, items, KIND == "check", labels, a[3] if KIND == "menu" else "")
+    if KIND == "msg":
+        return pager(scr, a[0], a[1], ["OK"], 0)
+    if KIND == "yesno":
+        return pager(scr, a[0], a[1], [a[2] or "Yes", a[3] or "No"], 1 if a[4] == "defaultno" else 0)
+    if KIND == "textstr":
+        return pager(scr, a[0], a[1], ["Back"], 0)
+    if KIND == "text":
+        try:
+            with open(a[1], encoding="utf-8", errors="replace") as f:
+                body = f.read()
+        except OSError as e:
+            body = "Could not read %s: %s" % (a[1], e.strerror)
+        return pager(scr, a[0], body, ["Back"], 0)
+    if KIND in ("input", "password"):
+        return entry(scr, a[0], a[1], "" if KIND == "password" else a[2], KIND == "password")
+    if KIND == "progress":
+        return progress(scr, a[0], feed)
+    return 1, ""
+
+
+# Paint a grid on the normal screen with terminfo strings (no curses session).
+def paint(g):
+    def cap(name, *p):
+        s = curses.tigetstr(name)
+        return (curses.tparm(s, *p) if p else s) if s else b""
+    seq = {}
+    for role, (fg, bg, a) in THEMES[MODE].items():
+        s = b""
+        if MODE != "mono":
+            s += cap("setaf", fg) + cap("setab", bg)
+        s += (cap("bold") if a & BOLD else b"") + (cap("rev") if a & REV else b"") + (cap("smul") if a & UL else b"")
+        seq[role] = s
+    out = [cap("sgr0"), cap("clear")]
+    for y in range(g.h - 1):
+        out.append(cap("cup", y, 0))
+        for x, s, role in g.runs(y):
+            out.append(cap("sgr0") + seq[role] + s.encode(ENC, "replace"))
+    out += [cap("sgr0"), cap("cup", g.h - 1, 0)]
+    os.write(1, b"".join(out))
+
+
+def term_grid():
+    try:
+        curses.setupterm(None, 1)
+    except curses.error:
+        return None
+    global MODE
+    MODE = pick_mode(curses.tigetnum("colors"))
+    w, h = os.get_terminal_size(1)
+    if not curses.tigetstr("cup") or h < 2 or w < 2:
+        return None
+    g = Grid(h, w)
+    background(g)
+    return g
+
+
+def main():
+    feed = os.dup(0) if KIND == "progress" else None
+    res = os.dup(1)
+    try:
+        tty = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    except OSError:
+        tty = 2 if os.isatty(2) else None
+    if tty is None:
+        return 1
+    os.dup2(tty, 0)
+    os.dup2(tty, 1)
+    if KIND == "info":
+        g = term_grid()
+        if g is None:
+            os.write(1, ("\n%s\n%s\n" % (ARGS[0] if ARGS else "", ARGS[1] if len(ARGS) > 1 else "")).encode(ENC, "replace"))
+        elif small(g):
+            paint(g)
+        else:
+            paint(pager(None, ARGS[0], ARGS[1] if len(ARGS) > 1 else "", [], 0, True, g))
+        return 0
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda *_: sys.exit(1))
+    os.environ["ESCDELAY"] = "25"
+    try:
+        st, out = curses.wrapper(run, feed)
+    except KeyboardInterrupt:
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGINT)
+        return 130
+    except Exception as e:
+        if feed is not None:
+            os.set_blocking(feed, True)
+            while os.read(feed, 65536):
+                pass
+        sys.stderr.write("steam-arm-config: screen error: %s\n" % e)
+        return 1
+    if MODE != "mono":
+        g = Grid(*os.get_terminal_size(1)[::-1])
+        background(g)
+        paint(g)
+    if out:
+        os.write(res, os.fsencode(out))
+    return st
+
+
+sys.exit(main())
+SATUI
+}
+ui_size(){
+  local r c; read -r r c < <(stty size 2>/dev/null || echo "24 80")
+  UH=$(( r - 2 )); [ "$UH" -gt 22 ] && UH=22; [ "$UH" -lt 20 ] && UH=20
+  UW=$(( c - 4 )); [ "$UW" -gt 76 ] && UW=76; [ "$UW" -lt 70 ] && UW=70
+  UL=$(( UH - 9 ))
+}
+ui_pause(){ printf '\nPress Enter to continue... ' >&2; read -r _ </dev/tty; }
+# ui_menu title text [--cancel label] [--default tag] tag item ...; prints chosen tag, status 1 on Back.
+ui_menu(){
+  local title=$1 text=$2 cancel=Back def="" n i sel; shift 2
+  while :; do
+    case "${1:-}" in --cancel) cancel=$2; shift 2;; --default) def=$2; shift 2;; *) break;; esac
+  done
+  local -a di=(); [ -n "$def" ] && di=(--default-item "$def")
+  ui_size
+  case "$DIALOG" in
+    builtin)  tui menu "$title" "$text" "$cancel" "$def" "$@";;
+    whiptail) whiptail --backtitle "$BT" --title "$title" "${di[@]}" --ok-button Select --cancel-button "$cancel" \
+                --menu "$text" "$UH" "$UW" "$UL" "$@" 3>&1 1>&2 2>&3;;
+    dialog)   dialog --backtitle "$BT" --title "$title" "${di[@]}" --ok-label Select --cancel-label "$cancel" \
+                --menu "$text" "$UH" "$UW" "$UL" "$@" 3>&1 1>&2 2>&3;;
+    *) { printf '\n== %s ==\n%s\n\n%s\n\n' "$title" "$BT" "$text"
+         n=0; while [ $# -ge 2 ]; do n=$((n + 1)); eval "_t$n=\$1"; printf '  %2d) %s\n' "$n" "$2"; shift 2; done
+         printf '   0) %s\n\nChoice: ' "$cancel"; } >&2
+       read -r sel </dev/tty || return 1
+       [[ "$sel" =~ ^[0-9]+$ ]] && [ "$sel" -ge 1 ] && [ "$sel" -le "$n" ] || return 1
+       i="_t$sel"; echo "${!i}";;
+  esac
+}
+# ui_check title text tag item ON|OFF ...; prints chosen tags one per line.
+ui_check(){
+  local title=$1 text=$2 n=0 i sel; shift 2
+  ui_size
+  case "$DIALOG" in
+    builtin)  tui check "$title" "$text" "$@";;
+    whiptail) whiptail --backtitle "$BT" --title "$title" --separate-output --ok-button OK --cancel-button Back \
+                --checklist "$text" "$UH" "$UW" "$UL" "$@" 3>&1 1>&2 2>&3;;
+    dialog)   dialog --backtitle "$BT" --title "$title" --separate-output --ok-label OK --cancel-label Back \
+                --checklist "$text" "$UH" "$UW" "$UL" "$@" 3>&1 1>&2 2>&3;;
+    *) while [ $# -ge 3 ]; do n=$((n + 1)); eval "_t$n=\$1 _d$n=\$2 _s$n=\$3"; shift 3; done
+       while :; do
+         { printf '\n== %s ==\n%s\n\n' "$title" "$text"
+           for i in $(seq 1 "$n"); do eval "printf '  %2d) [%s] %-16s %s\n' $i \"\$( [ \"\$_s$i\" = ON ] && echo x || echo ' ')\" \"\$_t$i\" \"\$_d$i\""; done
+           printf '\nNumber to toggle, Enter to accept, 0 for Back: '; } >&2
+         read -r sel </dev/tty || return 1
+         [ -z "$sel" ] && break; [ "$sel" = 0 ] && return 1
+         [[ "$sel" =~ ^[0-9]+$ ]] && [ "$sel" -le "$n" ] && eval "[ \"\$_s$sel\" = ON ] && _s$sel=OFF || _s$sel=ON"
+       done
+       for i in $(seq 1 "$n"); do eval "[ \"\$_s$i\" = ON ] && echo \"\$_t$i\""; done; return 0;;
+  esac
+}
+ui_msg(){
+  ui_size
+  case "$DIALOG" in
+    builtin)  tui msg "$1" "$2";;
+    whiptail) whiptail --backtitle "$BT" --title "$1" --ok-button OK --msgbox "$2" "$UH" "$UW";;
+    dialog)   dialog --backtitle "$BT" --title "$1" --msgbox "$2" "$UH" "$UW";;
+    *) printf '\n== %s ==\n%s\n' "$1" "$2" >&2; ui_pause;;
+  esac
+}
+# ui_yesno title text [yes-label no-label [defaultno]]
+ui_yesno(){
+  local y=${3:-Yes} n=${4:-No} def=(); [ "${5:-}" = defaultno ] && def=(--defaultno)
+  ui_size
+  case "$DIALOG" in
+    builtin)  tui yesno "$1" "$2" "$y" "$n" "${5:-}";;
+    whiptail) whiptail --backtitle "$BT" --title "$1" "${def[@]}" --yes-button "$y" --no-button "$n" --yesno "$2" "$UH" "$UW";;
+    dialog)   dialog --backtitle "$BT" --title "$1" "${def[@]}" --yes-label "$y" --no-label "$n" --yesno "$2" "$UH" "$UW";;
+    *) local a; printf '\n== %s ==\n%s\n\n[%s/%s]: ' "$1" "$2" "$y" "$n" >&2; read -r a </dev/tty
+       case "$(echo "$a" | tr '[:upper:]' '[:lower:]')" in y|yes|"$(echo "$y" | tr '[:upper:]' '[:lower:]')") return 0;; esac; return 1;;
+  esac
+}
+# Hidden entry; prints what was typed, status 1 on Back.
+ui_password(){
+  ui_size
+  case "$DIALOG" in
+    builtin)  tui password "$1" "$2";;
+    whiptail) whiptail --backtitle "$BT" --title "$1" --ok-button OK --cancel-button Back --passwordbox "$2" 12 "$UW" 3>&1 1>&2 2>&3;;
+    dialog)   dialog --backtitle "$BT" --title "$1" --cancel-label Back --insecure --passwordbox "$2" 12 "$UW" 3>&1 1>&2 2>&3;;
+    *) local a; printf '\n== %s ==\n%s\n(0 = Back): ' "$1" "$2" >&2; read -rs a </dev/tty || return 1; echo >&2
+       [ "$a" = 0 ] && return 1; echo "$a";;
+  esac
+}
+ui_input(){
+  ui_size
+  case "$DIALOG" in
+    builtin)  tui input "$1" "$2" "${3:-}";;
+    whiptail) whiptail --backtitle "$BT" --title "$1" --ok-button OK --cancel-button Back --inputbox "$2" 12 "$UW" "${3:-}" 3>&1 1>&2 2>&3;;
+    dialog)   dialog --backtitle "$BT" --title "$1" --cancel-label Back --inputbox "$2" 12 "$UW" "${3:-}" 3>&1 1>&2 2>&3;;
+    *) local a; printf '\n== %s ==\n%s\n[%s] (0 = Back): ' "$1" "$2" "${3:-}" >&2; read -r a </dev/tty || return 1
+       [ "$a" = 0 ] && return 1; echo "${a:-${3:-}}";;
+  esac
+}
+# Text from a file; box sized to it, scrolling only when longer than the screen (whiptail's scroll view ignores Enter).
+ui_text(){
+  local h f
+  [ "$DIALOG" = builtin ] && { tui text "$1" "$2"; return; }
+  ui_size
+  # no temp file: the unfolded file itself
+  if f=$(tmpf); then fold -s -w $(( UW - 5 )) "$2" > "$f"; else f=$2; fi
+  h=$(( $(wc -l < "$f") + 7 ))
+  case "$DIALOG" in
+    whiptail) if [ "$h" -le "$UH" ]; then
+                whiptail --backtitle "$BT" --title "$1" --ok-button Back --textbox "$f" "$h" "$UW"
+              else
+                whiptail --backtitle "$BT" --title "$1 (arrows scroll; Tab, Enter: Back)" --scrolltext --ok-button Back --textbox "$f" "$UH" "$UW"
+              fi;;
+    dialog)   dialog --backtitle "$BT" --title "$1" --exit-label Back --textbox "$f" "$UH" "$UW";;
+    *) printf '\n== %s ==\n' "$1" >&2; cat "$2" >&2; ui_pause;;
+  esac
+  [ "$f" = "$2" ] || rm -f "$f"
+}
+# Text from a string: builtin screens take it directly; others through a temp file, else a message box.
+ui_textstr(){
+  local f
+  if [ "$DIALOG" = builtin ] && [ "${#2}" -lt 100000 ]; then tui textstr "$1" "$2"; return; fi
+  if f=$(tmpf); then printf '%s\n' "$2" > "$f"; ui_text "$1" "$f"; rm -f "$f"; return; fi
+  case "$DIALOG" in
+    builtin|whiptail|dialog) ui_msg "$1" "$2";;
+    *) printf '\n== %s ==\n%s\n' "$1" "$2" >&2; ui_pause;;
+  esac
+}
+ui_info(){
+  case "$DIALOG" in
+    builtin)  tui info "$1" "$2";;
+    whiptail) TERM=${TERM:-vt100} whiptail --backtitle "$BT" --title "$1" --infobox "$2" 8 60;;
+    dialog)   dialog --backtitle "$BT" --title "$1" --infobox "$2" 8 60;;
+    *) printf '%s\n' "$2" >&2;;
+  esac
+}
+# Standard input of the command run by ui_run: UI_STDIN (one line, e.g. a password), else nothing.
+UI_STDIN=""
+ui_feed(){ [ -n "$UI_STDIN" ] && printf '%s\n' "$UI_STDIN"; return 0; }
+# Progress of a long command: log tail and step gauge (built-in), gauge fed by "N/11" step lines (whiptail),
+# programbox (dialog), terminal (plain).
+# ui_run title log cmd...; status of cmd.
+ui_run(){
+  local title=$1 log=$2 rcf; shift 2
+  rcf=$(tmpf) || { ui_msg "$title" "$TMP_FAIL"; return 1; }
+  ui_size
+  case "$DIALOG" in
+    builtin)  { ui_feed | "$@" 2>&1; echo "${PIPESTATUS[1]}" > "$rcf"; } | tee -a "$log" | tui progress "$title";;
+    whiptail) { ui_feed | "$@" 2>&1; echo "${PIPESTATUS[1]}" > "$rcf"; } | tee -a "$log" | progress_feed \
+                | whiptail --backtitle "$BT" --title "$title" --gauge "Starting..." 8 "$UW" 0;;
+    dialog)   { ui_feed | "$@" 2>&1; echo "${PIPESTATUS[1]}" > "$rcf"; } | tee -a "$log" | ansi_lines \
+                | dialog --backtitle "$BT" --title "$title" --programbox "$UH" "$UW";;
+    *) { ui_feed | "$@" 2>&1; echo "${PIPESTATUS[1]}" > "$rcf"; } | tee -a "$log";;
+  esac
+  local rc; rc=$(cat "$rcf" 2>/dev/null); rm -f "$rcf"
+  return "${rc:-1}"
+}
+# Colour codes removed line by line (no pipe buffering, so progress shows live).
+ansi_lines(){
+  local l
+  while IFS= read -r l; do
+    while [[ "$l" =~ $'\e'\[[0-9\;]*[A-Za-z] ]]; do l=${l//"${BASH_REMATCH[0]}"/}; done
+    printf '%s\n' "$l"
+  done
+}
+# Gauge protocol from installer step lines "==> N/11  text".
+progress_feed(){
+  local line n tot txt re='^(==>)?[[:space:]]*([0-9]+)/([0-9]+)[[:space:]]+(.*)$'
+  while IFS= read -r line; do
+    while [[ "$line" =~ $'\e'\[[0-9\;]*[A-Za-z] ]]; do line=${line//"${BASH_REMATCH[0]}"/}; done
+    if [[ "$line" =~ $re ]]; then
+      n=${BASH_REMATCH[2]}; tot=${BASH_REMATCH[3]}; txt=${BASH_REMATCH[4]}
+      [ "$tot" -gt 0 ] 2>/dev/null || continue
+      printf 'XXX\n%d\nStep %s of %s: %s\nXXX\n' $(( n * 100 / tot )) "$n" "$tot" "${txt:0:60}"
+    fi
+  done
+}
+
+# ===========================================================================
+# Root access
+# ===========================================================================
+# Make sure root commands can run: explain once, then let sudo ask in the terminal.
+need_root(){
+  [ "$(id -u)" = 0 ] && return 0
+  [ "$SUDO_OK" = 1 ] && sudo -n true 2>/dev/null && return 0
+  have sudo || { ui_msg "Administrator rights" "This change writes system files. Log in as root (for example: su -), then run steam-arm-config."; return 1; }
+  if ! sudo -n true 2>/dev/null; then
+    ui_msg "Administrator rights" "This change writes system files, so it needs administrator rights.
+
+After OK, sudo asks for your password in the terminal. The menu comes back afterwards." || return 1
+    term_reset
+    printf 'Administrator password for %s (sudo):\n' "$(id -un)"
+    sudo -p "Password: " -v || { ui_msg "Administrator rights" "sudo did not accept the password. Nothing was changed."; return 1; }
+  fi
+  SUDO_OK=1
+}
+# Plain attributes, empty screen, cursor home and visible (a full-screen menu may leave any of them changed).
+term_reset(){
+  { tput sgr0 && tput clear && tput cup 0 0 && tput cnorm; } 2>/dev/null || printf '\033[0m\033[H\033[2J\033[?25h'
+}
+as_root(){ if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
+# Run this app's own subcommand as root.
+self_root(){
+  local out
+  need_root || return 1
+  out=$(as_root bash "$(self_path)" "$@" 2>&1) && return 0
+  ui_msg "Steam ARM" "The change did not go through:
+
+$out"
+  return 1
+}
+# Non-interactive subcommands re-run themselves with sudo.
+cli_root(){
+  [ "$(id -u)" = 0 ] && return 0
+  have sudo || { echo "steam-arm-config: needs root" >&2; exit 1; }
+  echo "steam-arm-config: this change needs administrator rights; running it with sudo" >&2
+  exec sudo env STEAM_ARM_INSTALLER="${STEAM_ARM_INSTALLER:-}" bash "$(self_path)" "$@"
+}
+# Run installer with args as root, with progress; env GPU_FAMILY/GAMEUSER from INST_ENV.
+run_installer(){
+  local title=$1 rc; shift
+  local -a cmd; mapfile -t cmd < <(installer_cmd) || true
+  [ "${#cmd[@]}" -gt 0 ] || { ui_msg "$title" "Setup script not found. Get it from $SA_DOCS and run it once."; return 1; }
+  need_root || return 1
+  if [ -L "$SA_CACHE" ]; then
+    ui_msg "$title" "$SA_CACHE is a link. Delete the link (rm \"$SA_CACHE\"), then try again."; return 1
+  fi
+  if ! { mkdir -p "$SA_CACHE" && [ ! -L "$SA_CACHE" ] && chmod 700 "$SA_CACHE" \
+         && SA_SETUP_LOG=$(mktemp --suffix=.log "$SA_CACHE/setup-$(date +%Y%m%d-%H%M%S)-XXXXXX"); }; then
+    ui_msg "$title" "Could not create a log file in $SA_CACHE. Free some space, then try again."; return 1
+  fi
+  ui_run "$title" "$SA_SETUP_LOG" as_root env "${INST_ENV[@]}" "${cmd[@]}" "$@"; rc=$?
+  status_line
+  if [ "$rc" = 0 ]; then
+    ui_textstr "$title: done" "$({ echo "Finished."; echo; log_summary "$SA_SETUP_LOG"; echo
+      echo "Full output: $SA_SETUP_LOG"; } | tilde | pre_fold)"
+  else
+    ui_textstr "$title: failed" "$({ echo "Setup stopped (status $rc). Last lines:"; echo
+      strip_ansi < "$SA_SETUP_LOG" | grep -v '^[[:space:]]*$' | tail -10; echo
+      echo "Full output: $SA_SETUP_LOG (Maintenance > View logs)."; } | tilde | pre_fold)"
+  fi
+  return "$rc"
+}
+# Closing block of a setup log: from its last "done" step line, else its last 8 lines.
+log_summary(){
+  strip_ansi < "$1" | grep -v '^[[:space:]]*$' \
+    | awk '/^==> (11\/11  done|done:)/ { n = 0; keep = 1 } { l[++n] = $0 }
+           END { s = (keep ? 1 : (n > 8 ? n - 7 : 1)); for (i = s; i <= n; i++) print l[i] }'
+}
+# Text for a box: lines wider than it folded at a space, continued under their own value column (else their first non-space column).
+pre_fold(){
+  local c w; read -r _ c < <({ stty size </dev/tty; } 2>/dev/null || echo "24 80")
+  if [ "$DIALOG" = builtin ]; then w=$(( c - 4 )); [ "$w" -gt 76 ] && w=76; w=$(( w - 6 ))
+  else ui_size; w=$(( UW - 5 )); fi
+  [ "$w" -ge 20 ] || w=20
+  # Join hard-wrapped "Key: value" rows first (value-column lines; deeper keyless lines after no end punctuation).
+  awk -v w="$w" '
+  function fold(l,    ind, pad, k) {
+    if (length(l) <= w) { print l; return }
+    ind = 0
+    if (match(l, /^\[[a-z]+\] /) || match(l, /^==> [^ ]+ +/) || match(l, /^ *[A-Za-z][A-Za-z0-9 ().\/-]*: +/)) ind = RLENGTH
+    if (ind == 0 || ind > w / 2) { match(l, /^ */); ind = RLENGTH; if (ind > w / 2) ind = int(w / 2) }
+    pad = sprintf("%" ind "s", "")
+    while (length(l) > w) {
+      k = w + 1
+      while (k > ind + 1 && substr(l, k, 1) != " ") k--
+      if (k <= ind + 1) k = w + 1
+      print substr(l, 1, k - 1)
+      l = substr(l, k); sub(/^ +/, "", l); l = pad l
+    }
+    print l
+  }
+  {
+    l = $0; gsub(/\t/, "        ", l)
+    match(l, /^ */); lead = RLENGTH
+    key = match(l, /^ *[A-Za-z][A-Za-z0-9 ().\/-]*: +/) ? RLENGTH : 0
+    if (have && vcol && l ~ /[^ ]/ && (lead == vcol || (!key && lead > kind && prev !~ /[.!?:;] *$/))) {
+      row = row " " substr(l, lead + 1); prev = l; next
+    }
+    if (have) flush()
+    row = l; prev = l; have = 1; vcol = key; kind = lead
+  }
+  # key rows: one space between words of the value text, key column kept
+  function flush(    v) {
+    if (vcol) { v = substr(row, vcol + 1); gsub(/  +/, " ", v); row = substr(row, 1, vcol) v }
+    fold(row)
+  }
+  END { if (have) flush() }'
+}
+INST_ENV=()
+# Run installer in the plain terminal (it asks its own questions there).
+run_installer_tty(){
+  local -a cmd; mapfile -t cmd < <(installer_cmd) || true
+  [ "${#cmd[@]}" -gt 0 ] || { ui_msg "Steam ARM" "Setup script not found."; return 1; }
+  need_root || return 1
+  clear
+  as_root "${cmd[@]}" "$@"; local rc=$?
+  ui_pause; status_line; return "$rc"
+}
+
+# ===========================================================================
+# Components
+# ===========================================================================
+comp_short(){ case "$1" in
+  glx-lax)    echo "GL fix for games that draw from several threads";;
+  vk-spoof)   echo "Vulkan layer for Windows games (Mali only)";;
+  gpu-in-emulation) echo "Mali drivers inside emulation, used when needed";;
+  shader-cache) echo "Shader pre-caching: videos in Windows games";;
+  physx-skip) echo "PhysX install step: mark done / stop after 60 s";;
+  map-count)  echo "Raise memory map limit (Windows games want it)";;
+  xpad-dedup) echo "One joystick per third-party Xbox 360 pad";;
+  pad-hidraw) echo "Direct pad access: rumble, battery level";;
+  pad-xbox)   echo "Show other XInput pads as Xbox 360 pads";;
+  desktop)    echo "Menu entry \"Steam ARM\"";;
+  desktop-mode) echo "Menu entry \"Steam ARM (Desktop mode)\"";;
+  icon-bigpicture) echo "Desktop icon \"Steam ARM\"";;
+  icon-desktop) echo "Desktop icon \"Steam ARM (Desktop mode)\"";;
+  tray)       echo "Steam icon in the panel tray";;
+  page-size)  echo "Raspberry Pi 5: switch to 4K page kernel";;
+  *)          echo "$1";;
+esac; }
+# Component names from installer --list, else built-in list.
+comp_all(){
+  local -a cmd; local l=""
+  mapfile -t cmd < <(installer_cmd)
+  [ "${#cmd[@]}" -gt 0 ] && l=$("${cmd[@]}" --list 2>/dev/null </dev/null | strip_ansi | awk '/^[ \t]+[a-z][a-z0-9-]+[ \t]/ { print $1 }' | tr '\n' ' ')
+  l=${l:-$SA_COMPONENTS}
+  page_size_applies || l=$(echo " $l " | sed 's/ page-size / /')
+  echo "$l" | trim
+}
+# Recommended set for family $1 (auto = detect) and Vulkan yes/no: installer's defaults, else built-in rules.
+comp_recommended(){
+  local fam=$1 vk=$2 c out
+  out=$(detect_components "$fam")
+  if [ -z "$out" ]; then
+    [ "$fam" = auto ] && fam=$(gpu_family)
+    for c in $(comp_all); do
+      case " $SA_DEFAULT_OFF " in *" $c "*) continue;; esac
+      case " $SA_MALI_ONLY " in *" $c "*) is_mali "$fam" || continue;; esac
+      out="$out $c"
+    done
+  fi
+  [ "$vk" = no ] && out=$(echo " $out " | sed 's/ vk-spoof / /')
+  echo "$out" | trim
+}
+comp_checklist(){
+  local title=$1 text=$2 pre=" $3 " c items=()
+  for c in $(comp_all); do
+    case "$pre" in *" $c "*) items+=("$c" "$(comp_short "$c")" ON);; *) items+=("$c" "$(comp_short "$c")" OFF);; esac
+  done
+  ui_check "$title" "$text" "${items[@]}"
+}
+
+# ===========================================================================
+# 1. Information
+# ===========================================================================
+info_system(){
+  local ps; ps=$(page_size)
+  cat <<EOF
+Board          $(hw_model)
+SoC            $(hw_soc)
+GPU            $(gpu_name)
+GPU family     $(family_label "$(gpu_family)")
+Kernel driver  $(gpu_driver)
+Vulkan         $(vk_summary)
+Page size      $ps ($(page_label "$ps")$([ "$ps" = 4096 ] && echo ", OK" || echo ", x86 games need 4K"))
+Distribution   $(distro)
+Kernel         $(uname -r)
+Mesa           $(mesa_ver)
+FEX            $(fex_ver)
+Disk free      $(disk_free "$(game_home)")
+EOF
+}
+info_status(){
+  if ! is_installed; then echo "Steam ARM is not installed. Use Install / Setup."; return; fi
+  local on off
+  on=$(conf_get COMPONENTS_ON | wrap_list); off=$(conf_get COMPONENTS_OFF | wrap_list)
+  cat <<EOF
+Installed      yes, version $(installed_version)
+Game account   $(game_user)
+Client home    $(arm_home | tilde)
+Client channel $(client_channel)
+FEX tool       $(fex_tool_ver)
+Graphics       $(gfx_default_label "$(gfx_default)")
+Mali tree      $(mali_tree)
+Components on  ${on:-none}
+Components off ${off:-none}
+EOF
+}
+# Own notes when installer gives none.
+info_notes_builtin(){
+  local ps fam; ps=$(page_size); fam=$(gpu_family)
+  case "$fam" in
+    mali-kbase) echo "- Mali GPU on the closed driver: Mesa cannot use it. Use a kernel with Panthor or Panfrost.";;
+    mali-utgard) echo "- Mali-400/450: too old for Steam games.";;
+    mali-*)     echo "- Mali GPU on open drivers: Mali-only parts can be used.";;
+    adreno*)    echo "- Adreno GPU: Windows games through DXVK expected to work. Mali-only parts stay off.";;
+    broadcom-*) echo "- Raspberry Pi GPU: OpenGL games fit best; Vulkan is too limited for most Windows games.";;
+    apple-agx)  echo "- Apple GPU: runs inside a 4K-page VM (muvm) on 16K-page systems.";;
+    amd-*|nvidia-*|intel) echo "- PC graphics card: forwarding covers it. Mali-only parts stay off.";;
+    virtio-gpu) echo "- Virtual machine: expect software drawing unless the VM passes the GPU through.";;
+    *)          echo "- No GPU driver found: games would draw on the CPU.";;
+  esac
+  [ "$ps" = 4096 ] || echo "- Page size is $(page_label "$ps"). x86 games need 4K pages; see Install / Setup."
+  vk_ok || echo "- No Vulkan driver found: Windows games (Proton) will not start."
+}
+info_notes(){
+  local n; n=$(detect_notes)
+  if [ -n "$n" ]; then printf '%s\n' "$n" | sed 's/^\([^-]\)/- \1/'; else info_notes_builtin; fi
+}
+menu_info(){
+  local c=""
+  while c=$(ui_menu "Information" "What do you want to see?" --default "$c" \
+      1 "System (board, GPU, drivers)" 2 "Steam ARM status" 3 "Notes for this hardware"); do
+    case "$c" in
+      1) ui_info "Information" "Reading system details..."; ui_textstr "System" "$(info_system)";;
+      2) ui_info "Information" "Reading Steam ARM status..."; ui_textstr "Steam ARM status" "$(info_status)";;
+      3) ui_textstr "Notes for this hardware" "$(info_notes)";;
+    esac
+  done
+}
+
+# ===========================================================================
+# 2. Install / Setup
+# ===========================================================================
+# Sets IN_HW, IN_FAM (installer GPU_FAMILY id, auto = detect) and IN_DRV. Status 1 on Back.
+setup_hardware(){
+  local g lab c items=() id l f
+  g=$(hw_guess)
+  if [ -n "$g" ]; then lab="Detected: $(hw_label "$g")"
+  elif [ "$(gpu_family)" != none ]; then lab="Detected: $(family_label "$(gpu_family)")"
+  else lab="Nothing detected: safe defaults"; fi
+  items=(auto "${lab:0:44} (recommended)")
+  while IFS='|' read -r id l f; do items+=("$id" "$l"); done < <(hw_table)
+  while :; do
+    c=$(ui_menu "Install: hardware" "Pick your hardware. The detected choice fits most systems." "${items[@]}") || return 1
+    IN_HW=$c; IN_DRV=""
+    f=$(hw_table | awk -F'|' -v id="$c" '$1 == id { print $3 }')
+    case "$c" in
+      auto)  IN_FAM=auto; IN_DRV=$(gpu_driver); return 0;;
+      mediatek|snapdragon|pc) setup_gpu_model "$c" && return 0;;
+      other) setup_driver && return 0;;
+      *)     IN_FAM=$f
+             case "$c" in rk3588) IN_DRV=panthor;; rk356x) IN_DRV=panfrost;; rpi5|rpi4) IN_DRV=v3d;;
+               asahi) IN_DRV=asahi;; vm) IN_DRV=virtio_gpu;; esac
+             return 0;;
+    esac
+  done
+}
+# GPU of boards that come with several; sets IN_FAM and IN_DRV. Status 1 on Back.
+setup_gpu_model(){
+  local c
+  case "$1" in
+    mediatek)
+      c=$(ui_menu "Install: MediaTek GPU" "Which Mali GPU?" \
+          mali-valhall-jm "Mali-G57 / G77 (MT8192, MT8195, Kompanio 1200/1380)" \
+          mali-bifrost "Mali-G52 / G72 (MT8183, MT8186, Helio)" \
+          mali-csf-5thgen "Mali-G720 / G925 (MT8196, Dimensity 9300+)" \
+          mali-panfrost "Other Mali / not sure") || return 1
+      case "$c" in mali-csf*) IN_DRV=panthor;; *) IN_DRV=panfrost;; esac;;
+    snapdragon)
+      c=$(ui_menu "Install: Adreno GPU" "Which Adreno GPU?" \
+          adreno-a7xx "Adreno 7xx (X Elite, X Plus, 8 Gen 1/2/3)" \
+          adreno-a6xx "Adreno 6xx (8cx, 7c, 865, 888)" \
+          adreno-a8xx "Adreno 8xx (8 Elite)" \
+          adreno "Other Adreno / not sure") || return 1
+      IN_DRV=msm;;
+    pc)
+      c=$(ui_menu "Install: graphics card" "Which graphics card?" \
+          amd-radv "AMD (amdgpu)" nvidia-nouveau "NVIDIA, open driver (nouveau)" \
+          nvidia-prop "NVIDIA, NVIDIA driver" intel "Intel") || return 1
+      case "$c" in amd-radv) IN_DRV=amdgpu;; nvidia-nouveau) IN_DRV=nouveau;; nvidia-prop) IN_DRV=nvidia;; intel) IN_DRV=i915;; esac;;
+  esac
+  IN_FAM=$c
+}
+setup_driver(){
+  local c
+  c=$(ui_menu "Install: GPU driver" "Which kernel GPU driver does this system use?
+Information > System shows the detected one." \
+      panthor "Mali, newer chips (panthor)" panfrost "Mali, older chips (panfrost)" \
+      lima "Mali-400/450 (lima)" mali_kbase "Mali, closed driver (mali_kbase)" \
+      msm "Adreno (msm)" v3d "Raspberry Pi 4/5 (v3d)" vc4 "Raspberry Pi 0-3 (vc4)" \
+      etnaviv "Vivante (etnaviv)" powervr "PowerVR (powervr)" asahi "Apple GPU (asahi)" \
+      amdgpu "AMD (amdgpu)" radeon "AMD, old cards (radeon)" nouveau "NVIDIA (nouveau)" \
+      nvidia "NVIDIA driver (nvidia)" i915 "Intel (i915 / xe)" virtio_gpu "Virtual GPU (virtio)" \
+      none "No GPU driver / not sure") || return 1
+  IN_DRV=$c; IN_FAM=$(family_of_driver "$c" || echo none)
+}
+setup_pagesize(){
+  local ps txt; ps=$(page_size)
+  if [ "$ps" = 4096 ]; then
+    txt="Page size: 4K. Good, nothing to do."
+  else
+    txt="Page size: $(page_label "$ps"). x86 games and the emulator need 4K pages.
+
+Raspberry Pi 5: keep the \"page-size\" part on. Setup switches the
+boot firmware to the 4K kernel; reboot, then run setup again.
+
+Apple Silicon and other boards: boot a kernel built with 4K pages,
+or install inside a virtual machine that uses 4K pages.
+
+Setup stops with this advice until the page size is 4K."
+  fi
+  ui_yesno "Install: page size" "$txt" Next Back
+}
+setup_vulkan(){
+  local d def c; d=$(vk_summary); def=yes; vk_ok || def=no
+  c=$(ui_menu "Install: Vulkan" "Detected Vulkan: ${d:0:60}
+Windows games (Proton) need Vulkan." \
+      "$def" "$([ "$def" = yes ] && echo "Vulkan works (detected, recommended)" || echo "No Vulkan (detected, recommended)")" \
+      "$([ "$def" = yes ] && echo no || echo yes)" "$([ "$def" = yes ] && echo "No Vulkan" || echo "Vulkan works")") || return 1
+  IN_VK=$c
+}
+setup_components(){
+  local c rec
+  ui_info "Install: parts" "Working out the recommended parts..."
+  rec=$(comp_recommended "$IN_FAM" "$IN_VK")
+  # Back from the checklist returns to this parts menu
+  while :; do
+    c=$(ui_menu "Install: parts" "Which parts to install? Client and launcher are always installed." \
+        rec "Recommended" min "Minimal (client and launcher only)" custom "Custom (pick from a list)") || return 1
+    case "$c" in
+      rec) IN_COMPS=$rec; return 0;;
+      min) IN_COMPS=""; return 0;;
+      custom) c=$(comp_checklist "Install: custom parts" "SPACE turns a part on or off. TAB moves to the buttons." "$rec") || continue
+              IN_COMPS=$(echo "$c" | tr '\n' ' ' | trim); return 0;;
+    esac
+  done
+}
+# Normal accounts (uid 1000-59999, login shell, home present): name TAB home.
+normal_accounts(){
+  getent passwd 2>/dev/null | while IFS=: read -r u _ id _ _ h sh; do
+    [[ "$id" =~ ^[0-9]+$ ]] && [ "$id" -ge 1000 ] && [ "$id" -lt 60000 ] || continue
+    case "$sh" in */nologin|*/false) continue;; esac
+    [ -n "$h" ] && [ -d "$h" ] && printf '%s\t%s\n' "$u" "$h"
+  done | awk -F'\t' '!seen[$1]++'
+}
+# Account of the graphical session (active one first), if any.
+desktop_user(){
+  local s k v n t c a first=""
+  have loginctl || return 0
+  while read -r s _; do
+    n="" t="" c="" a=""
+    while IFS='=' read -r k v; do
+      case "$k" in Name) n=$v;; Type) t=$v;; Class) c=$v;; Active) a=$v;; esac
+    done < <(loginctl show-session "$s" -p Name -p Type -p Class -p Active 2>/dev/null </dev/null)
+    case "$t" in x11|wayland|mir) ;; *) continue;; esac
+    [ "$c" = user ] && [ -n "$n" ] || continue
+    [ "$a" = yes ] && { echo "$n"; return 0; }
+    [ -n "$first" ] || first=$n
+  done < <(loginctl list-sessions --no-legend 2>/dev/null </dev/null)
+  [ -n "$first" ] && echo "$first"
+  return 0
+}
+# Account that runs this menu: the sudo caller, else a non-root user.
+caller_user(){
+  local u=${SUDO_USER:-}; [ "$u" = root ] && u=""
+  [ -z "$u" ] && [ "$(id -u)" != 0 ] && u=$(id -un)
+  echo "$u"
+}
+# Account list items (tag, label) in ACCT_ITEMS; names in ACCT_NAMES; ACCT_CUR, ACCT_DESK.
+acct_list(){
+  local u h d
+  ACCT_ITEMS=(); ACCT_NAMES=" "; ACCT_CUR=$(caller_user); ACCT_DESK=$(desktop_user)
+  while IFS=$'\t' read -r u h; do
+    d=""; [ "$u" = "$ACCT_CUR" ] && d="current user, "; [ "$u" = "$ACCT_DESK" ] && d="${d}desktop user, "
+    ACCT_ITEMS+=("$u" "$d$h"); ACCT_NAMES="$ACCT_NAMES$u "
+  done < <(normal_accounts)
+}
+# First argument that is a listed account.
+acct_default(){
+  local u
+  for u in "$@"; do [ -n "$u" ] && [[ "$ACCT_NAMES" == *" $u "* ]] && { echo "$u"; return 0; }; done
+  return 0
+}
+# Pick an existing normal account, or create one. Status 1 on Back.
+setup_account(){
+  local c def
+  acct_list
+  if [ ${#ACCT_ITEMS[@]} -eq 0 ]; then
+    setup_new_account "No normal account found on this system, so setup creates one."
+    return
+  fi
+  # default: configured account on a re-run, then caller, desktop user, uid 1000
+  def=$(acct_default "$(is_installed && conf_get GAMEUSER)" "$ACCT_CUR" "$ACCT_DESK" "$(getent passwd 1000 2>/dev/null | cut -d: -f1)")
+  while :; do
+    c=$(ui_menu "Install: account" "Account that plays games (its home holds the client and games):" \
+        --default "$def" "${ACCT_ITEMS[@]}" + "Create a new account...") || return 1
+    if [ "$c" = "+" ]; then
+      setup_new_account && return 0
+      def="+"; continue
+    fi
+    IN_USER=$c; IN_PASS=""; IN_PASS_MADE=0; return 0
+  done
+}
+# Name of an account setup creates, then its password. Status 1 on Back.
+setup_new_account(){
+  local u="" note=${1:+$1
+
+}
+  while :; do
+    u=$(ui_input "Install: new account" "${note}Name of the new account that plays games:" "$u") || return 1
+    if [[ ! "$u" =~ ^[A-Za-z0-9._@][A-Za-z0-9._@-]{0,31}$ ]]; then
+      ui_msg "Install: new account" "Use letters, digits, '.', '_', '@' and '-' only (up to 32), not starting with '-'."
+    elif [ "$u" = root ]; then
+      ui_msg "Install: new account" "root is the administrator account. Pick another name."
+    elif getent passwd "$u" >/dev/null 2>&1; then
+      ui_msg "Install: new account" "Account $u already exists. Pick another name, or go Back to pick it from the list when it is there."
+    else
+      IN_USER=$u; IN_PASS=""; IN_PASS_MADE=0
+      setup_password && return 0
+    fi
+  done
+}
+# Password of an account setup creates: typed twice, or made here and shown once after install. Never logged.
+setup_password(){
+  local a b
+  while :; do
+    a=$(ui_password "Install: password" "Account $IN_USER does not exist yet; setup creates it.
+
+Password for it (leave empty to have one made and shown at the end):") || return 1
+    if [ -z "$a" ]; then
+      IN_PASS=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 14); IN_PASS_MADE=1; return 0
+    fi
+    b=$(ui_password "Install: password" "Type the password for $IN_USER again:") || return 1
+    [ "$a" = "$b" ] && { IN_PASS=$a; IN_PASS_MADE=0; return 0; }
+    ui_msg "Install: password" "The two entries differ. Type them again."
+  done
+}
+setup_summary(){
+  local fam note=""
+  fam=$IN_FAM; [ "$fam" = auto ] && fam=$(gpu_family)
+  getent passwd "$IN_USER" >/dev/null 2>&1 || note="
+               (new account; password $([ "$IN_PASS_MADE" = 1 ] && echo "made by setup, shown at the end" || echo "as typed"))"
+  local hw="detected"; [ "$IN_HW" = auto ] || hw=$(hw_label "$IN_HW")
+  local h d dl="Setup downloads the client and its files (several GB) and can
+take a while."
+  h=$(getent passwd "$IN_USER" 2>/dev/null | cut -d: -f6); d=$(conf_get ARMHOME_DIR)
+  case "$d" in ''|/*|..|../*|*/..|*/../*) d=.local/share/steam-arm;; esac
+  [ -n "$h" ] && [ -x "$h/${d%/}/.local/share/Steam/steamrtarm64/steam" ] && dl="Client already present: setup keeps it (it updates itself)."
+  ui_yesno "Install: summary" "Hardware       $hw
+GPU            $(family_label "$fam")${IN_DRV:+, driver $IN_DRV}
+Page size      $(page_label "$(page_size)")
+Vulkan         $IN_VK
+Account        $IN_USER$note
+Parts          $(echo "${IN_COMPS:-none}" | fold -s -w 55 | sed '2,$s/^/               /')
+
+$dl" Install Back
+}
+# Other variant of the installer present (setup --detect-other; a setup without that option counts as none).
+other_present(){
+  local -a cmd; mapfile -t cmd < <(installer_cmd) || true
+  [ "${#cmd[@]}" -gt 0 ] && timeout 60 "${cmd[@]}" --detect-other >/dev/null 2>&1 </dev/null
+}
+# Replace other variant before install: IN_REPLACE=1 on yes. Status 1 on Back.
+setup_other(){
+  IN_REPLACE=0
+  other_present || return 0
+  ui_yesno "Install: other variant" "Another Steam ARM install (other variant) is present. Replace it?
+
+Games, sign-in and client folder are kept; its files are archived
+in /var/backups." Replace Back || return 1
+  IN_REPLACE=1
+}
+setup_run(){
+  local rc; local -a xo=()
+  [ "${IN_REPLACE:-0}" = 1 ] && xo=(--replace-other)
+  INST_ENV=("GAMEUSER=$IN_USER" "GPU_FAMILY=${IN_FAM:-auto}")
+  if [ -n "$IN_PASS" ]; then
+    UI_STDIN=$IN_PASS
+    run_installer "Install" --password-stdin "${xo[@]}" "--select=$(echo "$IN_COMPS" | tr ' ' ',')"; rc=$?
+    UI_STDIN=""
+    if [ "$rc" = 0 ] && [ "$IN_PASS_MADE" = 1 ]; then
+      ui_msg "Install: new account" "Account $IN_USER was created. Its password:
+
+    $IN_PASS
+
+Write it down now; it is not saved anywhere. Change it later with:
+passwd $IN_USER"
+    elif [ "$rc" = 0 ]; then
+      ui_msg "Install: new account" "Account $IN_USER was created with the password you typed."
+    fi
+    IN_PASS=""
+    return "$rc"
+  fi
+  run_installer "Install" "${xo[@]}" "--select=$(echo "$IN_COMPS" | tr ' ' ',')"
+}
+menu_setup(){
+  local step=1
+  if is_installed; then
+    ui_yesno "Install / Setup" "Steam ARM is already installed. Run setup again with new choices?
+
+Games, sign-in and settings are kept." Continue Back || return
+  fi
+  IN_HW=auto IN_FAM=auto IN_DRV="" IN_VK=yes IN_COMPS="" IN_USER="" IN_PASS="" IN_PASS_MADE=0 IN_REPLACE=0
+  while :; do
+    case "$step" in
+      0) return;;
+      1) if setup_hardware; then step=2; else step=0; fi;;
+      2) if setup_pagesize; then step=3; else step=1; fi;;
+      3) if setup_vulkan; then step=4; else step=2; fi;;
+      4) if setup_components; then step=5; else step=3; fi;;
+      5) if setup_account; then step=6; else step=4; fi;;
+      6) if setup_summary; then setup_other && { setup_run; return; }; else step=5; fi;;
+    esac
+  done
+}
+
+# ===========================================================================
+# 3. Components
+# ===========================================================================
+# Size of steamapps/shadercache per library (best effort; nothing when none found).
+shader_cache_sizes(){
+  local lib out=""
+  while IFS= read -r lib; do
+    [ -d "$lib/steamapps/shadercache" ] || continue
+    out+=$(du -sh "$lib/steamapps/shadercache" 2>/dev/null | awk -F'\t' -v l="$lib" '{ printf "\n  %-6s %s", $1, l }')
+  done < <(game_libraries)
+  [ -z "$out" ] || printf '\n\nsteamapps/shadercache size now, per library:%s' "$(tilde <<<"$out")"
+}
+menu_components(){
+  local c
+  if ! is_installed; then offer_install; return; fi
+  local was note=""; was=$(comps_effective)
+  c=$(comp_checklist "Components" "Parts to keep. Turning one off removes it; games are kept." "$was") || return
+  c=$(echo "$c" | tr '\n' ' ' | trim)
+  [[ " $was " == *" shader-cache "* && " $c " != *" shader-cache "* ]] && note="
+
+shader-cache off keeps the downloaded cache; turning it on
+again reuses it. Deleting steamapps/shadercache by hand stops
+Steam from downloading those caches again.$(shader_cache_sizes)"
+  [[ " $was " == *" physx-skip "* && " $c " != *" physx-skip "* ]] && note="$note
+
+physx-skip off stops only the PhysX watcher at launch;
+nothing is removed."
+  ui_yesno "Components" "Apply this selection?
+
+${c:-(none)}$note
+
+Setup runs again; this takes a few minutes." Apply Back || return
+  INST_ENV=(); run_installer "Components" "--select=$(echo "$c" | tr ' ' ',')"
+}
+
+# ===========================================================================
+# 4. Graphics
+# ===========================================================================
+graphics_default(){
+  local cur c now n; cur=$(gfx_default)
+  local -a items=(auto "Automatic: forwarding, Mali drivers where needed$([ "$cur" = auto ] && echo " *")"
+                  a "Forwarding for all: game GL/Vulkan run on host drivers$([ "$cur" = a ] && echo " *")")
+  now=$(gfx_default_label "$cur"); n=""
+  if route_b_ok; then items+=(b "Mali drivers in emulation for all (slower CPU)$([ "$cur" = b ] && echo " *")")
+  else
+    n=$'\n'"$SA_NO_ROUTE_B"; [ "$cur" = b ] && now="b (not used on this GPU)"
+  fi
+  c=$(ui_menu "Graphics: default route" "Route for games without their own setting. Now: $now.$n" "${items[@]}") || return
+  [ "$c" = "$cur" ] && return
+  self_root gfx-default "$c" && status_line && ui_msg "Graphics" "Default route: $(gfx_default_label "$c"). Applies from the next game start.$(
+    n=$(route_b_note "$c"); [ -n "$n" ] && printf '\n\n%s' "$n")"
+}
+# Pick an installed game; prints appid. $1 = title, $2 = key to show (gfx or profile), $3 = appid to start on.
+pick_game(){
+  local title=$1 show=$2 def=${3:-} id name dir items=() r maps=""
+  if ! is_installed; then offer_install; return 1; fi
+  [ "$show" = gfx ] && maps=$(compat_map)
+  while IFS=$'\t' read -r id name dir; do
+    [ -n "$id" ] || continue
+    case "$show" in
+      gfx) r=$(compat_label "$(awk -v id="$id" '$1 == id { print $2; exit }' <<<"$maps")"); [ -n "$r" ] || r=$(gfx_label "$(tc_get "$id" gfx)");;
+      *)   r=$(tc_effective "$id" | grep -v '^gfx=' | tr '\n' ' ' | trim); r=${r:-default};;
+    esac
+    items+=("$id" "$(printf '%-38.38s %s' "$name" "${r:0:22}")")
+  done < <(games_list)
+  if [ "${#items[@]}" = 0 ]; then
+    ui_msg "$title" "No installed games found in $(steam_dir | tilde).
+
+Install games from the Steam ARM client first."; return 1
+  fi
+  ui_menu "$title" "Installed games (App ID, name, current setting):" --default "$def" "${items[@]}"
+}
+graphics_game(){
+  local id name cur c src note="" map
+  id=$(pick_game "Graphics: per game" gfx) || return
+  name=$(game_name "$id"); cur=$(tc_get "$id" gfx); src=$(tc_source "$id" gfx); map=$(compat_tool "$id")
+  [ -n "$src" ] && [ "$src" = "$(titles_user)" ] && note="
+Note: the client home file sets this game; it wins over this menu."
+  local now; now=$(gfx_label "$cur")
+  case "$(compat_label "$map")" in Linux*) now="Linux build${cur:+, $now}";; Windows*) now=$(compat_label "$map");; esac
+  local -a items=(auto "Automatic (rules decide)$([ -z "$cur$map" ] && echo " *")" a "A: forwarding to host drivers$([ "$cur" = a ] && echo " *")")
+  if route_b_ok; then items+=(b "B: Mali drivers in emulation$([ "$cur" = b ] && echo " *")")
+  else
+    note="$note"$'\n'"$SA_NO_ROUTE_B"; [ "$cur" = b ] && now="b (not used on this GPU)"
+  fi
+  c=$(ui_menu "Graphics: ${name:0:40}" "App $id. Route now: $now.$note" "${items[@]}" \
+      linux "Force Linux build (needs Steam closed)$([ "$(compat_label "$map")" = "Linux build" ] && echo " *")" \
+      windows "Force Windows build, Proton (needs Steam closed)$([ "$(compat_label "$map")" = "Windows build (Proton)" ] && echo " *")") || return
+  case "$c" in
+    auto|a|b) self_root gfx "$id" "$c" || return
+              # auto also drops a forced build
+              if [ "$c" = auto ] && [ -n "$map" ]; then graphics_compat "$id" clear "$name"; return; fi
+              ui_msg "Graphics" "${name}: $(gfx_label "$c"). Applies from the next start of the game.$(
+                n=$(route_b_note "$c"); [ -n "$n" ] && printf '\n\n%s' "$n")";;
+    linux|windows) graphics_compat "$id" "$c" "$name";;
+  esac
+}
+graphics_compat(){
+  local id=$1 how=$2 name=$3 out
+  [ -x "$SA_COMPATMAP" ] || { ui_msg "Graphics" "Helper steam-arm-compatmap is missing. Run Maintenance > Update / Repair."; return; }
+  while steam_running; do
+    ui_yesno "Close Steam" "Steam ARM is running. It rewrites this setting when it exits.
+
+Close Steam ARM completely (Exit from its menu or tray), then choose Retry." Retry Back || return
+  done
+  need_root || return
+  out=$(as_root bash "$(self_path)" compat "$id" "$how" 2>&1)
+  ui_msg "Graphics" "${name}: $(case "$how" in linux) echo "Linux build";; windows) echo "Windows build with Proton";; *) echo "Automatic, forced build removed";; esac).
+
+$out
+
+In Steam, the game may download its other build on next start."
+}
+menu_graphics(){
+  local c=""
+  is_installed || { offer_install; return; }
+  while c=$(ui_menu "Graphics" "How x86 games reach the GPU. A: forwarding to host drivers. B: Mali drivers inside emulation." --default "$c" \
+      1 "Default route (now: $(gfx_default_label "$(gfx_default)"))" 2 "Route per game"); do
+    case "$c" in 1) graphics_default;; 2) graphics_game;; esac
+  done
+}
+
+# ===========================================================================
+# 5. Games
+# ===========================================================================
+game_rules(){
+  local id=$1 f
+  if f=$(game_fexlog "$id"); then
+    echo "Last start of this game ($(date -r "$f" '+%F %H:%M' 2>/dev/null)):"
+    echo
+    grep -a 'steam-arm:' "$f" | tail -20 | sed 's/^.*steam-arm: */  /' | tilde
+  else
+    echo "No log of this game yet. Start it once; logs of the last start live in /tmp"
+    echo "(Windows games through Proton write no such log)."
+  fi
+  echo
+  echo "Profile: $(tc_effective "$id" | tr '\n' ' ' | trim)"
+}
+game_set(){ self_root profile "$1" "$2=$3"; }
+# How a game runs: windows (Proton mapped, Windows build installed, or Proton prefix in compatdata), linux (other tool mapped), unknown.
+game_kind(){
+  local id=$1 t lib
+  t=$(compat_tool "$id")
+  case "$t" in [Pp]roton*) echo windows; return;; ?*) echo linux; return;; esac
+  while IFS= read -r lib; do
+    grep -qsiE '^[[:space:]]*"platform_override_source"[[:space:]]+"windows"' "$lib/steamapps/appmanifest_$id.acf" \
+      && { echo windows; return; }
+  done < <(game_libraries)
+  # Steam's default Proton writes no mapping; FEX-run Linux games leave only "fex-emu" in compatdata
+  while IFS= read -r lib; do
+    t="$lib/steamapps/compatdata/$id"
+    { [ -d "$t/pfx" ] || grep -qsi proton "$t/version"; } && { echo windows; return; }
+  done < <(game_libraries)
+  echo unknown
+}
+# Profile value for display, $3 when unset.
+tc_show(){ local v; v=$(tc_get "$1" "$2"); v=${v:-$3}; echo "${v:0:24}"; }
+game_choose(){
+  local id=$1 key=$2 title=$3; shift 3
+  local cur c; cur=$(tc_get "$id" "$key")
+  c=$(ui_menu "$title" "Now: ${cur:-default}" "$@" default "Default (remove this setting)") || return
+  [ "$c" = default ] && c=""
+  game_set "$id" "$key" "$c"
+}
+game_text(){
+  local id=$1 key=$2 title=$3 help=$4 cur v
+  cur=$(tc_get "$id" "$key")
+  while :; do
+    v=$(ui_input "$title" "$help
+Separate items with ; (no spaces). Empty removes it." "$cur") || return
+    valid_value "$v" && break
+    ui_msg "$title" "Spaces and # are not allowed here."
+  done
+  game_set "$id" "$key" "$v"
+}
+game_menu(){
+  local id=$1 name c="" win=0; name=$(game_name "$id")
+  [ "$(game_kind "$id")" = windows ] && win=1
+  while :; do
+    # profiles reach Linux games only (emulation handler); Proton reads Steam launch options
+    if [ "$win" = 1 ]; then
+      c=$(ui_menu "Game: ${name:0:50}" "App $id. Windows game (Proton): these settings apply to Linux games only. Use Steam launch options." \
+          --default "$c" rules "Rules used at last start" clear "Remove all settings for this game") || break
+    else
+      c=$(ui_menu "Game: ${name:0:50}" "App $id. Settings apply from the next start of the game." --default "$c" \
+          overlay "Steam overlay        [$(tc_show "$id" overlay default)]" \
+          mangohud "MangoHud             [$(tc_show "$id" mangohud default)]" \
+          env "Extra environment    [$(tc_show "$id" env none)]" \
+          args "Extra arguments      [$(tc_show "$id" args none)]" \
+          rules "Rules used at last start" \
+          clear "Remove all settings for this game") || break
+    fi
+    case "$c" in
+      overlay)  game_choose "$id" overlay "Steam overlay" x86 "On (default for most games)" vulkan "On, for Vulkan games" off "Off";;
+      mangohud) game_choose "$id" mangohud "MangoHud" on "On" off "Off";;
+      env)      game_text "$id" env "Extra environment" "Variables, for example: DXVK_HUD=fps;MESA_NO_ERROR=1";;
+      args)     game_text "$id" args "Extra arguments" "Arguments, for example: -windowed;-nosound";;
+      rules)    ui_textstr "Rules: ${name:0:40}" "$(game_rules "$id")";;
+      clear)    ui_yesno "Game: ${name:0:50}" "Remove every setting for this game from $SA_TITLES_ETC (route included)?" Remove Back defaultno \
+                  && self_root profile "$id" --clear;;
+    esac
+  done
+}
+menu_games(){
+  local id=""
+  while id=$(pick_game "Games" profile "$id"); do game_menu "$id"; done
+}
+
+# ===========================================================================
+# 6. Controllers
+# ===========================================================================
+pads_input(){
+  awk '/^N: Name=/ { n = $0; sub(/^N: Name="/, "", n); sub(/"$/, "", n) }
+       /^H: Handlers=/ && / js[0-9]/ { h = $0; sub(/^H: Handlers=/, "", h); printf "  %-40.40s %s\n", n, h }' \
+    "/proc/bus/input/devices" 2>/dev/null
+}
+pads_hidraw(){
+  local u n i
+  for u in /sys/class/hidraw/hidraw*/device/uevent; do
+    [ -r "$u" ] || continue
+    n=$(sed -n 's/^HID_NAME=//p' "$u"); i=$(sed -n 's/^HID_ID=//p' "$u" | awk -F: '{printf "%s:%s", substr($2, 5), substr($3, 5)}')
+    printf '  %-10s %-40.40s %s\n' "$(basename "$(dirname "$(dirname "$u")")")" "$n" "$i"
+  done
+}
+rule_state(){ [ -e "$1" ] && echo "installed" || echo "not installed"; }
+padxbox_state(){
+  [ -e "$SA_PADXBOX_UNIT" ] || { echo "not installed"; return; }
+  systemctl is-active steam-arm-pad-xbox >/dev/null 2>&1 && echo "installed, running" || echo "installed, not running"
+}
+controllers_text(){
+  local p h
+  p=$(pads_input); h=$(pads_hidraw)
+  cat <<EOF
+Joysticks (kernel input):
+${p:-  none found}
+
+Raw HID devices (hidraw):
+${h:-  none found}
+
+Rules:
+  pad-hidraw   direct pad access        $(rule_state "$SA_RULE_HIDRAW")
+  xpad-dedup   one joystick per pad     $(rule_state "$SA_RULE_DEDUP")
+  pad-xbox     Xbox 360 look-alike      $(padxbox_state)
+EOF
+}
+controllers_padxbox(){
+  local on new c
+  is_installed || { offer_install; return; }
+  if comp_is_on pad-xbox; then
+    ui_yesno "pad-xbox" "pad-xbox is on. It shows other makers' XInput pads as Xbox 360 pads.
+
+Turn it off? Setup runs again (a few minutes)." "Turn off" Back || return
+    new=$(comps_effective | tr ' ' '\n' | grep -vx pad-xbox | tr '\n' ' ')
+  else
+    ui_yesno "pad-xbox" "pad-xbox is off. Turn it on when a non-Microsoft XInput pad is
+not recognised in games. The Steam client usually handles pads by itself.
+
+Turn it on? Setup runs again (a few minutes)." "Turn on" Back || return
+    new="$(comps_effective) pad-xbox"
+  fi
+  c=$(echo "$new" | tr -s ' ' ',' | sed 's/^,//; s/,$//')
+  INST_ENV=(); run_installer "Controllers" "--select=$c"
+}
+menu_controllers(){
+  local c=""
+  while c=$(ui_menu "Controllers" "Game pads and their rules." --default "$c" \
+      1 "Show pads and rules" 2 "pad-xbox (now: $(comp_is_on pad-xbox && echo on || echo off))"); do
+    case "$c" in 1) ui_textstr "Controllers" "$(controllers_text)";; 2) controllers_padxbox;; esac
+  done
+}
+
+# ===========================================================================
+# 7. Remote Play
+# ===========================================================================
+# Run steam-arm-remoteplay as the game account.
+rp_run(){
+  [ -x "$SA_REMOTEPLAY" ] || { echo "Helper steam-arm-remoteplay is missing (not installed)."; return 1; }
+  if [ "$(id -un)" = "$(game_user)" ]; then "$SA_REMOTEPLAY" "$@" 2>&1; return; fi
+  as_root runuser -u "$(game_user)" -- "$SA_REMOTEPLAY" "$@" 2>&1
+}
+# Other accounts read the game account's files through root (ask before any $(...) capture).
+rp_ready(){ [ "$(id -un)" = "$(game_user)" ] || need_root; }
+# Helper output with "Account: <id> (pinned)" lines in place of localconfig.vdf paths.
+rp_show(){
+  local out; out=$(rp_run "$@" | sed -E \
+    -e 's#^.*/userdata/([0-9]+)/config/localconfig\.vdf: (already pinned|pinned .*|ClientConfig entry created, pinned.*)$#Account: \1 (pinned)#' \
+    -e 's#^.*/userdata/([0-9]+)/config/localconfig\.vdf: not pinned \((.*)\)$#Account: \1 (not pinned: \2)#' \
+    -e 's#^.*/userdata/([0-9]+)/config/localconfig\.vdf: #Account: \1: #' | tilde)
+  echo "Settings (hardware decoding off, HEVC off):"
+  printf '%s\n' "${out:-no answer}" | awk '{ print "  " $0 }'
+}
+rp_status(){ rp_show --check; }
+rp_help(){ cat <<'EOF'
+Remote Play streams a game from another computer (the host) to
+this one.
+
+- Sign in to the same Steam account on both.
+- Keep the game in front on the host. A stream that shows one
+  frame and stops means the game is in the background there.
+- First time: this device shows a 4-digit code. Type it on the
+  HOST within 60 seconds.
+- Decoding runs on the CPU here, so keep the stream at 1080p or
+  lower.
+- Steam ARM pins the settings it needs before each start. "Apply
+  settings now" does the same by hand (Steam must be closed).
+EOF
+}
+menu_remoteplay(){
+  local c=""
+  is_installed || { offer_install; return; }
+  while c=$(ui_menu "Remote Play" "Stream games from another computer." --default "$c" \
+      1 "Show settings state" 2 "How pairing works" 3 "Apply settings now"); do
+    case "$c" in
+      1) rp_ready && ui_textstr "Remote Play" "$(rp_status)";;
+      2) ui_textstr "Remote Play: pairing" "$(rp_help)";;
+      3) if steam_running; then ui_msg "Remote Play" "Close Steam ARM first; it rewrites these settings when it exits."
+         elif rp_ready; then ui_textstr "Remote Play" "$(rp_show)"; fi;;
+    esac
+  done
+}
+
+# ===========================================================================
+# 8. Maintenance
+# ===========================================================================
+# Report text with personal details removed (home paths, account names, host name, local addresses, MACs).
+sanitize(){
+  local h u names=() host
+  host=$(hostname 2>/dev/null)
+  for u in "$(game_user)" "${SUDO_USER:-}" "$(id -un)"; do [ -n "$u" ] && [ "$u" != root ] && names+=("$u"); done
+  h=$(game_home)
+  local -a sedargs=(-e 's#/home/[^/[:space:]]*#~#g' -e 's#/root\b#~#g')
+  [ -n "$h" ] && sedargs+=(-e "s#${h}#~#g")
+  for u in "${names[@]}"; do sedargs+=(-e "s/\\b${u}\\b/<user>/g"); done
+  [ -n "$host" ] && [ "$host" != localhost ] && sedargs+=(-e "s/\\b${host}\\b/<host>/g")
+  sedargs+=(-E -e 's/\b(10\.[0-9]{1,3}|127\.[0-9]{1,3}|192\.168|169\.254|172\.(1[6-9]|2[0-9]|3[01]))\.[0-9]{1,3}\.[0-9]{1,3}\b/<ip>/g'
+            -e 's/\b([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b/<mac>/g')
+  sed "${sedargs[@]}"
+}
+report_text(){
+  local d f
+  echo "Steam ARM hardware report ($(date -u +%F))"
+  echo "steam-arm-config $SA_VERSION"
+  echo
+  echo "== System"; info_system
+  echo "Architecture   $(uname -m)"
+  echo "Memory         $(awk '/^MemTotal/ { printf "%.1f GB\n", $2 / 1048576 }' "/proc/meminfo" 2>/dev/null)"
+  echo "GPU drivers    $(gpu_drivers | tr '\n' ' ')"
+  echo
+  echo "== Steam ARM"; info_status
+  echo
+  echo "== Notes"; info_notes
+  d=$(detect_raw)
+  if [ -n "$d" ]; then echo; echo "== Setup --detect"; echo "$d"; fi
+  echo
+  echo "== Game profiles (/etc/steam-arm/titles.conf)"
+  grep -v '^[[:space:]]*#' "$SA_TITLES_ETC" 2>/dev/null | grep -v '^[[:space:]]*$' || echo "(none)"
+  f=$(fexlogs | head -1)
+  if [ -n "$f" ] && [ -r "$f" ]; then echo; echo "== Last game start"; grep -a 'steam-arm:' "$f" | tail -15; fi
+}
+# Written by the account whose home gets it (no root write into a user folder).
+report_make(){
+  if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    # shellcheck disable=SC2016
+    report_text 2>/dev/null | sanitize | runuser -u "$SUDO_USER" -- sh -c 'cat > "$1"' sh "$SA_REPORT"
+  else
+    report_text 2>/dev/null | sanitize > "$SA_REPORT"
+  fi
+}
+maint_report(){
+  ui_info "Hardware report" "Collecting details..."
+  report_make
+  ui_text "Hardware report" "$SA_REPORT"
+  ui_msg "Hardware report" "Saved to $SA_REPORT (your home folder).
+
+Home folders, account names, host name and local addresses are
+removed. Attach the file to a compatibility report at:
+$SA_DOCS/issues"
+}
+maint_logs(){
+  local c="" f
+  while c=$(ui_menu "View logs" "Newest lines are at the end." --default "$c" \
+      1 "Launcher log" 2 "Last game start (emulation tool)" 3 "Last setup run"); do
+    case "$c" in
+      1) f="$(arm_home)/steam-arm.log";;
+      2) f=$(fexlogs | head -1);;
+      3) f=$(setuplogs | head -1);;
+    esac
+    if [ -n "$f" ] && [ -r "$f" ]; then ui_textstr "Log: $(basename "$f")" "$(tail -300 "$f" | strip_ansi | tilde)"
+    else ui_msg "View logs" "No log found yet."; fi
+  done
+}
+maint_shm(){
+  local before
+  before=$(df -h --output=used,size /dev/shm 2>/dev/null | tail -1 | awk '{print $1 " of " $2}')
+  if [ -x "$SA_LAUNCHER" ] && grep -q -- '--sweep-shm' "$SA_LAUNCHER" 2>/dev/null; then
+    "$SA_LAUNCHER" --sweep-shm >/dev/null 2>&1
+    ui_msg "Free /dev/shm" "Before: $before in use.
+After:  $(df -h --output=used /dev/shm 2>/dev/null | tail -1 | trim) in use."
+  else
+    ui_msg "Free /dev/shm" "In use now: $before.
+
+This version frees unused shared memory by itself: when Steam ARM
+starts and every minute while it runs. Nothing to do here."
+  fi
+}
+# --- Settings backup and restore ---------------------------------------------
+# Archive steam-arm-settings-<date>-<time>.tar.gz, members under steam-arm-settings/: manifest (FORMAT, VERSION,
+# DATE, GPU_FAMILY, PARTS), system/steam-arm.conf, system/titles.conf, personal/titles.conf,
+# personal/compattools.txt ("appid tool"), personal/fex-appconfig/*.json, personal/mangohud/*.conf.
+# Personal parts carry no account name; restore puts them into any chosen account. Accounts are never changed.
+SA_BK_FMT=1
+SA_BK_TOP=steam-arm-settings
+SA_BK_MAX=1048576
+SA_BK_TOTAL=8388608
+SA_BK_FILES=400
+SA_BK_PARTS="setup system-profiles personal-profiles compat-tools fex mangohud"
+SA_BK_PERSONAL="personal-profiles compat-tools fex mangohud"
+# steam-arm.conf keys restored; every other key is machine state (GPU_FAMILY only when GPU_FAMILY_SET=user).
+SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT"
+SA_BK_NAME='[A-Za-z0-9_+-][A-Za-z0-9._+-]*'
+part_label(){ case "$1" in
+  setup) echo "Setup choices";; system-profiles) echo "System game profiles";;
+  personal-profiles) echo "Personal game profiles";; compat-tools) echo "Proton/tool per game";;
+  fex) echo "FEX per-game settings";; mangohud) echo "MangoHud settings";; *) echo "$1";;
+esac; }
+in_list(){ case ",$1," in *",$2,"*) return 0;; esac; return 1; }
+any_personal(){ local p; for p in $SA_BK_PERSONAL; do in_list "$1" "$p" && return 0; done; return 1; }
+drop_personal(){ local p o=""; for p in ${1//,/ }; do case " $SA_BK_PERSONAL " in *" $p "*) ;; *) o="$o${o:+,}$p";; esac; done; echo "$o"; }
+parts_ok(){
+  local p
+  [ -n "$1" ] || return 1
+  for p in ${1//,/ }; do case " $SA_BK_PARTS " in *" $p "*) ;; *) echo "steam-arm-config: unknown part: $p (parts: ${SA_BK_PARTS// /,})" >&2; return 1;; esac; done
+}
+# Person who asked: the sudo caller when run through sudo.
+owner_user(){
+  if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then echo "$SUDO_USER"; else id -un; fi
+}
+owner_home(){ getent passwd "$(owner_user)" 2>/dev/null | cut -d: -f6; }
+as_owner(){ if [ "$(id -u)" = 0 ] && [ "$(owner_user)" != root ]; then runuser -u "$(owner_user)" -- "$@"; else "$@"; fi; }
+acct_home(){ getent passwd "$1" 2>/dev/null | cut -d: -f6; }
+# Run as account $1: directly when it is this one, root through runuser, others through sudo.
+acct_run(){
+  local u=$1; shift
+  if [ "$(id -un)" = "$u" ]; then "$@"
+  elif [ "$(id -u)" = 0 ]; then runuser -u "$u" -- "$@"
+  else as_root runuser -u "$u" -- "$@"; fi
+}
+# acct_put ACCOUNT FILE < data: atomic write as that account; a current file is kept as FILE.bak-restore.
+acct_put(){
+  # shellcheck disable=SC2016
+  acct_run "$1" sh -c 'umask 022; mkdir -p "${1%/*}" || exit 1
+    [ ! -f "$1" ] || cp -p "$1" "$1.bak-restore" || exit 1
+    t=$(mktemp "$1.XXXXXX") || exit 1
+    if cat > "$t" && chmod 644 "$t" && mv -f "$t" "$1"; then exit 0; fi
+    rm -f "$t"; exit 1' sh "$2"
+}
+acct_same(){ acct_run "$1" cmp -s - "$2" 2>/dev/null; }
+# Personal part location in the client folder of account $1 (where games read it).
+bk_path(){
+  local c; c="$(acct_home "$1")/$(armhome_rel)"
+  case "$2" in
+    personal-profiles) echo "$c/.config/steam-arm/titles.conf";;
+    compat-tools) echo "$c/.local/share/Steam/config/config.vdf";;
+    fex) echo "$c/.fex-emu/AppConfig";;
+    mangohud) echo "$c/.config/MangoHud";;
+  esac
+}
+# CompatToolMapping of a config.vdf on stdin: "appid tool" lines.
+compat_py(){ cat <<'PY'
+import re, sys
+s = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
+m = re.search(r'\n(\t+)"CompatToolMapping"\n\1\{\n', s)
+if m:
+    e = s.find("\n" + m.group(1) + "}", m.end() - 1)
+    for a in re.finditer(r'^\t+"([0-9]{1,10})"\n\t+\{\n((?:.*\n)*?)\t+\}\n', s[m.end():e + 1], re.M):
+        n = re.search(r'^\t+"name"\t+"([^"]*)"', a.group(2), re.M)
+        if n and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", n.group(1)):
+            print(a.group(1), n.group(1))
+PY
+}
+# CompatToolMapping of the client as "appid tool" lines; forced build of one game; its label.
+compat_map(){ { python3 -c "$(compat_py)" < "$(steam_dir)/config/config.vdf"; } 2>/dev/null; }
+compat_tool(){ compat_map | awk -v id="$1" '$1 == id { print $2; exit }'; }
+compat_label(){ case "$1" in [Pp]roton*) echo "Windows build (Proton)";; ?*) echo "Linux build";; esac; }
+json_ok(){ python3 -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' "$1" >/dev/null 2>&1; }
+text_ok(){ [ "$(tr -d '\000' < "$1" | wc -c)" = "$(wc -c < "$1")" ]; }
+# Valve tools (the client fetches them); other tools need a compatibilitytools.d entry.
+tool_ok(){
+  local d
+  case "$2" in proton_*|proton-stable-arm64|steamlinuxruntime*) return 0;; esac
+  for d in "$(acct_home "$1")/$(armhome_rel)/.local/share/Steam/compatibilitytools.d" \
+           /usr/share/steam/compatibilitytools.d /usr/local/share/steam/compatibilitytools.d; do
+    acct_run "$1" grep -rqsF --include=compatibilitytool.vdf "\"$2\"" "$d" && return 0
+  done
+  return 1
+}
+bk_expand(){
+  local d=$1
+  case "$d" in \~) d=$(owner_home);; \~/*) d="$(owner_home)/${d:2}";; esac
+  [ "$d" = / ] || d=${d%/}
+  echo "$d"
+}
+bk_last_file(){ echo "$(owner_home)/.cache/steam-arm/last-backup-dir"; }
+bk_last_dir(){ local d; d=$(head -1 "$(bk_last_file)" 2>/dev/null); [ -n "$d" ] && [ -d "$d" ] && echo "$d"; return 0; }
+bk_last_set(){
+  # shellcheck disable=SC2016
+  as_owner sh -c 'mkdir -p "${1%/*}" && printf "%s\n" "$2" > "$1"' sh "$(bk_last_file)" "$1" 2>/dev/null || true
+}
+# Status 2: folder missing; 1: not writable for the owner.
+bk_dir_ok(){
+  as_owner test -d "$1" || return 2
+  as_owner test -w "$1" && as_owner test -x "$1" || return 1
+}
+bk_note(){ BK_NOTE="$BK_NOTE$(part_label "$1"): $2"$'\n'; }
+# Valid *.json (fex) or *.conf (mangohud) of account $1 into $3; member names added to BK_MEM.
+bk_files(){
+  local acct=$1 part=$2 out=$3 src ext sub n sz bad="" k=0
+  src=$(bk_path "$acct" "$part")
+  case "$part" in fex) ext=json; sub=fex-appconfig;; *) ext=conf; sub=mangohud;; esac
+  while IFS=$'\t' read -r n sz; do
+    [ -n "$n" ] || continue
+    if [[ ! "$n" =~ ^${SA_BK_NAME}\.${ext}$ ]] || [ "$sz" -gt "$SA_BK_MAX" ]; then bad="$bad $n"; continue; fi
+    acct_run "$acct" cat "$src/$n" > "$out/$sub/$n" 2>/dev/null || { rm -f "$out/$sub/$n"; bad="$bad $n"; continue; }
+    if { [ "$ext" = json ] && ! json_ok "$out/$sub/$n"; } || ! text_ok "$out/$sub/$n"; then
+      rm -f "$out/$sub/$n"; bad="$bad $n"; continue
+    fi
+    BK_MEM+=("personal/$sub/$n"); k=$((k + 1))
+  done < <(acct_run "$acct" find "$src" -mindepth 1 -maxdepth 1 -type f -name "*.$ext" -printf '%f\t%s\n' 2>/dev/null | sort)
+  BK_BAD=$bad; [ -n "$bad" ] && bk_note "$part" "left out (name, size or content not valid):$bad"
+  [ "$k" -gt 0 ]
+}
+# bk_make DIR PARTS ACCOUNT: archive written as the person who asked (mode 600). Sets BK_PATH, BK_NOTE, BK_ERR.
+bk_make(){
+  local dir parts=$2 acct=$3 s m rc fam got="" name p
+  local -a list=()
+  BK_PATH="" BK_NOTE="" BK_ERR="" BK_MEM=()
+  dir=$(bk_expand "$1"); case "$dir" in /*) ;; *) dir="$PWD/$dir";; esac
+  bk_dir_ok "$dir"; rc=$?
+  [ "$rc" = 2 ] && { BK_ERR="Folder $dir does not exist."; return 1; }
+  [ "$rc" = 1 ] && { BK_ERR="$(owner_user) cannot write to $dir."; return 1; }
+  s=$(tmpf -d) || { BK_ERR=$TMP_FAIL; return 1; }
+  m="$s/$SA_BK_TOP"; mkdir -p "$m/system" "$m/personal/fex-appconfig" "$m/personal/mangohud"
+  if in_list "$parts" setup; then
+    if [ -r "$SA_CONF" ] && cp "$SA_CONF" "$m/system/steam-arm.conf"; then BK_MEM+=(system/steam-arm.conf); got+=,setup
+    else bk_note setup "no settings file, left out"; fi
+  fi
+  if in_list "$parts" system-profiles; then
+    if [ -f "$SA_TITLES_ETC" ] && cp "$SA_TITLES_ETC" "$m/system/titles.conf"; then BK_MEM+=(system/titles.conf); got+=,system-profiles
+    else bk_note system-profiles "none yet, left out"; fi
+  fi
+  if any_personal "$parts" && [ -z "$acct" ]; then
+    for p in $SA_BK_PERSONAL; do in_list "$parts" "$p" && bk_note "$p" "no account, left out"; done
+  elif any_personal "$parts"; then
+    if in_list "$parts" personal-profiles; then
+      if acct_run "$acct" cat "$(bk_path "$acct" personal-profiles)" > "$m/personal/titles.conf" 2>/dev/null; then
+        BK_MEM+=(personal/titles.conf); got+=,personal-profiles
+      else rm -f "$m/personal/titles.conf"; bk_note personal-profiles "none yet, left out"; fi
+    fi
+    if in_list "$parts" compat-tools; then
+      if ! have python3; then bk_note compat-tools "python3 not found, left out"
+      elif acct_run "$acct" cat "$(bk_path "$acct" compat-tools)" 2>/dev/null | python3 -c "$(compat_py)" > "$m/personal/compattools.txt" 2>/dev/null \
+           && [ -s "$m/personal/compattools.txt" ]; then BK_MEM+=(personal/compattools.txt); got+=,compat-tools
+      else rm -f "$m/personal/compattools.txt"; bk_note compat-tools "none set, left out"; fi
+    fi
+    for p in fex mangohud; do
+      in_list "$parts" "$p" || continue
+      if [ "$p" = fex ] && ! have python3; then bk_note fex "python3 not found, left out"; continue; fi
+      if bk_files "$acct" "$p" "$m/personal"; then got+=",$p"; elif [ -z "$BK_BAD" ]; then bk_note "$p" "none found, left out"; fi
+    done
+  fi
+  if [ ${#BK_MEM[@]} -eq 0 ]; then rm -rf "$s"; BK_ERR="Nothing to back up in the chosen parts."; return 1; fi
+  fam=$(conf_get GPU_FAMILY); [ -n "$fam" ] || fam=$(gpu_family)
+  printf 'FORMAT=%s\nVERSION=%s\nDATE=%s\nGPU_FAMILY=%s\nPARTS=%s\n' "$SA_BK_FMT" "$(installed_version)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$fam" "${got#,}" > "$m/manifest"
+  list=("$SA_BK_TOP/manifest"); for p in "${BK_MEM[@]}"; do list+=("$SA_BK_TOP/$p"); done
+  name="steam-arm-settings-$(date +%Y%m%d-%H%M%S).tar.gz"
+  if [ -e "$dir/$name" ]; then rm -rf "$s"; BK_ERR="$dir/$name already exists; try again."; return 1; fi
+  # no account or host names inside: numeric owner 0
+  if ! tar --owner=0 --group=0 --numeric-owner --mode=u=rw,go=r -C "$s" -czf "$s/out.tar.gz" "${list[@]}" 2>/dev/null; then
+    rm -rf "$s"; BK_ERR="Could not pack the backup."; return 1
+  fi
+  # shellcheck disable=SC2016
+  as_owner sh -c 'umask 077; t=$(mktemp "$2/.steam-arm-settings.XXXXXX") || exit 1
+    if cat > "$t" && { ln "$t" "$1" 2>/dev/null || { [ ! -e "$1" ] && mv "$t" "$1"; }; }; then rm -f "$t"; exit 0; fi
+    rm -f "$t"; exit 1' sh "$dir/$name" "$dir" < "$s/out.tar.gz"; rc=$?
+  rm -rf "$s"
+  [ "$rc" = 0 ] || { BK_ERR="Could not write $dir/$name."; return 1; }
+  BK_PATH="$dir/$name"
+}
+rs_val(){ sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -1 | sed "s/^[\"']//; s/[\"']\$//"; }
+rs_norm(){ tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -; }
+rs_valid(){ case "$1" in
+  GFX_DEFAULT) case "$2" in auto|a|b|forward) return 0;; esac; return 1;;
+  GPU_FAMILY) [[ "$2" =~ ^[a-z0-9-]+$ ]];;
+  *) [[ "$2" =~ ^[a-z0-9,-]*$ ]];;
+esac; }
+rs_close(){ [ -n "${RS_D:-}" ] && rm -rf "$RS_D"; RS_D=""; }
+# rs_open FILE: archive checked, unpacked to RS_D; parts held in RS_PARTS, left-out files in RS_NOTE. Error in RS_ERR.
+rs_open(){
+  local f=$1 names list typ n name fmt p re total=0 count=0 g
+  local -a files=()
+  RS_D="" RS_ERR="" RS_NOTE="" RS_PARTS=""
+  [ -f "$f" ] && [ -r "$f" ] || { RS_ERR="Cannot read $f."; return 1; }
+  [ "$(stat -c %s -- "$f" 2>/dev/null || echo 0)" -le "$SA_BK_MAX" ] || { RS_ERR="$f is too large for a settings backup."; return 1; }
+  if ! names=$(LC_ALL=C tar --quoting-style=escape -tzf "$f" 2>/dev/null) \
+     || ! list=$(LC_ALL=C tar --quoting-style=escape --numeric-owner -tvzf "$f" 2>/dev/null); then
+    RS_ERR="$f is not a readable .tar.gz archive."; return 1
+  fi
+  [ -z "$(sort <<<"$names" | uniq -d)" ] || { RS_ERR="Refused: a member appears twice."; return 1; }
+  # names every format may hold; the manifest's format narrows them below
+  re="^$SA_BK_TOP/(manifest|system/steam-arm\\.conf|system/titles\\.conf|personal/titles\\.conf|personal/compattools\\.txt|personal/fex-appconfig/${SA_BK_NAME}\\.json|personal/mangohud/${SA_BK_NAME}\\.conf)\$"
+  while read -r typ _ n _ _ name; do
+    [ -n "$typ" ] || continue
+    case "$name" in "$SA_BK_TOP/"|"$SA_BK_TOP/system/"|"$SA_BK_TOP/personal/"|"$SA_BK_TOP/personal/fex-appconfig/"|"$SA_BK_TOP/personal/mangohud/")
+      [ "${typ:0:1}" = d ] && continue;; esac
+    [ "${typ:0:1}" = - ] || { RS_ERR="Refused: link or special file in the archive ($name)."; return 1; }
+    [[ "$name" =~ $re ]] || { RS_ERR="Refused: unexpected member $name."; return 1; }
+    [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -le "$SA_BK_MAX" ] || { RS_ERR="Refused: $name is too large."; return 1; }
+    total=$((total + n)); count=$((count + 1)); files+=("$name")
+  done <<<"$list"
+  [ "$total" -le "$SA_BK_TOTAL" ] && [ "$count" -le "$SA_BK_FILES" ] || { RS_ERR="Refused: archive holds too much."; return 1; }
+  grep -qx "$SA_BK_TOP/manifest" <<<"$names" || { RS_ERR="Refused: no manifest, so not a Steam ARM settings backup."; return 1; }
+  RS_D=$(tmpf -d) || { RS_ERR=$TMP_FAIL; return 1; }
+  tar -xzf "$f" -C "$RS_D" --no-same-owner --no-same-permissions -- "$SA_BK_TOP/manifest" 2>/dev/null \
+    || { RS_ERR="Could not unpack $f."; rs_close; return 1; }
+  fmt=$(rs_val "$RS_D/$SA_BK_TOP/manifest" FORMAT)
+  # one entry per format ever written; older formats stay readable
+  case "$fmt" in
+    1) ;;
+    '') RS_ERR="Refused: manifest has no format version."; rs_close; return 1;;
+    *) RS_ERR="Refused: backup format $fmt is newer than this version reads (up to $SA_BK_FMT). Update Steam ARM, then try again."
+       rs_close; return 1;;
+  esac
+  tar -xzf "$f" -C "$RS_D" --no-same-owner --no-same-permissions -- "${files[@]}" 2>/dev/null \
+    || { RS_ERR="Could not unpack $f."; rs_close; return 1; }
+  if [ -n "$(find "$RS_D" -mindepth 1 ! -type f ! -type d -print -quit)" ]; then
+    RS_ERR="Refused: unexpected file type after unpacking."; rs_close; return 1
+  fi
+  g="$RS_D/$SA_BK_TOP"
+  for n in "$g"/personal/fex-appconfig/*.json "$g"/personal/mangohud/*.conf; do
+    [ -f "$n" ] || continue
+    if { [[ "$n" == *.json ]] && ! json_ok "$n"; } || ! text_ok "$n"; then
+      RS_NOTE="$RS_NOTE ${n##*/}"; rm -f "$n"
+    fi
+  done
+  for p in $SA_BK_PARTS; do
+    in_list "$(rs_val "$g/manifest" PARTS)" "$p" || continue
+    case "$p" in
+      setup) [ -f "$g/system/steam-arm.conf" ];;
+      system-profiles) [ -f "$g/system/titles.conf" ];;
+      personal-profiles) [ -f "$g/personal/titles.conf" ];;
+      compat-tools) [ -f "$g/personal/compattools.txt" ];;
+      fex) compgen -G "$g/personal/fex-appconfig/*.json" >/dev/null;;
+      mangohud) compgen -G "$g/personal/mangohud/*.conf" >/dev/null;;
+    esac && RS_PARTS="$RS_PARTS${RS_PARTS:+,}$p"
+  done
+  [ -n "$RS_PARTS" ] || { RS_ERR="Refused: the backup holds no usable part."; rs_close; return 1; }
+}
+# Titles files: "1 line" rows of the current file, then "2 line" rows of the backup.
+tc_rows(){ { sed 's/^/1 /' "$1" 2>/dev/null; sed 's/^/2 /' "$2"; }; }
+# shellcheck disable=SC2016
+TC_AWK='{ f = substr($0, 1, 1); l = substr($0, 3); d = l; sub(/#.*/, "", d); split(d, w, /[ \t]+/); id = w[w[1] == "" ? 2 : 1]; game = (id ~ /^[0-9]+$/) }'
+# Games in the backup with other lines than here (MODE=conf) or not here at all (MODE=new); comma list.
+tc_ids(){
+  tc_rows "$2" "$3" | awk -v MODE="$1" "$TC_AWK"'
+    !game { next }
+    { L[f, id] = L[f, id] l "\n"; if (f == 1) A[id] = 1; else if (!(id in B)) { B[id] = 1; o[++k] = id } }
+    END { for (i = 1; i <= k; i++) { id = o[i]
+      if (MODE == "conf" && (id in A) && L[1, id] != L[2, id]) print id
+      if (MODE == "new" && !(id in A)) print id } }' | paste -sd, -
+}
+# Current file plus backup lines of new games; games in TAKE get the backup's lines.
+tc_merge(){
+  tc_rows "$1" "$2" | awk -v take=",$3," "$TC_AWK"'
+    f == 1 { if (game) { A[id] = 1; if (index(take, "," id ",")) next }; print l; next }
+    game && (!(id in A) || index(take, "," id ",")) { print l }'
+}
+tc_lines(){ awk -v id="$2" '{ d = $0; sub(/#.*/, "", d); split(d, w, /[ \t]+/); if (w[w[1] == "" ? 2 : 1] == id) print }' "$1" 2>/dev/null; }
+# rs_titles CUR BAK MODE TAKE OUT: OUT gets the new content; TP_TXT says what changes. Status 1: no change.
+rs_titles(){
+  local cur=$1 bak=$2 take=$4 out=$5 new conf won="" kept="" id
+  if [ ! -f "$cur" ]; then cp "$bak" "$out"; TP_TXT="no file yet: taken from the backup"; return 0; fi
+  if cmp -s "$cur" "$bak"; then TP_TXT="unchanged"; return 1; fi
+  if [ "$3" = replace ]; then cp "$bak" "$out"; TP_TXT="replaced by the backup (current one kept as titles.conf.bak-restore)"; return 0; fi
+  new=$(tc_ids new "$cur" "$bak"); conf=$(tc_ids conf "$cur" "$bak")
+  for id in ${conf//,/ }; do
+    if [ "$take" = all ] || in_list "$take" "$id"; then won="$won${won:+,}$id"; else kept="$kept${kept:+,}$id"; fi
+  done
+  tc_merge "$cur" "$bak" "$won" > "$out"
+  TP_TXT="merge: adds ${new:-no games}; backup wins for ${won:-none}; current kept for ${kept:-none}"
+  if cmp -s "$cur" "$out"; then TP_TXT="merge: nothing to add; current kept for ${kept:-none}"; return 1; fi
+  TP_TXT="$TP_TXT (current file kept as titles.conf.bak-restore)"
+}
+# Copy of the account's current personal titles.conf in RS_D (absent when it has none).
+rs_cur_personal(){
+  local o="$RS_D/out/cur-personal.conf"
+  mkdir -p "$RS_D/out"; rm -f "$o"
+  acct_run "$1" cat "$(bk_path "$1" personal-profiles)" > "$o" 2>/dev/null || rm -f "$o"
+  echo "$o"
+}
+rs_line(){ printf '  %-20s %s\n' "$1" "$2"; }
+# rs_plan PARTS ACCOUNT SYS-MODE PERSONAL-MODE SYS-TAKE PERSONAL-TAKE: what restore changes, text in RS_SUM.
+rs_plan(){
+  local parts=$1 acct=$2 c="$RS_D/$SA_BK_TOP" s k v cur keys skip="" fam_user=0 a r p sub dest add rep same n src
+  local vdf curmap bad="" miss="" shown=0
+  RS_SET=(); RS_MAP=(); RS_COPY=(); RS_COMP=0; RS_SYS_OUT=""; RS_PERS_OUT=""; RS_ACCT=$acct
+  mkdir -p "$RS_D/out"
+  s="Backup of $(rs_val "$c/manifest" DATE), Steam ARM $(rs_val "$c/manifest" VERSION), GPU $(rs_val "$c/manifest" GPU_FAMILY)."$'\n'
+  any_personal "$parts" && s+="Personal parts go to account $acct; accounts themselves are not changed."$'\n'
+  if in_list "$parts" setup; then
+    s+=$'\n'"Setup choices"$'\n'
+    keys=$SA_BK_KEYS
+    [ "$(rs_val "$c/system/steam-arm.conf" GPU_FAMILY_SET)" = user ] && grep -q '^GPU_FAMILY=' "$c/system/steam-arm.conf" \
+      && { keys="$keys GPU_FAMILY"; fam_user=1; }
+    for k in $keys; do
+      grep -q "^$k=" "$c/system/steam-arm.conf" || continue
+      v=$(rs_val "$c/system/steam-arm.conf" "$k"); cur=$(conf_get "$k")
+      if ! rs_valid "$k" "$v"; then s+=$(rs_line "$k" "value not valid, kept as is")$'\n'; [ "$k" = GPU_FAMILY ] && fam_user=0; continue; fi
+      case "$k" in
+        COMPONENTS_*)
+          if [ "$(rs_norm <<<"$cur")" = "$(rs_norm <<<"$v")" ]; then s+=$(rs_line "$k" unchanged)$'\n'; continue; fi
+          a=$(comm -13 <(tr ',' '\n' <<<"$cur" | grep -v '^$' | sort -u) <(tr ',' '\n' <<<"$v" | grep -v '^$' | sort -u) | paste -sd, - | sed 's/,/, /g')
+          r=$(comm -23 <(tr ',' '\n' <<<"$cur" | grep -v '^$' | sort -u) <(tr ',' '\n' <<<"$v" | grep -v '^$' | sort -u) | paste -sd, - | sed 's/,/, /g')
+          s+=$(rs_line "$k" "${a:+adds $a}${a:+${r:+; }}${r:+drops $r}")$'\n'
+          case "$k" in COMPONENTS_ON|COMPONENTS_OFF) RS_COMP=1;; esac;;
+        *)
+          if [ "$cur" = "$v" ]; then s+=$(rs_line "$k" unchanged)$'\n'; continue; fi
+          s+=$(rs_line "$k" "${cur:-(empty)} -> ${v:-(empty)}")$'\n';;
+      esac
+      RS_SET+=("$k=$v")
+    done
+    if [ "$fam_user" = 1 ] && [ "$(conf_get GPU_FAMILY_SET)" != user ]; then
+      RS_SET+=("GPU_FAMILY_SET=user"); s+=$(rs_line GPU_FAMILY_SET "$(conf_get GPU_FAMILY_SET) -> user")$'\n'
+    fi
+    while read -r k; do
+      case " $keys " in *" $k "*) continue;; esac
+      [ "$k" = GPU_FAMILY_SET ] && [ "$fam_user" = 1 ] && continue
+      skip="$skip${skip:+, }$k"
+    done < <(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$c/system/steam-arm.conf" | sort -u)
+    [ -n "$skip" ] && s+="  Not restored (state of this machine):"$'\n'"$(echo "$skip" | fold -s -w 62 | sed 's/^/    /')"$'\n'
+    [ "$RS_COMP" = 1 ] && s+="  Part lists change: setup --keep makes the installed parts match."$'\n'
+  fi
+  if in_list "$parts" system-profiles; then
+    rs_titles "$SA_TITLES_ETC" "$c/system/titles.conf" "$3" "$5" "$RS_D/out/system-titles.conf" && RS_SYS_OUT="$RS_D/out/system-titles.conf"
+    s+=$'\n'"System game profiles ($SA_TITLES_ETC)"$'\n'"$(echo "$TP_TXT" | fold -s -w 66 | sed 's/^/  /')"$'\n'
+  fi
+  if in_list "$parts" personal-profiles; then
+    rs_titles "$(rs_cur_personal "$acct")" "$c/personal/titles.conf" "$4" "$6" "$RS_D/out/personal-titles.conf" \
+      && RS_PERS_OUT="$RS_D/out/personal-titles.conf"
+    s+=$'\n'"Personal game profiles (account $acct)"$'\n'"$(echo "$TP_TXT" | fold -s -w 66 | sed 's/^/  /')"$'\n'
+  fi
+  if in_list "$parts" compat-tools; then
+    s+=$'\n'"Proton/tool per game (account $acct)"$'\n'
+    vdf=$(bk_path "$acct" compat-tools); same=0
+    if ! have python3 || [ ! -f "$SA_COMPATMAP_PY" ]; then s+="  compat helper not found (run Update / Repair): left out"$'\n'
+    elif ! acct_run "$acct" test -f "$vdf"; then s+="  no client settings for $acct yet (start Steam ARM and sign in once): left out"$'\n'
+    else
+      curmap=$(acct_run "$acct" cat "$vdf" 2>/dev/null | python3 -c "$(compat_py)" 2>/dev/null)
+      while read -r a v _; do
+        [ -n "$a" ] || continue
+        if ! valid_appid "$a" || [[ ! "$v" =~ ^[A-Za-z0-9_.-]{1,64}$ ]]; then bad="$bad $a"; continue; fi
+        if grep -qxF "$a $v" <<<"$curmap"; then same=$((same + 1)); continue; fi
+        if ! tool_ok "$acct" "$v"; then miss="$miss $a:$v"; continue; fi
+        RS_MAP+=("$a $v")
+        [ "$shown" -lt 8 ] && s+=$(rs_line "app $a" "-> $v")$'\n'; shown=$((shown + 1))
+      done < "$c/personal/compattools.txt"
+      [ "$shown" -gt 8 ] && s+="  ... $((shown - 8)) more"$'\n'
+      s+="  ${#RS_MAP[@]} to set, $same unchanged"$'\n'
+      [ -n "$miss" ] && s+="  Tool not installed, left out:"$'\n'"$(echo "${miss# }" | fold -s -w 62 | sed 's/^/    /')"$'\n'
+      [ -n "$bad" ] && s+="  Not valid, left out:$bad"$'\n'
+    fi
+  fi
+  for p in fex mangohud; do
+    in_list "$parts" "$p" || continue
+    case "$p" in fex) sub=fex-appconfig;; *) sub=mangohud;; esac
+    dest=$(bk_path "$acct" "$p"); add=0 rep=0 same=0
+    for src in "$c/personal/$sub"/*; do
+      [ -f "$src" ] || continue
+      n=${src##*/}
+      if acct_same "$acct" "$dest/$n" < "$src"; then same=$((same + 1)); continue; fi
+      if acct_run "$acct" test -f "$dest/$n"; then rep=$((rep + 1)); else add=$((add + 1)); fi
+      RS_COPY+=("$src"$'\t'"$dest/$n")
+    done
+    s+=$'\n'"$(part_label "$p") (account $acct)"$'\n'"  $add new, $rep replaced (current ones kept as .bak-restore), $same unchanged"$'\n'
+  done
+  [ -n "$RS_NOTE" ] && s+=$'\n'"Left out (not valid):$RS_NOTE"$'\n'
+  RS_SUM=$s
+}
+# Writes the plan. Accounts, passwords and groups are never touched.
+rs_apply(){
+  local kv e a t fail=0 vdf
+  for kv in "${RS_SET[@]}"; do
+    conf_set "${kv%%=*}" "${kv#*=}" || { echo "steam-arm-config: could not write $SA_CONF" >&2; fail=1; }
+  done
+  if [ -n "$RS_SYS_OUT" ]; then
+    if ! { mkdir -p "$(dirname "$SA_TITLES_ETC")" && { [ ! -f "$SA_TITLES_ETC" ] || cp -p "$SA_TITLES_ETC" "$SA_TITLES_ETC.bak-restore"; } \
+           && t=$(mktemp "$SA_TITLES_ETC.XXXXXX") && cat "$RS_SYS_OUT" > "$t" && chmod 644 "$t" && mv -f "$t" "$SA_TITLES_ETC"; }; then
+      [ -n "${t:-}" ] && rm -f "$t"; echo "steam-arm-config: could not write $SA_TITLES_ETC" >&2; fail=1
+    fi
+  fi
+  if [ -n "$RS_PERS_OUT" ]; then
+    acct_put "$RS_ACCT" "$(bk_path "$RS_ACCT" personal-profiles)" < "$RS_PERS_OUT" \
+      || { echo "steam-arm-config: could not write personal game profiles of $RS_ACCT" >&2; fail=1; }
+  fi
+  vdf=$(bk_path "$RS_ACCT" compat-tools)
+  for e in "${RS_MAP[@]}"; do
+    read -r a t <<<"$e"
+    acct_run "$RS_ACCT" python3 "$SA_COMPATMAP_PY" "$vdf" "$a" "$t" >/dev/null || fail=1
+  done
+  for e in "${RS_COPY[@]}"; do
+    acct_put "$RS_ACCT" "${e#*$'\t'}" < "${e%%$'\t'*}" || { echo "steam-arm-config: could not write ${e#*$'\t'}" >&2; fail=1; }
+  done
+  return "$fail"
+}
+# Existing normal account for personal parts (no create item). Status 1 on Back, 2 when none exists.
+acct_pick(){
+  local def
+  acct_list
+  [ ${#ACCT_ITEMS[@]} -gt 0 ] || return 2
+  def=$(acct_default "$ACCT_CUR" "$(game_user)" "$ACCT_DESK")
+  ui_menu "$1" "$2" --default "$def" "${ACCT_ITEMS[@]}"
+}
+# Sudo first when another account's files are read from a non-root menu.
+acct_ready(){ [ "$(id -u)" = 0 ] || [ "$1" = "$(id -un)" ] || need_root; }
+bk_parts_items(){ local p; for p in ${1//,/ }; do printf '%s\n%s\nON\n' "$p" "$(part_label "$p")"; done; }
+maint_backup(){
+  local d rc parts acct="" p
+  local -a items=()
+  mapfile -t items < <(bk_parts_items "${SA_BK_PARTS// /,}")
+  d=$(owner_home)
+  while :; do
+    d=$(ui_input "Back up settings" "Folder for the backup file. It holds settings and game profiles only:
+no sign-in data, Steam files, accounts or passwords." "$d") || return
+    d=$(bk_expand "$d")
+    case "$d" in /*) ;; *) ui_msg "Back up settings" "Type a full path, starting with / or ~."; continue;; esac
+    bk_dir_ok "$d"; rc=$?
+    if [ "$rc" = 2 ]; then
+      ui_yesno "Back up settings" "Folder $d does not exist. Create it?" Create Back || continue
+      as_owner mkdir -p -- "$d" 2>/dev/null || { ui_msg "Back up settings" "Could not create $d."; continue; }
+      bk_dir_ok "$d"; rc=$?
+    fi
+    [ "$rc" = 0 ] || { ui_msg "Back up settings" "$(owner_user) cannot write to $d. Pick another folder."; continue; }
+    while :; do
+      parts=$(ui_check "Back up settings: parts" "Parts to save. SPACE turns a part on or off." "${items[@]}") || continue 2
+      parts=$(echo "$parts" | paste -sd, -)
+      [ -n "$parts" ] || { ui_msg "Back up settings" "Pick at least one part."; continue; }
+      acct=""
+      if any_personal "$parts"; then
+        acct=$(acct_pick "Back up settings: account" "Account whose personal parts are saved:"); rc=$?
+        [ "$rc" = 1 ] && continue
+        if [ "$rc" = 2 ]; then
+          ui_msg "Back up settings" "No normal account found: personal parts are left out."
+          parts=$(drop_personal "$parts"); [ -n "$parts" ] || continue
+        fi
+        [ -n "$acct" ] && { acct_ready "$acct" || continue; }
+      fi
+      break 2
+    done
+  done
+  ui_info "Back up settings" "Saving..."
+  if bk_make "$d" "$parts" "$acct"; then
+    bk_last_set "$d"
+    p="Saved to:
+$BK_PATH"
+    [ -n "$BK_NOTE" ] && p="$p
+
+$BK_NOTE"
+    ui_msg "Back up settings" "$p
+
+Restore it with Maintenance > Restore settings, or:
+steam-arm-config restore FILE"
+  else
+    ui_msg "Back up settings" "No backup was written: $BK_ERR"
+  fi
+}
+rs_ask_mode(){
+  ui_menu "$1" "Current file differs from the one in the backup." --default merge \
+    merge "Merge: add games missing here" replace "Replace: take the backup file as is"
+}
+# Merge conflicts of one titles file: RS_TAKE gets the games where the backup wins. Status 1 on Back.
+rs_ask_conflicts(){
+  local ids c id nm
+  RS_TAKE=""
+  ids=$(tc_ids conf "$2" "$3"); [ -n "$ids" ] || return 0
+  c=$(ui_menu "$1" "$(tr ',' '\n' <<<"$ids" | wc -l) games have other lines in the backup than here." \
+      backup "Backup wins for all" current "Keep current for all" each "Decide one by one") || return 1
+  case "$c" in backup) RS_TAKE=all; return 0;; current) return 0;; esac
+  for id in ${ids//,/ }; do
+    nm=$(game_name "$id"); nm=${nm:-game $id}
+    if ui_yesno "$1: $nm" "App $id
+
+Current:
+$(tc_lines "$2" "$id")
+
+Backup:
+$(tc_lines "$3" "$id")" Backup Current; then RS_TAKE="$RS_TAKE${RS_TAKE:+,}$id"; fi
+  done
+}
+# Status 1: back to the file choice.
+rs_menu(){
+  local f=$1 sel acct="" sm=merge pm=merge ts="" tp="" rc comp g cur
+  local -a items=() args=()
+  rs_open "$f" || { ui_msg "Restore settings" "$RS_ERR"; return 1; }
+  g="$RS_D/$SA_BK_TOP"
+  mapfile -t items < <(bk_parts_items "$RS_PARTS")
+  while :; do
+    sel=$(ui_check "Restore settings: parts" "Parts in this backup. SPACE turns a part on or off." "${items[@]}") || { rs_close; return 1; }
+    sel=$(echo "$sel" | paste -sd, -)
+    [ -n "$sel" ] || { ui_msg "Restore settings" "Pick at least one part."; continue; }
+    acct=""
+    if any_personal "$sel"; then
+      acct=$(acct_pick "Restore settings: account" "Account that gets the personal parts:"); rc=$?
+      [ "$rc" = 1 ] && continue
+      if [ "$rc" = 2 ]; then
+        ui_msg "Restore settings" "No normal account found: personal parts are left out."
+        sel=$(drop_personal "$sel"); [ -n "$sel" ] || continue
+      fi
+      [ -n "$acct" ] && { acct_ready "$acct" || continue; }
+    fi
+    break
+  done
+  if in_list "$sel" system-profiles && [ -f "$SA_TITLES_ETC" ] && ! cmp -s "$SA_TITLES_ETC" "$g/system/titles.conf"; then
+    sm=$(rs_ask_mode "Restore: system game profiles") || { rs_close; return 1; }
+    if [ "$sm" = merge ]; then rs_ask_conflicts "System game profiles" "$SA_TITLES_ETC" "$g/system/titles.conf" || { rs_close; return 1; }; ts=$RS_TAKE; fi
+  fi
+  if in_list "$sel" personal-profiles; then
+    cur=$(rs_cur_personal "$acct")
+    if [ -f "$cur" ] && ! cmp -s "$cur" "$g/personal/titles.conf"; then
+      pm=$(rs_ask_mode "Restore: personal game profiles") || { rs_close; return 1; }
+      if [ "$pm" = merge ]; then rs_ask_conflicts "Personal game profiles" "$cur" "$g/personal/titles.conf" || { rs_close; return 1; }; tp=$RS_TAKE; fi
+    fi
+  fi
+  rs_plan "$sel" "$acct" "$sm" "$pm" "$ts" "$tp"
+  ui_textstr "Restore settings: summary" "$RS_SUM"
+  if ! ui_yesno "Restore settings" "Apply these changes from
+$(basename "$f")?" Restore Back defaultno; then rs_close; return 1; fi
+  comp=$RS_COMP; rs_close
+  args=(restore "$f" --yes --parts "$sel" --system-profiles "$sm" --personal-profiles "$pm" --take-system "$ts" --take-personal "$tp")
+  [ -n "$acct" ] && args+=(--account "$acct")
+  bk_last_set "$(dirname "$f")"
+  self_root "${args[@]}" || return 0
+  if [ "$comp" = 1 ]; then
+    ui_yesno "Restore settings" "Settings restored. Part lists changed: run setup --keep now so the
+installed parts match? It takes a few minutes." "Run setup" Later || return 0
+    INST_ENV=(); run_installer "Restore settings" --keep
+  else
+    ui_msg "Restore settings" "Settings restored."
+  fi
+  return 0
+}
+maint_restore(){
+  local d f c h seen=" " n=0
+  local -a files=() items=()
+  is_installed || { offer_install; return; }
+  if steam_running; then ui_msg "Restore settings" "Close Steam ARM first; it reads these settings while it runs."; return; fi
+  h=$(owner_home)
+  for d in "$(bk_last_dir)" "$h"; do
+    [ -n "$d" ] || continue
+    case "$seen" in *" $d "*) continue;; esac; seen="$seen$d "
+    while IFS= read -r f; do
+      [ -f "$f" ] || continue
+      n=$((n + 1)); files+=("$f"); items+=("$n" "$(basename "$f")  (${d/#"$h"/\~})")
+    done < <(ls -t "$d"/steam-arm-settings-*.tar.gz 2>/dev/null)
+  done
+  items+=(p "Type a path...")
+  while :; do
+    if [ "$n" -gt 0 ]; then
+      c=$(ui_menu "Restore settings" "Backup to restore (newest first):" "${items[@]}") || return
+    else c=p; fi
+    if [ "$c" = p ]; then
+      f=$(ui_input "Restore settings" "Path of the backup file (steam-arm-settings-....tar.gz):" "$h/") || { [ "$n" -gt 0 ] && continue; return; }
+      f=$(bk_expand "$f")
+    else
+      f=${files[$((c - 1))]}
+    fi
+    rs_menu "$f" && return
+  done
+}
+menu_maintenance(){
+  local c=""
+  while c=$(ui_menu "Maintenance" "Keep Steam ARM working." --default "$c" \
+      1 "Update / Repair (run setup again, same parts)" 2 "View logs" \
+      3 "Hardware report (for a compatibility report)" 4 "Free /dev/shm now" \
+      5 "Back up settings" 6 "Restore settings"); do
+    case "$c" in
+      1) if is_installed; then INST_ENV=(); run_installer "Update / Repair" --keep; else offer_install; fi;;
+      2) maint_logs;;
+      3) maint_report;;
+      4) maint_shm;;
+      5) maint_backup;;
+      6) maint_restore;;
+    esac
+  done
+}
+
+# ===========================================================================
+# 9. Uninstall
+# ===========================================================================
+uninstall_keep(){
+  ui_yesno "Uninstall" "Remove Steam ARM?
+
+Removes the launcher, menu entries, rules and settings it added, and
+puts back system settings it changed. Your games and sign-in stay in
+the client folder; setup asks before touching it.
+
+Setup runs in the terminal and may ask questions there." Remove Back defaultno || return
+  run_installer_tty --remove
+}
+uninstall_purge(){
+  ui_yesno "Uninstall everything" "Remove Steam ARM AND delete all installed games, saves kept in the
+client folder, and the x86-64 system files setup downloaded?
+
+This cannot be undone." Continue Back defaultno || return
+  ui_yesno "Uninstall everything" "Last check: delete Steam ARM with every installed game?
+
+Setup asks for one more typed confirmation in the terminal." "Delete all" Back defaultno || return
+  run_installer_tty --remove --purge
+}
+menu_uninstall(){
+  local c=""
+  is_installed || { ui_msg "Uninstall" "Steam ARM is not installed."; return; }
+  while c=$(ui_menu "Uninstall" "Games are kept unless you pick the second entry." --default "$c" \
+      1 "Remove Steam ARM (keep games)" 2 "Remove Steam ARM and all games"); do
+    case "$c" in 1) uninstall_keep;; 2) uninstall_purge;; esac
+    is_installed || return
+  done
+}
+
+# ===========================================================================
+# 10. Help / About
+# ===========================================================================
+about_text(){ cat <<EOF
+steam-arm-config $SA_VERSION: settings for Steam ARM.
+
+Steam ARM runs Valve's ARM64 Steam client on ARM Linux boards. x86
+games run through emulation (FEX); Windows games through Proton.
+
+Keys: arrows move, Enter selects, TAB reaches the buttons, SPACE
+toggles list items. Back: TAB to the Back button, then Enter.
+Same settings from scripts: steam-arm-config --help
+
+Documentation and compatibility reports: $SA_DOCS
+
+This project is not affiliated with, endorsed by or sponsored by
+Valve Corporation. Steam, Proton, Steam Deck and Steam Frame are
+trademarks of Valve Corporation.
+EOF
+}
+
+fixing_text(){ cat <<'EOF'
+Fixing a game
+
+What works
+- Steam launch options (game Properties > General >
+  Launch options), for example:
+    PROTON_USE_WINED3D=1 %command%
+        Windows game: OpenGL (WineD3D) in place of
+        Vulkan (DXVK)
+    -vulkan
+        game's own Vulkan switch, where it has one
+    MESA_GL_VERSION_OVERRIDE=4.5 %command%
+        report a newer OpenGL version to the game
+  A launch option wins over the automatic rules; the
+  game log then says "launch option kept".
+- Games screen of this menu: overlay, MangoHud, extra
+  environment and arguments, one game at a time.
+- Graphics > Route per game: A (forwarding to host
+  drivers) or B (Mali drivers inside the emulation),
+  for x86 Linux games.
+- Videos in Windows games show colour bars: turn on
+  the shader-cache part (Components). It downloads
+  several GB and processes caches on all cores after
+  installs and updates. Turning it off keeps the
+  cache, and turning it on again reuses it.
+  Deleting steamapps/shadercache by hand stops
+  Steam from downloading those caches again.
+
+What to avoid
+- MANGOHUD=1 or "mangohud %command%" on Windows games
+  (Proton ARM64): the game crashes.
+- Options made for NVIDIA or AMD graphics cards.
+- Installing packages inside the emulation (apt or
+  dpkg under FEX): they write to the real system and
+  can damage it.
+
+What cannot be fixed here
+- Direct3D 12 games.
+- Unreal Engine 4 and 5 games.
+- Games with kernel anti-cheat.
+
+Reading "Rules used at last start" (Games > a game)
+- "graphics: forwarding" or "graphics: Mali drivers
+  in emulation": route of the last start, reason in
+  brackets.
+- "launch option kept: NAME=value (rule wanted ...)":
+  your launch option won over a rule.
+- "title setting kept: gfx=...": the route set for
+  this game won over the rules.
+- No lines: the game has not started since setup, or
+  it is a Windows game (Proton keeps its own logs).
+EOF
+}
+menu_help(){
+  local c=""
+  while c=$(ui_menu "Help / About" "Choose a page." --default "$c" 1 "Fixing a game" 2 "About steam-arm-config"); do
+    case "$c" in 1) ui_textstr "Fixing a game" "$(fixing_text)";; 2) ui_textstr "About" "$(about_text)";; esac
+  done
+}
+
+# ===========================================================================
+# Main menu
+# ===========================================================================
+offer_install(){
+  ui_yesno "Steam ARM" "Steam ARM is not installed yet. Install it now?" Install Back && menu_setup
+}
+menu_main(){
+  local c=""
+  status_line
+  while c=$(ui_menu "steam-arm-config" "Choose a section." --cancel Exit --default "$c" \
+      1 "Information" 2 "Install / Setup" 3 "Components" 4 "Graphics" 5 "Games" \
+      6 "Controllers" 7 "Remote Play" 8 "Maintenance" 9 "Uninstall" 10 "Help / About"); do
+    case "$c" in
+      1) menu_info;; 2) menu_setup;; 3) menu_components;; 4) menu_graphics;; 5) menu_games;;
+      6) menu_controllers;; 7) menu_remoteplay;; 8) menu_maintenance;; 9) menu_uninstall;;
+      10) menu_help;;
+    esac
+    status_line
+  done
+  [ -n "$SA_DIALOGRC" ] && rm -f "$SA_DIALOGRC"
+  clear 2>/dev/null
+}
+
+# ===========================================================================
+# Command line
+# ===========================================================================
+usage(){ cat <<EOF
+Usage: steam-arm-config [command]
+
+Settings for Steam ARM. Without a command: menu (built-in screens,
+dialog, whiptail or plain prompts). Changes ask for administrator rights
+through sudo.
+
+Commands
+  info                      system, Steam ARM status and hardware notes
+  report                    hardware report without personal details,
+                            saved to $SA_REPORT
+  gfx <appid> auto|a|b      graphics route of one game: automatic,
+                            A forwarding, B Mali drivers in emulation
+  gfx-default auto|a|b      route for games without their own setting:
+                            automatic rules, A forwarding for all,
+                            B Mali drivers in emulation for all
+  profile <appid> key=value ...
+                            game profile keys (overlay, mangohud, env,
+                            args, gl32, vk32, godot, unity, gfx);
+                            key= removes one, --clear removes all
+  compat <appid> linux|windows|clear
+                            force Linux build or Windows build (Proton),
+                            clear removes it; Steam must be closed
+  components a,b,...        install exactly these parts (runs setup)
+  backup [DIR] [--account NAME] [--parts a,b,...]
+                            settings backup file in DIR (default: your
+                            home), readable by you only; parts: setup,
+                            system-profiles, personal-profiles,
+                            compat-tools, fex, mangohud (default: all);
+                            personal parts come from NAME (default: you,
+                            else the game account)
+  restore FILE [--account NAME] [--parts a,b,...] [--merge|--replace]
+               [--system-profiles merge|replace]
+               [--personal-profiles merge|replace]
+               [--take-system IDS|all] [--take-personal IDS|all] [--yes]
+                            restore parts of a backup (default: all it
+                            holds); profiles merge by default and keep
+                            current lines of games set both here and in
+                            the backup, unless --take-* names them;
+                            accounts, passwords and groups are never
+                            changed; asks before applying unless --yes
+  help fixing              what helps a game that does not start or
+                            draws wrong, and what cannot be fixed
+  --help                    this text
+
+Environment
+  STEAM_ARM_DIALOG=builtin|dialog|whiptail|read
+                            menu front end (default: builtin screens when
+                            python3 with curses is present, else dialog,
+                            else whiptail, else plain prompts)
+  STEAM_ARM_INSTALLER=file  setup script to run (default: steam-arm-setup,
+                            else $SA_SHARE_INSTALLER,
+                            else steam-arm-install.sh beside this app);
+                            the installer sets it when it opens this menu
+
+Files
+  $SA_CONF      settings (GFX_DEFAULT=auto|a|b;
+                            forward is read as a)
+  $SA_TITLES_ETC        game profiles written here
+  ~/steam-arm-report.txt    hardware report (report command)
+  ~/.cache/steam-arm/       logs of setup runs started here
+
+Documentation: $SA_DOCS
+Not affiliated with Valve Corporation. Steam, Proton, Steam Deck and
+Steam Frame are trademarks of Valve Corporation.
+EOF
+}
+cli_gfx(){
+  valid_appid "${1:-}" || { echo "usage: steam-arm-config gfx <appid> auto|a|b" >&2; return 2; }
+  [ "${2:-}" != b ] || route_b_ok || { echo "steam-arm-config: $SA_NO_ROUTE_B" >&2; return 1; }
+  case "${2:-}" in auto) tc_set "$SA_TITLES_ETC" "$1" gfx "";; a|b) tc_set "$SA_TITLES_ETC" "$1" gfx "$2";;
+    *) echo "usage: steam-arm-config gfx <appid> auto|a|b" >&2; return 2;; esac \
+    && echo "app $1: graphics $(gfx_label "$([ "$2" = auto ] || echo "$2")")" \
+    && { [ "$2" != b ] || mali_ready || echo "note: $SA_NO_MALI"; }
+}
+cli_gfx_default(){
+  local v
+  case "${1:-}" in auto) v=auto;; a|forward) v=a;; b) v=b;;
+    *) echo "usage: steam-arm-config gfx-default auto|a|b" >&2; return 2;; esac
+  [ "$v" != b ] || route_b_ok || { echo "steam-arm-config: $SA_NO_ROUTE_B" >&2; return 1; }
+  case "$v" in auto|a|b) conf_set GFX_DEFAULT "$v" && echo "default graphics route: $(gfx_default_label "$(gfx_default)")" \
+                   && { [ "$v" != b ] || mali_ready || echo "note: $SA_NO_MALI"; };;
+    *) echo "usage: steam-arm-config gfx-default auto|a|b" >&2; return 2;; esac
+}
+profile_ok(){ case "$1=$2" in
+  overlay=|overlay=x86|overlay=vulkan|overlay=off|mangohud=|mangohud=on|mangohud=off|gfx=|gfx=a|gfx=b) return 0;;
+  gl32=|gl32=off|vk32=|vk32=keep|godot=|godot=gl|godot=vulkan|unity=|unity=vulkan|unity=gl) return 0;;
+  env=*|args=*) valid_value "$2";;
+  *) return 1;;
+esac; }
+cli_profile(){
+  local id=${1:-} kv k v
+  valid_appid "$id" || { echo "usage: steam-arm-config profile <appid> key=value ..." >&2; return 2; }
+  shift
+  if [ "${1:-}" = --clear ]; then
+    for k in overlay mangohud env args gl32 vk32 godot unity gfx; do tc_set "$SA_TITLES_ETC" "$id" "$k" "" || return 1; done
+    echo "app $id: profile removed"; return 0
+  fi
+  for kv in "$@"; do
+    k=${kv%%=*}; v=${kv#*=}
+    if [ "$k" = "$kv" ] || ! profile_ok "$k" "$v"; then echo "steam-arm-config: bad setting: $kv" >&2; return 2; fi
+    [ "$kv" != gfx=b ] || route_b_ok || { echo "steam-arm-config: $SA_NO_ROUTE_B" >&2; return 1; }
+  done
+  for kv in "$@"; do tc_set "$SA_TITLES_ETC" "$id" "${kv%%=*}" "${kv#*=}" || return 1; done
+  echo "app $id: $(tc_effective "$id" | tr '\n' ' ')"
+}
+cli_compat(){
+  valid_appid "${1:-}" || { echo "usage: steam-arm-config compat <appid> linux|windows|clear" >&2; return 2; }
+  steam_running && { echo "steam-arm-config: close Steam ARM first" >&2; return 1; }
+  case "${2:-}" in
+    linux)   "$SA_COMPATMAP" "$1" steamlinuxruntime;;
+    windows) "$SA_COMPATMAP" "$1" proton-stable-arm64;;
+    clear)   "$SA_COMPATMAP" "$1" --remove;;
+    *) echo "usage: steam-arm-config compat <appid> linux|windows|clear" >&2; return 2;;
+  esac
+}
+cli_components(){
+  local -a cmd; mapfile -t cmd < <(installer_cmd) || true
+  [ "${#cmd[@]}" -gt 0 ] || { echo "steam-arm-config: setup script not found" >&2; return 1; }
+  "${cmd[@]}" "--select=${1:-}"
+}
+cli_need(){ [ "$1" -ge 2 ] || { echo "steam-arm-config: $2 needs a value (see --help)" >&2; return 1; }; }
+# Account for personal parts: --account (existing normal account only), else caller, game account, desktop user.
+cli_acct(){
+  acct_list
+  if [ -n "$1" ]; then
+    [[ "$ACCT_NAMES" == *" $1 "* ]] || { echo "steam-arm-config: $1 is not an existing normal account" >&2; return 1; }
+    echo "$1"
+  else acct_default "$ACCT_CUR" "$(game_user)" "$ACCT_DESK"; fi
+}
+cli_backup(){
+  local dir="" parts=${SA_BK_PARTS// /,} acct="" aset=""
+  local -a orig=("$@")
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --account) cli_need $# "$1" || return 2; aset=$2; shift 2;;
+      --parts)   cli_need $# "$1" || return 2; parts=$2; shift 2;;
+      -*) echo "steam-arm-config: unknown option: $1 (see --help)" >&2; return 2;;
+      *) [ -z "$dir" ] || { echo "usage: steam-arm-config backup [DIR] [--account NAME] [--parts a,b,...]" >&2; return 2; }
+         dir=$1; shift;;
+    esac
+  done
+  parts_ok "$parts" || return 2
+  if any_personal "$parts"; then
+    acct=$(cli_acct "$aset") || return 2
+    [ -n "$acct" ] && [ "$(id -u)" != 0 ] && [ "$acct" != "$(id -un)" ] && cli_root backup "${orig[@]}"
+  fi
+  bk_make "${dir:-$(owner_home)}" "$parts" "$acct" || { echo "steam-arm-config: $BK_ERR" >&2; return 1; }
+  printf '%s' "$BK_NOTE"
+  echo "Saved to $BK_PATH"
+}
+cli_restore(){
+  local f="" parts="" acct="" aset="" sm=merge pm=merge ts="" tp="" yes=0 a
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --account) cli_need $# "$1" || return 2; aset=$2; shift 2;;
+      --parts)   cli_need $# "$1" || return 2; parts=$2; shift 2;;
+      --merge)   sm=merge; pm=merge; shift;;
+      --replace) sm=replace; pm=replace; shift;;
+      --system-profiles)   cli_need $# "$1" || return 2; sm=$2; shift 2;;
+      --personal-profiles) cli_need $# "$1" || return 2; pm=$2; shift 2;;
+      --take-system)   cli_need $# "$1" || return 2; ts=$2; shift 2;;
+      --take-personal) cli_need $# "$1" || return 2; tp=$2; shift 2;;
+      --yes) yes=1; shift;;
+      -*) echo "steam-arm-config: unknown option: $1 (see --help)" >&2; return 2;;
+      *) [ -z "$f" ] || { echo "usage: steam-arm-config restore FILE [options] (see --help)" >&2; return 2; }
+         f=$1; shift;;
+    esac
+  done
+  [ -n "$f" ] || { echo "usage: steam-arm-config restore FILE [options] (see --help)" >&2; return 2; }
+  case "$sm,$pm" in merge,merge|merge,replace|replace,merge|replace,replace) ;;
+    *) echo "steam-arm-config: profiles mode is merge or replace" >&2; return 2;; esac
+  [[ "$ts" =~ ^(all|[0-9,]*)$ ]] && [[ "$tp" =~ ^(all|[0-9,]*)$ ]] || { echo "steam-arm-config: --take-* takes app ids (a,b,...) or all" >&2; return 2; }
+  is_installed || { echo "steam-arm-config: Steam ARM is not installed; install it, then restore" >&2; return 1; }
+  steam_running && { echo "steam-arm-config: close Steam ARM first" >&2; return 1; }
+  rs_open "$f" || { echo "steam-arm-config: $RS_ERR" >&2; return 1; }
+  if [ -n "$parts" ]; then
+    parts_ok "$parts" || { rs_close; return 2; }
+    for a in ${parts//,/ }; do in_list "$RS_PARTS" "$a" || { echo "steam-arm-config: part $a is not in this backup (it holds $RS_PARTS)" >&2; rs_close; return 2; }; done
+  else parts=$RS_PARTS; fi
+  if any_personal "$parts"; then
+    acct=$(cli_acct "$aset") || { rs_close; return 2; }
+    if [ -z "$acct" ]; then echo "No normal account found: personal parts are left out."; parts=$(drop_personal "$parts"); fi
+    [ -n "$parts" ] || { rs_close; return 1; }
+  fi
+  rs_plan "$parts" "$acct" "$sm" "$pm" "$ts" "$tp"
+  printf '%s\n' "$RS_SUM"
+  if [ "$yes" != 1 ]; then
+    if [ -t 0 ]; then
+      printf 'Apply these changes? [y/N] '; read -r a
+      case "$a" in y|Y|yes|YES) ;; *) echo "Nothing changed."; rs_close; return 1;; esac
+    else echo "steam-arm-config: add --yes to apply without a terminal" >&2; rs_close; return 1; fi
+  fi
+  if rs_apply; then
+    echo "Settings restored."
+    [ "$RS_COMP" = 1 ] && echo "Part lists changed: run Maintenance > Update / Repair (setup --keep) so the installed parts match."
+    rs_close; return 0
+  fi
+  rs_close; return 1
+}
+main(){
+  case "${1:-}" in
+    -h|--help) usage;;
+    help)        if [ "${2:-}" = fixing ]; then fixing_text; else usage; fi;;
+    info)        echo "== System"; info_system; echo; echo "== Steam ARM"; info_status; echo; echo "== Notes"; info_notes;;
+    report)      report_make && cat "$SA_REPORT" && echo && echo "Saved to $SA_REPORT (home folder of the account that ran this)";;
+    gfx)         cli_root "$@"; shift; cli_gfx "$@";;
+    gfx-default) cli_root "$@"; shift; cli_gfx_default "$@";;
+    profile)     cli_root "$@"; shift; cli_profile "$@";;
+    compat)      cli_root "$@"; shift; cli_compat "$@";;
+    components)  cli_root "$@"; shift; cli_components "$@";;
+    backup)      shift; cli_backup "$@";;
+    restore)     cli_root "$@"; shift; cli_restore "$@";;
+    ''|menu)
+      if [ ! -t 0 ] || [ ! -t 1 ]; then echo "steam-arm-config: the menu needs a terminal; see --help" >&2; exit 1; fi
+      ui_pick; menu_main;;
+    *) echo "steam-arm-config: unknown command: $1 (see --help)" >&2; exit 2;;
+  esac
+}
+
+main "$@"
+STEAMARMCONFIG
+}
 usage(){
   local c mark
+  echo "Steam ARM $SA_VERSION installer"
   cat <<'USAGE'
 Usage: sudo bash steam-arm-install.sh [--defaults | --select a,b,... | --skip a,b,...]
-       bash steam-arm-install.sh --list | --help
+       sudo bash steam-arm-install.sh --remove [--purge]
+       bash steam-arm-install.sh --detect | --list | --help
 
 Installs Valve's native ARM64 Steam client for the desktop user, with the pieces it
 needs on this system. Nothing downloads until this command runs.
@@ -88,26 +4007,57 @@ Same installer as `.deb` package built from GitHub source (`build-deb.sh`); that
 package's command is `steam-arm-setup`, options below are identical either way.
 
 Options
-  (none)            checklist of components: keyboard list in terminal, dialog
-                    (zenity) on desktop when started without terminal
-  --defaults        recommended components, no questions
+  (none)            in a terminal: settings menu (steam-arm-config) with install,
+                    components, graphics and uninstall; without terminal on desktop:
+                    checklist dialog (zenity) of components
+  --defaults        recommended components, no questions (GPU-related defaults
+                    follow detected GPU family, see --detect)
   --keep            components saved by last run, no questions (recommended set if none)
   --select a,b      exactly these components
   --skip a,b        recommended components, without these
   --list            print components and exit
+  --detect          print detected GPU family, drivers, page size, distribution and
+                    default components, then exit; installs nothing, needs no root
   --help            print this text and exit
-  --replace-other   install even when other flavour of this installer is present;
-                    its steam-arm and steamos-session-select commands are replaced
+  --replace-other   retire other variant of this installer when present: its files
+                    go into one backup archive in /var/backups, then removed; its
+                    client folder and account stay in use unless set here
+  --detect-other    print whether other variant of this installer is present
+                    (status 0 when present), then exit; needs no root
+  --provider-default
+                    gpu-in-emulation: back from a custom driver archive to the
+                    published one (clears saved custom archive, rebuilds)
+  --remove          uninstall: removes everything this installer added and restores
+                    changed system settings; asks before deleting client folder
+                    (games live there), keeps it by default; distribution packages stay
+  --remove --purge  also deletes client folder with all games and, when setup
+                    downloaded it, the x86-64 root filesystem, after typed confirmation
+  --password-stdin  first line of standard input is password of game account, used
+                    only when setup creates that account (not printed, not logged)
 
-Always installed: host packages, x86-64 root filesystem, client package, launcher.
+Always installed: host packages, x86-64 root filesystem, client package, launcher,
+settings menu steam-arm-config.
 
-Components (* = on by default)
+Components (* = on by default on this system)
 USAGE
   for c in $COMPONENTS; do
     mark=" "; eval "[ \"\$$(var_of "$c")\" = 1 ]" && mark="*"
     printf '  %s %-16s %s\n' "$mark" "$c" "$(desc_of "$c")"
   done
   cat <<'USAGE'
+
+  shader-cache (off by default) lets the client download shader caches and
+  transcoded videos for Windows titles, so their in-game videos play in place
+  of colour bars. Costs several GB of disk and long processing on all cores
+  after an install or update. Turning it off keeps the cache; turning it on
+  again reuses it. Deleting the cache folder by hand
+  (<client folder>/.local/share/Steam/steamapps/shadercache) stops the client
+  from downloading those caches again.
+
+  physx-skip (on by default) marks PhysX install step of Windows titles as
+  done in their prefix, else stops it after 60 s (PhysX installer hangs
+  under emulation).
+  Turning it off stops only that watcher; its helper file stays.
 
 Examples
   sudo bash steam-arm-install.sh --defaults
@@ -125,40 +4075,150 @@ Re-running
 
 After install
   Start "Steam ARM" from the menu, or run: steam-arm
-  Sign in from "Steam ARM (Desktop mode)". The first start downloads the client
-  and restarts it once.
+  Sign in from Big Picture, or from "Steam ARM (Desktop mode)". The first start
+  downloads the client and restarts it once.
+  Settings later: steam-arm-config (menu), or steam-arm-config --help
 
 Environment
   GAMEUSER=name                account to install into (default: account of last run,
                                else uid 1000)
+  ARMHOME_DIR=path             client folder relative to home of that account, first
+                               install only (default .local/share/steam-arm)
   STEAM_ARM_IGNORE_PAGESIZE=1  skip the 4K page size check
+  GPU_FAMILY=id                GPU family in place of detection, kept for later runs
+                               (GPU_FAMILY=auto detects again); wrong id lists valid ones
+  STEAM_ARM_PROVIDER_TARBALL=file
+                               gpu-in-emulation: local driver archive in place of its
+                               download (checksum still checked); other steps still
+                               need network
+  STEAM_ARM_PROVIDER_SHA256=sha256
+                               with STEAM_ARM_PROVIDER_TARBALL: custom driver archive
+                               (own Mesa build), accepted when its sha256 matches;
+                               saved for later runs, --provider-default undoes it
+Environment of the launcher (steam-arm) and its helpers
+  STEAM_ARM_HOME=path          client folder in place of the saved one (absolute path)
+  STEAM_ARM_PHYSX_SKIP=0       physx-skip off for this session; =1 on for this session
+  STEAM_ARM_VK_SPOOF_DEBUG=1   troubleshooting: Vulkan feature layer (vk-spoof) prints
+                               its decisions to the game's output
 
-Documentation: README.md beside this script, or https://github.com/Scrumpper/native-arm64-steam
+Graphics per title (x86 Linux titles)
+  Forwarding (default): emulated title's GL and Vulkan calls run on host GPU drivers.
+  With gpu-in-emulation on Mali GPU, titles that fail on forwarding switch automatically
+  to Mali drivers inside emulation: Java titles, and 32-bit titles started with -vulkan or
+  -force-vulkan (Mali-G610 class and Mali 5th gen only). Game log line
+  "steam-arm: graphics:" names choice.
+  Per title, in /etc/steam-arm/titles.conf:  <appid> gfx=b  (Mali drivers inside
+  emulation)  or  <appid> gfx=a  (forwarding).
+  GFX_DEFAULT in /etc/steam-arm/steam-arm.conf, for titles without gfx= of their own:
+    auto     forwarding, automatic switch above (default; empty means the same)
+    a        every title on forwarding, no automatic switch (forward: same)
+    b        every title on Mali drivers inside emulation (slower in titles with heavy
+             processor load)
+  Custom driver archive (STEAM_ARM_PROVIDER_SHA256): gfx=b and GFX_DEFAULT=b also
+  work on other GPU families; automatic switch stays Mali-only.
+  steam-arm-config sets it too (Graphics > Default route).
+
+Documentation: README.md beside this script, or https://github.com/Scrumpper/Steam-ARM
 
 This project is not affiliated with, endorsed by or sponsored by Valve Corporation.
-Steam, Proton and Steam Deck are trademarks of Valve Corporation.
+Steam, Proton, Steam Deck and Steam Frame are trademarks of Valve Corporation.
 USAGE
 }
-MODE=ask; REPLACE_OTHER=0
+# Other variant of this installer: its launcher reads its own settings path.
+OTHER_CONF=/etc/h96/steam-arm.conf
+other_variant(){ grep -qs "$OTHER_CONF" /usr/local/bin/steam-arm; }
+MODE=ask; REPLACE_OTHER=0; PURGE=0; HELP=0; PASS_STDIN=0; ARGC=$#
 while [ $# -gt 0 ]; do
   case "$1" in
+    --detect-other) if other_variant; then echo "other variant: present"; exit 0; fi; echo "other variant: none"; exit 1;;
+    --remove)   MODE=remove;;
+    --purge)    PURGE=1;;
+    --password-stdin) PASS_STDIN=1;;
     --defaults) MODE=defaults;;
     --keep)     MODE=keep;;
     --replace-other) REPLACE_OTHER=1;;
+    --provider-default) PROVIDER_DEFAULT=1;;
     --select)   MODE=select; SEL="${2:-}"; shift;;
     --select=*) MODE=select; SEL="${1#*=}";;
     --skip)     MODE=skip; SEL="${2:-}"; shift;;
     --skip=*)   MODE=skip; SEL="${1#*=}";;
+    --detect)   MODE=detect;;
     --list)     for c in $COMPONENTS; do printf '  %-16s %s\n' "$c" "$(desc_of "$c")"; done; exit 0;;
-    -h|--help)  usage; exit 0;;
+    -h|--help)  HELP=1; break;;
     *) die "unknown option: $1 (see --help)";;
   esac; shift
 done
-known(){ for c in $COMPONENTS; do [ "$c" = "$1" ] && return 0; done; return 1; }
+if [ "$PURGE" = 1 ] && [ "$MODE" != remove ]; then die "--purge works only together with --remove (see --help)"; fi
+# Custom driver archive: only a local file with its sha256; downloads are always the published archive.
+if [ -n "${STEAM_ARM_PROVIDER_SHA256:-}" ] && [ "$MODE" != remove ] && [ "$HELP" = 0 ]; then
+  [ -n "${STEAM_ARM_PROVIDER_TARBALL:-}" ] || die "STEAM_ARM_PROVIDER_SHA256 works only together with STEAM_ARM_PROVIDER_TARBALL=/path/to/file (a custom driver archive on this computer). Downloads are always the published archive."
+  [ "$PROVIDER_DEFAULT" = 0 ] || die "--provider-default and STEAM_ARM_PROVIDER_SHA256 contradict each other. Pass one of them."
+  [[ "$STEAM_ARM_PROVIDER_SHA256" =~ ^[0-9A-Fa-f]{64}$ ]] || die "STEAM_ARM_PROVIDER_SHA256 must be the 64-character sha256 of the archive (sha256sum prints it)."
+  STEAM_ARM_PROVIDER_SHA256=$(printf '%s' "$STEAM_ARM_PROVIDER_SHA256" | tr 'A-F' 'a-f')
+fi
+# Custom archive path is saved in the settings file, which the launcher reads as shell.
+if [ -n "${STEAM_ARM_PROVIDER_TARBALL:-}" ] && [ "$MODE" != remove ] && [ "$HELP" = 0 ] && [ "$PROVIDER_DEFAULT" = 0 ] \
+   && [ -n "${STEAM_ARM_PROVIDER_SHA256:-}$(conf_get PROVIDER_CUSTOM_SHA256)" ]; then
+  case "$(readlink -f -- "$STEAM_ARM_PROVIDER_TARBALL" 2>/dev/null)" in
+    *[!A-Za-z0-9._/+-]*) die "STEAM_ARM_PROVIDER_TARBALL path may hold only letters, digits and . _ - + / (setup saves it). Move or rename the file, then run this again.";;
+  esac
+fi
+if [ "$PASS_STDIN" = 1 ]; then
+  IFS= read -r GAMEPASS || true
+  [ -n "$GAMEPASS" ] || die "--password-stdin: no password on standard input. Pass it as first line, or leave the option out (setup then makes one)."
+fi
+# Replacing other variant: its client folder, and its account unless one is given, stay in use when neither is set here.
+if [ "$REPLACE_OTHER" = 1 ] && [ "$MODE" != remove ] && [ -z "$ARMHOME_ENV" ] && [ -z "$(conf_get ARMHOME_DIR)" ] && other_variant; then
+  o_u=$(sed -n 's/^GAMEUSER=//p' "$OTHER_CONF" 2>/dev/null | tail -1)
+  o_d=$(sed -n 's/^ARMHOME_DIR=//p' "$OTHER_CONF" 2>/dev/null | tail -1); o_d=${o_d%/}
+  if [ -z "$GAMEUSER_ENV" ] && [ -z "$(conf_get GAMEUSER)" ] && [ -n "$o_u" ] && getent passwd "$o_u" >/dev/null 2>&1 \
+     && [ "$(id -u "$o_u" 2>/dev/null)" != 0 ]; then GAMEUSER=$o_u; fi
+  o_h=$(getent passwd "$GAMEUSER" 2>/dev/null | cut -d: -f6)
+  if armhome_ok "${o_d:=.local/share/h96-steam-arm}" && [ -n "$o_h" ] && [ -d "$o_h/$o_d/.local/share/Steam" ]; then
+    ARMHOME_DIR=$o_d
+    echo "  client folder of other variant stays in use: $o_h/$o_d"
+  fi
+fi
+# No options in a terminal: settings menu, with this script as its installer; embedded copy when the installed one differs.
+if [ "$ARGC" = 0 ] && [ -t 0 ] && [ -t 1 ]; then
+  SELF=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null)
+  if [ -f "$SELF" ]; then
+    MENU=/usr/local/bin/steam-arm-config
+    if [ ! -f "$MENU" ] || ! menu_app | cmp -s - "$MENU"; then
+      MENU=$(mktemp "${SA_TMP:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}}/steam-arm-config.XXXXXX") || die "could not create a temporary file; free some space and run this again"
+      CLEANUP+=("$MENU"); menu_app > "$MENU"
+    fi
+    STEAM_ARM_INSTALLER=$SELF bash "$MENU"
+    exit $?
+  fi
+fi
+[ "$MODE" = remove ] || gpu_pick
+[ "$HELP" = 1 ] && { usage; exit 0; }
+GPU_VK=""
+[ "$MODE" = remove ] || { gpu_vulkan; gpu_line; }
+[ "$MODE" = detect ] && { gpu_report; exit 0; }
+if [ "$MODE" != remove ]; then
+  echo "  $GPU_LINE"
+  [ "$GPU_SRC" = user ] && echo "  GPU family: $GPU_FAMILY (set by user)"
+  [ -n "$GPU_NOTE" ] && echo "  $GPU_NOTE"
+  [ -n "$GPU_WARN" ] && warn "$GPU_WARN"
+  armhome_ok "$ARMHOME_DIR" || die "$ARMHOME_BAD"
+fi
+# Account name: plain characters only (it reaches runuser and su), never the administrator account.
+case "$GAMEUSER" in -*|*[!A-Za-z0-9._@-]*) die "GAMEUSER='$GAMEUSER' is not a usable account name (letters, digits, '.', '_', '@', '-'). Set GAMEUSER=name, then run this again.";; esac
+[ "$(id -u "$GAMEUSER" 2>/dev/null)" = 0 ] && die "GAMEUSER=$GAMEUSER is the administrator account. Steam ARM runs in a normal desktop account; set GAMEUSER=name, then run this again."
+# One setup run at a time, install or removal.
+if [ "$(id -u)" = 0 ]; then
+  { exec 8>/run/steam-arm-setup.lock && flock -n 8; } 2>/dev/null \
+    || die "another steam-arm-setup run is in progress. Wait for it to finish, then run this again."
+fi
+known(){ for c in $COMPONENTS_ALL; do [ "$c" = "$1" ] && return 0; done; return 1; }
 # Component whose files are in place (install from before selection was saved in $CONF).
 installed(){ case "$1" in
   glx-lax)    [ -e /usr/local/sbin/steam-arm-glx-lax ];;
   vk-spoof)   [ -e /usr/share/vulkan/implicit_layer.d/VkLayer_steam_arm_spoof.json ];;
+  gpu-in-emulation) [ -f "$MALI_MARK" ] || [ -f "$PSTATE/provider.sha256" ];;
+  physx-skip) return 0;;  # fix: on unless turned off
   map-count)  [ -e /etc/sysctl.d/zz-steam-arm.conf ];;
   xpad-dedup) [ -e /etc/udev/rules.d/71-steam-arm-xpad-dedup.rules ];;
   pad-hidraw) [ -e /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules ];;
@@ -188,12 +4248,44 @@ prior_selection(){
   for c in $(echo "$off" | tr ',' ' '); do known "$c" && eval "$(var_of "$c")=0"; done
   return 0
 }
+opt(){ eval "[ \"\$$(var_of "$1")\" = 1 ]"; }
+# GPU components follow the GPU family unless set by hand: COMPONENTS_USER_SET lists those, COMPONENTS_FAMILY the family last applied.
+GPU_COMPS="vk-spoof gpu-in-emulation glx-lax"
+USER_SET=",$(conf_get COMPONENTS_USER_SET),"
+# Family changed since last run: family defaults again for GPU components not set by hand; family not saved (older setup): only turns them off.
+family_reapply(){
+  local prev c v d1 d2 d3
+  prev=$(conf_get COMPONENTS_FAMILY)
+  [ "$prev" = "$GPU_FAMILY" ] && return 0
+  read -r d1 d2 d3 <<< "$GPU_DEF"
+  for c in $GPU_COMPS; do
+    case "$USER_SET" in *",$c,"*) continue;; esac
+    case "$c" in vk-spoof) v=$d1;; gpu-in-emulation) v=$d2;; *) v=$d3;; esac
+    [ -z "$prev" ] && [ "$v" = 1 ] && continue
+    eval "$(var_of "$c")=$v"
+  done
+}
+gpu_state(){ local c; for c in $GPU_COMPS; do if opt "$c"; then printf '%s=1 ' "$c"; else printf '%s=0 ' "$c"; fi; done; }
+# GPU components whose state differs from $1 (states before the user's choice) count as set by hand.
+user_mark(){
+  local c v
+  for c in $GPU_COMPS; do
+    if opt "$c"; then v=1; else v=0; fi
+    case " $1 " in *" $c=$v "*) ;; *) case "$USER_SET" in *",$c,"*) ;; *) USER_SET="$USER_SET$c,";; esac;; esac
+  done
+}
 case "$MODE" in
-  select) for c in $COMPONENTS; do eval "$(var_of "$c")=0"; done
-          for c in $(echo "$SEL" | tr ',' ' '); do known "$c" || die "unknown component: $c"; eval "$(var_of "$c")=1"; done;;
-  skip)   for c in $(echo "$SEL" | tr ',' ' '); do known "$c" || die "unknown component: $c"; eval "$(var_of "$c")=0"; done;;
-  keep)   prior_selection;;
+  select) prior_selection; family_reapply; PRE=$(gpu_state)
+          for c in $COMPONENTS; do eval "$(var_of "$c")=0"; done
+          for c in $(echo "$SEL" | tr ',' ' '); do known "$c" || die "unknown component: $c"; eval "$(var_of "$c")=1"; done
+          user_mark "$PRE";;
+  skip)   USER_SET=","
+          for c in $(echo "$SEL" | tr ',' ' '); do known "$c" || die "unknown component: $c"; eval "$(var_of "$c")=0"
+            case " $GPU_COMPS " in *" $c "*) USER_SET="$USER_SET$c,";; esac; done;;
+  defaults) USER_SET=",";;
+  keep)   prior_selection; family_reapply;;
   ask)    if prior_selection; then PRIOR=1; else PRIOR=0; fi
+          family_reapply; PRE=$(gpu_state)
           if [ -t 0 ] && [ -t 1 ]; then
             # Explain the keyboard-driven picker and its flag alternatives before showing it.
             printf '\n  Components: --defaults takes the recommended set, --select a,b takes exactly\n'
@@ -204,7 +4296,7 @@ case "$MODE" in
               args=(); for c in $COMPONENTS; do
                 args+=("$c" "$(desc_of "$c")" "$(eval "[ \"\$$(var_of "$c")\" = 1 ]" && echo ON || echo OFF)")
               done
-              chosen=$(whiptail --title "Native ARM64 Steam" --checklist "Optional components.\n\nSPACE toggles the item under the cursor.  TAB moves to the buttons.  ENTER confirms.\nThis list is keyboard driven; a mouse click does nothing." 28 100 12 "${args[@]}" 3>&1 1>&2 2>&3) || die "cancelled"
+              chosen=$(whiptail --title "Native ARM64 Steam" --checklist "Optional components.\n$GPU_LINE${GPU_MSG:+\n$GPU_MSG}\n\nSPACE toggles the item under the cursor.  TAB moves to the buttons.  ENTER confirms.\nThis list is keyboard driven; a mouse click does nothing." 30 100 13 "${args[@]}" 3>&1 1>&2 2>&3) || die "cancelled"
               for c in $COMPONENTS; do eval "$(var_of "$c")=0"; done
               for c in $chosen; do c=${c//\"/}; eval "$(var_of "$c")=1"; done
             else
@@ -225,7 +4317,7 @@ case "$MODE" in
               args+=("$(eval "[ \"\$$(var_of "$c")\" = 1 ]" && echo TRUE || echo FALSE)" "$c" "$(desc_of "$c")")
             done
             zerr=$(mktemp); rc=0
-            chosen=$(zenity --list --checklist --title="Native ARM64 Steam" --text="Optional components" \
+            chosen=$(zenity --list --checklist --title="Native ARM64 Steam" --text="Optional components\n$GPU_LINE${GPU_MSG:+\n$GPU_MSG}"\
               --column="Install" --column="Component" --column="Description" --print-column=2 --separator=' ' \
               --width=900 --height=560 "${args[@]}" 2>"$zerr") || rc=$?
             if [ "$rc" = 0 ]; then
@@ -237,33 +4329,314 @@ case "$MODE" in
               warn "component dialog failed (status $rc); using preset selection"
             fi
             rm -f "$zerr"
-          fi;;
+          fi
+          user_mark "$PRE";;
 esac
-opt(){ eval "[ \"\$$(var_of "$1")\" = 1 ]"; }
+# page-size has no effect here (no Raspberry Pi 5): always off.
+ps_relevant || eval "$(var_of page-size)=0"
 
-# Detect other installer flavour and refuse unless --replace-other.
-if grep -qs '/etc/h96/steam-arm.conf' /usr/local/bin/steam-arm; then
-  [ "$REPLACE_OTHER" = 1 ] || die "/usr/local/bin/steam-arm belongs to other flavour of this installer.
-       Both flavours write steam-arm and steamos-session-select.
-       Pass --replace-other to install anyway; its commands are then replaced by this flavour."
-  warn "steam-arm of other flavour found; --replace-other given, its commands are replaced"
+# Detect other installer variant (by its launcher's settings path); refuse unless --replace-other, which retires it.
+RETIRE_OTHER=0
+if other_variant; then
+  [ "$REPLACE_OTHER" = 1 ] || die "/usr/local/bin/steam-arm belongs to other variant of this installer.
+       Both variants write steam-arm and steamos-session-select.
+       Pass --replace-other to retire it first: its files go into one backup archive in
+       /var/backups, then this variant installs (with --remove: this variant is removed too)."
+  RETIRE_OTHER=1
 fi
 
 # --- page size ---
-# Emulation needs 4K pages; Pi's page-size component selects its 4K kernel, elsewhere this stops with the fix; STEAM_ARM_TEST_* vars override for tests.
-PAGESIZE=${STEAM_ARM_TEST_PAGESIZE:-$(getconf PAGESIZE 2>/dev/null || echo 4096)}
-MODEL=${STEAM_ARM_TEST_MODEL-$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)}
-FWDIR=${STEAM_ARM_TEST_FWDIR:-/boot/firmware}
-[ -f "$FWDIR/config.txt" ] || { [ -z "${STEAM_ARM_TEST_FWDIR:-}" ] && [ -f /boot/config.txt ] && FWDIR=/boot; }
+# Emulation needs 4K pages; Pi's page-size component selects its 4K kernel, elsewhere this stops with the fix.
+PAGESIZE=$(getconf PAGESIZE 2>/dev/null || echo 4096)
+MODEL=$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null)
+FWDIR=/boot/firmware
+[ -f "$FWDIR/config.txt" ] || { [ -f /boot/config.txt ] && FWDIR=/boot; }
 FWCFG="$FWDIR/config.txt"
 PS_BEGIN="# steam-arm-setup page-size: 4K page kernel for x86 emulation. Remove this block to undo."
 PS_END="# end steam-arm-setup page-size"
 is_pi(){ case "$MODEL" in "Raspberry Pi"*) [ -f "$FWCFG" ];; *) return 1;; esac; }
 ps_block(){ [ -f "$FWCFG" ] && grep -qxF "$PS_BEGIN" "$FWCFG"; }
+# Block out of $FWCFG through a new file renamed over it (power loss never leaves it half written); backup goes after.
 ps_remove(){
-  local t; t=$(awk -v b="$PS_BEGIN" -v e="$PS_END" '$0==b{s=1} !s{print} $0==e{s=0}' "$FWCFG") || return 1
-  printf '%s\n' "$t" > "$FWCFG"
+  local t; t=$(mktemp "$FWDIR/.config.txt.XXXXXX") || return 1
+  if awk -v b="$PS_BEGIN" -v e="$PS_END" '$0==b{s=1} !s{print} $0==e{s=0}' "$FWCFG" > "$t" \
+     && { chmod --reference="$FWCFG" "$t" 2>/dev/null; sync "$t" 2>/dev/null; true; } && mv -f "$t" "$FWCFG"; then
+    rm -f "$FWCFG.steam-arm.bak"; return 0
+  fi
+  rm -f "$t"; return 1
 }
+
+# Retire other variant of this installer: its files into one tar in /var/backups (paths kept), then deleted.
+retire_other(){
+  local ou oh oad tar utar f u kwin_copy list=() keep=() rel=() urel=() en=()
+  pgrep -x steam >/dev/null 2>&1 && die "a Steam client is running. Close it first (exit from its menu, or Stop Steam in the tray), then run this again."
+  ou=$(sed -n 's/^GAMEUSER=//p' "/etc/h96/steam-arm.conf" 2>/dev/null | tail -1)
+  getent passwd "$ou" >/dev/null 2>&1 || ou=$GAMEUSER
+  oh=$(getent passwd "$ou" 2>/dev/null | cut -d: -f6)
+  oad=$(sed -n 's/^ARMHOME_DIR=//p' "/etc/h96/steam-arm.conf" 2>/dev/null | tail -1)
+  case "${oad:=.local/share/h96-steam-arm}" in /*|*..*) oad=.local/share/h96-steam-arm;; esac
+  say "retiring other variant of this installer"
+  pkill -TERM -f /usr/local/bin/h96-steam-tray 2>/dev/null
+  for u in h96-pad-xbox h96-fex-binfmt; do
+    [ -f "/etc/systemd/system/$u.service" ] || continue
+    systemctl is-enabled --quiet "$u" 2>/dev/null && en+=("$u")
+    systemctl disable --now "$u" >/dev/null 2>&1
+  done
+  for f in /usr/local/bin/steam-arm /usr/local/bin/steamos-session-select \
+           /usr/local/bin/h96-steam-remoteplay /usr/local/bin/h96-steam-arm-compatmap /usr/local/bin/h96-steam-arm-icon \
+           /usr/local/bin/h96-steam-tray \
+           /usr/local/lib/h96-steam-handler.py /usr/local/lib/h96-steam-fexpatch.py /usr/local/lib/h96-steam-compatmap.py \
+           /usr/local/lib/h96-glx-lax-patch.py /usr/local/lib/h96-glx-lax.src /usr/local/lib/h96-vk-spoof.c \
+           /usr/local/sbin/h96-glx-lax /usr/local/sbin/h96-xpad-dedup /usr/local/sbin/h96-pad-xbox \
+           /usr/lib/aarch64-linux-gnu/libGLX_h96lax.so.0 /usr/lib/aarch64-linux-gnu/libVkLayer_h96_spoof.so \
+           /usr/share/vulkan/implicit_layer.d/VkLayer_h96_spoof.json \
+           /etc/udev/rules.d/71-h96-xpad-dedup.rules /etc/udev/rules.d/60-h96-gamepad-hidraw.rules \
+           /etc/sysctl.d/zz-h96-steam.conf /etc/sysctl.d/99-h96-steam.conf \
+           /etc/systemd/system/h96-fex-binfmt.service /etc/systemd/system/h96-pad-xbox.service \
+           /etc/sudoers.d/h96-steam-arm \
+           /usr/share/applications/h96-steam-arm.desktop /usr/share/applications/h96-steam-arm-desktop.desktop \
+           /usr/local/share/h96/titles.conf /etc/h96/titles.conf /etc/h96/steam-arm.conf \
+           /usr/share/icons/hicolor/*/apps/h96-steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png; do
+    { [ -e "$f" ] || [ -L "$f" ]; } && list+=("$f")
+  done
+  if [ -n "$oh" ]; then
+    for f in "$oh/.config/autostart/h96-steam-tray.desktop" \
+             "$oh"/.local/share/icons/hicolor/*/apps/h96-steam-arm.png \
+             "$oh"/.local/share/icons/hicolor/*/apps/steam-arm-desktop.png \
+             "$oh/$oad/.local/share/vulkan/implicit_layer.d/steamoverlay_arm64_h96.json"; do
+      { [ -e "$f" ] || [ -L "$f" ]; } && list+=("$f")
+    done
+    # same overlay registration in this installer's client home, when that is another folder
+    f="$oh/$ARMHOME_DIR/.local/share/vulkan/implicit_layer.d/steamoverlay_arm64_h96.json"
+    [ "$ARMHOME_DIR" != "$oad" ] && [ -f "$f" ] && list+=("$f")
+    # files this setup overwrites later: copied into backup, left in place
+    for f in "$oh/.fex-emu/Config.json" "$oh/$oad/.fex-emu/Config.json" "$oh"/Desktop/*[Ss]team*ARM*.desktop; do
+      [ -f "$f" ] && keep+=("$f")
+    done
+  fi
+  [ -f "$RFS/graphics_provider.json" ] && keep+=("$RFS/graphics_provider.json")
+  # copy of window rules before the other variant's rule group leaves them
+  [ -n "$oh" ] && [ -f "$oh/.config/kwinrulesrc" ] && grep -qx '\[h96-steam-arm-frame\]' "$oh/.config/kwinrulesrc" \
+    && kwin_copy="$oh/.config/kwinrulesrc" || kwin_copy=
+  # files in the old account's home go into its own archive, read and restored by that account
+  for f in "${list[@]}" "${keep[@]}" ${kwin_copy:+"$kwin_copy"}; do
+    case "$f" in "${oh:-//}"/*) urel+=("${f#/}");; *) rel+=("${f#/}");; esac
+  done
+  tar="/var/backups/steam-arm-replaced-$(date +%Y%m%d-%H%M%S).tar"
+  [ -e "$tar" ] && tar="${tar%.tar}-$$.tar"   # never overwrite an earlier backup
+  utar="${tar%.tar}-$ou.tar"
+  if [ ${#rel[@]} -gt 0 ] || [ ${#urel[@]} -gt 0 ]; then
+    mkdir -p /var/backups || die "could not create /var/backups; nothing removed. Free some space and run this again."
+    if [ ${#rel[@]} -gt 0 ]; then
+      tar -cpf "$tar" -C / "${rel[@]}" || die "could not write backup $tar; nothing removed. Free some space and run this again."
+      chmod 600 "$tar"
+    fi
+    if [ ${#urel[@]} -gt 0 ]; then
+      { as_acct "$ou" env -u TMPDIR tar -cpf - -C / "${urel[@]}" > "$utar" && chown "$ou" "$utar" && chmod 600 "$utar"; } \
+        || { rm -f "$utar"; die "could not write backup $utar; nothing removed. Free some space and run this again."; }
+    fi
+    for f in "${list[@]}"; do case "$f" in "${oh:-//}"/*) as_acct "$ou" env -u TMPDIR rm -f "$f";; *) rm -f "$f";; esac; done
+  fi
+  rmdir "/etc/h96" "/usr/local/share/h96" 2>/dev/null
+  [ -n "$kwin_copy" ] && GAMEUSER="$ou" kwin_rule_remove h96-steam-arm-frame
+  systemctl daemon-reload 2>/dev/null
+  udevadm control --reload 2>/dev/null
+  sysctl -q --system >/dev/null 2>&1
+  ldconfig 2>/dev/null
+  if [ ${#rel[@]} -gt 0 ] || [ ${#urel[@]} -gt 0 ]; then
+    echo "  other variant of this installer retired; backup:${rel[0]:+ $tar}${urel[0]:+ $utar}"
+    echo "  to go back, run in this order:"
+    echo "    sudo bash steam-arm-install.sh --remove"
+    [ ${#rel[@]} -gt 0 ] && echo "    sudo tar -xpf $tar -C /"
+    [ ${#urel[@]} -gt 0 ] && echo "    sudo -u $ou tar -xpf $utar -C /"
+    echo "    sudo systemctl daemon-reload; sudo udevadm control --reload"
+    for u in "${en[@]}"; do echo "    sudo systemctl enable --now $u"; done
+    for f in "${list[@]}"; do case "$f" in /etc/sysctl.d/*) echo "    sudo sysctl -p $f";; esac; done
+  else echo "  other variant of this installer retired; no files left to back up"; fi
+  return 0
+}
+
+# --- uninstall (--remove): everything this installer added; client folder only on typed request ---
+remove_all(){
+  local uh="" armhome="" del=0 a gone_client=0 gone_rfs=0 gone_mali=0 restored="" pkgs p binfmt=0 other=0 gp_rm=0 fc_rm=0 kept="" ft
+  local linger made_acct tb="" d fstab_added rfs_made rfs_del=0 nomark=0 fstab_kept=0 foreign
+  [ "$(id -u)" = 0 ] || die "run as root: sudo bash steam-arm-install.sh --remove"
+  getent passwd "$GAMEUSER" >/dev/null 2>&1 && uh=$(getent passwd "$GAMEUSER" | cut -d: -f6)
+  pgrep -x steam >/dev/null 2>&1 && die "a Steam client is running. Close it first (exit from its menu, or Stop Steam in the tray), then run this again."
+  if armhome_ok "$ARMHOME_DIR"; then [ -n "$uh" ] && armhome="$uh/$ARMHOME_DIR"
+  else warn "$ARMHOME_BAD"; warn "client folder is not touched by this removal"; fi
+  linger=$(conf_get LINGER_SET); made_acct=$(conf_get ACCOUNT_CREATED)
+  fstab_added=$(conf_get FSTAB_ADDED); rfs_made=$(conf_get RFS_CREATED); foreign=$(conf_get ARMHOME_FOREIGN)
+  grep -qs '^downloaded by steam-arm-setup' "$RFS/.steam-arm-rootfs" && rfs_made=1
+  steam_banner "Steam ARM $SA_VERSION: native ARM64 Steam client removal" "Removes what setup added; installed games stay unless asked"
+  [ "$RETIRE_OTHER" = 1 ] && retire_other
+  # Shared files go only while unchanged since setup wrote them, and never while other variant is installed.
+  [ -f /etc/h96/steam-arm.conf ] && other=1
+  if [ "$other" = 0 ] && [ -f "$OWNED" ]; then
+    own_ok "$RFS/graphics_provider.json" && gp_rm=1
+    [ -n "$uh" ] && own_ok "$uh/.fex-emu/Config.json" && fc_rm=1
+  elif [ "$other" = 0 ]; then
+    # setup from before ownership records: list form and RootFS line identify its files
+    [ "$(cat "$RFS/graphics_provider.json" 2>/dev/null)" = "$(gp_list_json)" ] && gp_rm=1
+    [ -n "$uh" ] && grep -qs "\"RootFS\":\"$RFS\"" "$uh/.fex-emu/Config.json" && fc_rm=1
+  fi
+  say "services"
+  [ -f /etc/systemd/system/steam-arm-fex-binfmt.service ] && binfmt=1
+  for p in steam-arm-pad-xbox steam-arm-fex-binfmt; do
+    systemctl disable --now "$p" >/dev/null 2>&1; rm -f "/etc/systemd/system/$p.service"
+  done
+  systemctl daemon-reload 2>/dev/null
+  pkill -TERM -f /usr/local/bin/steam-arm-tray 2>/dev/null
+  if [ "$linger" = 1 ] && [ -n "$uh" ]; then
+    loginctl disable-linger "$GAMEUSER" >/dev/null 2>&1 && restored="${restored:+$restored, }user services of $GAMEUSER stop at logout again"
+  fi
+  say "kernel limit"
+  if [ -f "$MC" ]; then mc_restore ""; restored="${restored:+$restored, }vm.max_map_count"; else echo "  vm.max_map_count was not changed"; fi
+  # Valve's emulation tool back to its original lines; needs the patch helper, so before it goes.
+  ft="$armhome/.local/share/Steam/steamapps/common/FEX-Emu"
+  if [ -n "$armhome" ] && [ -d "$ft" ] && [ -f /usr/local/lib/steam-arm-fexpatch.py ]; then
+    say "emulation tool"
+    if as_user python3 /usr/local/lib/steam-arm-fexpatch.py --unpatch "$ft"; then
+      echo "  Valve's emulation tool files put back (exact files again at Steam's next update of the tool)"
+    else
+      warn "Valve's emulation tool files could not be put back; Steam restores them at its next update"
+    fi
+  fi
+  say "programs, rules, menu entries, settings"
+  # Profiles written by hand or by steam-arm-config: saved before /etc/steam-arm goes.
+  if grep -qsv -e '^[[:space:]]*#' -e '^[[:space:]]*$' /etc/steam-arm/titles.conf; then
+    tb="/var/backups/steam-arm-titles-$(date +%Y%m%d-%H%M%S).conf"
+    { mkdir -p /var/backups && cp -p /etc/steam-arm/titles.conf "$tb"; } || tb=""
+  fi
+  rm -f /usr/local/bin/steam-arm /usr/local/bin/steam-arm-remoteplay /usr/local/bin/steam-arm-compatmap \
+        /usr/local/bin/steam-arm-icon /usr/local/bin/steam-arm-tray /usr/local/bin/steam-arm-config \
+        /usr/local/lib/steam-arm-handler.py /usr/local/lib/steam-arm-fexpatch.py /usr/local/lib/steam-arm-compatmap.py \
+        /usr/local/lib/steam-arm-physx.py \
+        /usr/local/lib/steam-arm-glx-lax-patch.py /usr/local/lib/steam-arm-glx-lax.src /usr/local/lib/steam-arm-glx-lax.stat \
+        /usr/local/lib/steam-arm-vk-spoof.c \
+        /usr/local/sbin/steam-arm-glx-lax /usr/local/sbin/steam-arm-xpad-dedup /usr/local/sbin/steam-arm-pad-xbox \
+        /usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0 /usr/lib/aarch64-linux-gnu/libVkLayer_steam_arm_spoof.so \
+        /usr/share/vulkan/implicit_layer.d/VkLayer_steam_arm_spoof.json \
+        /etc/udev/rules.d/71-steam-arm-xpad-dedup.rules /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules \
+        /etc/sudoers.d/steam-arm "$GLX_HOOK" \
+        /usr/share/applications/steam-arm.desktop /usr/share/applications/steam-arm-desktop.desktop \
+        /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png
+  grep -qs "$VALVE_MARK" /etc/udev/rules.d/60-steam-input.rules && rm -f /etc/udev/rules.d/60-steam-input.rules
+  grep -qs steam-arm /usr/local/bin/steamos-session-select && rm -f /usr/local/bin/steamos-session-select
+  rm -rf /usr/local/share/steam-arm /etc/steam-arm
+  if [ -d "$PSTATE" ]; then
+    legacy_mesa_restore && { restored="${restored:+$restored, }distro Mesa in $RFS"; [ "$other" = 0 ] && gp_rm=1; }
+  fi
+  mali_tree_remove && gone_mali=1
+  if [ "$gp_rm" = 1 ]; then rm -f "$RFS/graphics_provider.json"
+  elif [ -f "$RFS/graphics_provider.json" ]; then kept="$kept $RFS/graphics_provider.json"; fi
+  [ "$other" = 0 ] && [ "$(readlink /usr/share/guestos/fex-mesa 2>/dev/null)" = "$RFS" ] && rm -f /usr/share/guestos/fex-mesa
+  rmdir /usr/share/guestos 2>/dev/null
+  [ "$other" = 0 ] && [ -d "$RFS" ] && rfs_unguard "$RFS" && restored="${restored:+$restored, }package tools in $RFS"
+  ldconfig; udevadm control --reload 2>/dev/null
+  if [ -n "$uh" ]; then
+    as_user rm -f "$uh/Desktop/Steam ARM.desktop" "$uh/Desktop/Steam ARM (Desktop mode).desktop" \
+          "$uh/.config/autostart/steam-arm-tray.desktop" \
+          "$uh"/.local/share/icons/hicolor/*/apps/steam-arm.png "$uh"/.local/share/icons/hicolor/*/apps/steam-arm-desktop.png
+    if [ "$fc_rm" = 1 ]; then as_user rm -f "$uh/.fex-emu/Config.json"
+    elif [ -f "$uh/.fex-emu/Config.json" ]; then kept="$kept $uh/.fex-emu/Config.json"; fi
+    [ -n "$armhome" ] && as_user rm -f "$armhome/.local/share/vulkan/implicit_layer.d/steamoverlay_arm64_steamarm.json"
+    kwin_rule_remove
+  fi
+  # Setup logs and temporary files of the settings menu, for the game account and the account that ran it.
+  for p in "$GAMEUSER" "${SUDO_USER:-}"; do
+    [ -n "$p" ] && [ "$p" != root ] && d=$(getent passwd "$p" | cut -d: -f6) && [ -n "$d" ] \
+      && as_acct "$p" env -u TMPDIR rm -rf "$d/.cache/steam-arm" 2>/dev/null
+  done
+  rm -rf /root/.cache/steam-arm
+  if [ "$fstab_added" = 1 ] && grep -qxF "$FSTAB_LINE" /etc/fstab; then
+    if fstab_edit drop; then restored="${restored:+$restored, }/etc/fstab without the /dev/shm line"
+    else warn "could not take the /dev/shm line out of /etc/fstab; remove the line '$FSTAB_LINE' by hand"; fi
+  elif grep -qxF "$FSTAB_LINE" /etc/fstab 2>/dev/null; then
+    # same line from an earlier version (not recorded) or added by hand: stays
+    fstab_kept=1
+  fi
+  if is_pi && ps_block; then
+    ps_remove && { restored="${restored:+$restored, }boot kernel line in $FWCFG"
+      warn "4K page kernel line removed from $FWCFG; firmware loads its default kernel after next reboot"; }
+  fi
+  # Valve's streaming client back in place of the launcher's stand-in, for a client folder that stays.
+  d="$armhome/.local/share/Steam/steamrtarm64"
+  if [ -n "$armhome" ] && [ -f "$d/streaming_client.real" ] && grep -qs 'x86-64 streaming client' "$d/streaming_client"; then
+    as_user mv -f "$d/streaming_client.real" "$d/streaming_client" && restored="${restored:+$restored, }Valve's streaming client"
+  fi
+  # Client folder holds the games: deleted only with setup's marker in it and typed confirmation.
+  if [ -n "$armhome" ] && [ -d "$armhome" ]; then
+    if [ "$foreign" = 1 ] || [ ! -f "$armhome/.steam-arm-client" ]; then nomark=1
+    elif [ "$PURGE" = 1 ]; then del=1
+    elif [ -t 0 ]; then
+      printf '\n  Client folder %s holds installed games, sign-in and settings.\n  Delete it too? [y/N] ' "$armhome"
+      read -r a; case "$a" in y|Y|yes) del=1;; esac
+    fi
+  fi
+  # x86-64 root filesystem: --purge deletes it only when setup downloaded it and the other variant does not use it.
+  [ "$PURGE" = 1 ] && [ "$rfs_made" = 1 ] && [ "$other" = 0 ] && [ -d "$RFS" ] && rfs_del=1
+  if [ "$del" = 1 ] || [ "$rfs_del" = 1 ]; then
+    if [ -t 0 ]; then
+      [ "$del" = 1 ] && printf '  This deletes every installed game in %s.\n' "$armhome"
+      [ "$rfs_del" = 1 ] && printf '  This deletes the x86-64 root filesystem %s.\n' "$RFS"
+      printf '  Type DELETE to confirm: '
+      read -r a
+    else
+      a=; warn "no terminal to confirm; nothing deleted"
+    fi
+    if [ "$a" = DELETE ]; then
+      if [ "$del" = 1 ]; then
+        as_user rm -rf "$armhome" && gone_client=1
+        [ "$gone_client" = 1 ] || warn "client folder $armhome could not be deleted completely; delete the rest with: sudo rm -rf \"$armhome\""
+      fi
+      if [ "$rfs_del" = 1 ]; then rm -rf "$RFS" && gone_rfs=1; rmdir /opt/fex-rootfs 2>/dev/null; fi
+    else
+      echo "  not confirmed; nothing deleted"
+    fi
+  fi
+  pkgs="fex-emu-armv8.2 fex-emu-binfmt32 fex-emu-binfmt64 bubblewrap libsdl3-0 libsdl3-image0 libsdl3-ttf0"
+  pkgs="$pkgs libgtk2.0-0t64 libopenal1 zenity xdotool patchelf libvulkan-dev python3-pil python3-evdev gir1.2-ayatanaappindicator3-0.1"
+  pkgs=$(for p in $pkgs; do dpkg-query -W -f='${Status}\n' "$p" 2>/dev/null | grep -q '^install ok installed' && printf '%s ' "$p"; done)
+  say "done: Steam ARM removed"
+  echo "  Removed:   launcher, helpers, settings menu, menu and desktop entries, icons, controller rules,"
+  echo "             services, sudo rule, window rule, apt hook, settings in /etc/steam-arm"
+  [ "$gone_mali" = 1 ] && echo "  Removed:   Mali drivers inside emulation ($MALI)"
+  [ -n "$restored" ] && echo "  Restored:  $restored"
+  [ -n "$tb" ] && echo "  Saved:     game profiles from /etc/steam-arm/titles.conf in $tb"
+  for p in $kept; do echo "  Kept:      $p (changed since setup, or used by other variant of this installer)"; done
+  if [ "$gone_client" = 1 ]; then echo "  Deleted:   client folder $armhome (games included)"
+  elif [ "$nomark" = 1 ] && [ "$foreign" = 1 ]; then
+    echo "  Kept:      folder $armhome: it held other files before setup, so setup does not delete it."
+    echo "             To delete it yourself, check its contents first: rm -rf \"$armhome\""
+  elif [ "$nomark" = 1 ]; then
+    echo "  Kept:      folder $armhome: it has no Steam ARM client marker, so setup does not delete it."
+    echo "             To delete it yourself, check its contents first: rm -rf \"$armhome\""
+  elif [ -n "$armhome" ] && [ -d "$armhome" ]; then
+    echo "  Kept:      client folder $armhome (installed games, sign-in, settings)."
+    echo "             Reinstall picks it up again; to delete it yourself: rm -rf \"$armhome\""
+  fi
+  if [ "$gone_rfs" = 1 ]; then echo "  Deleted:   x86-64 root filesystem $RFS"
+  elif [ -d "$RFS" ]; then
+    echo "  Kept:      x86-64 root filesystem $RFS; to delete it: sudo rm -rf $RFS"
+    [ "$PURGE" = 1 ] && [ "$rfs_del" = 0 ] && echo "             (not downloaded by this setup, or in use by the other variant of this installer)"
+  fi
+  if [ "$made_acct" = 1 ] && [ -n "$uh" ]; then
+    echo "  Kept:      account $GAMEUSER, created by setup. To delete it with its home folder:"
+    echo "             sudo userdel -r $GAMEUSER"
+    [ -f "/root/steam-arm-password-$GAMEUSER.txt" ] && echo "             its saved password: sudo rm /root/steam-arm-password-$GAMEUSER.txt"
+  fi
+  echo "  Kept:      account groups (video, render, input, audio)"
+  [ "$fstab_kept" = 1 ] && echo "  Kept:      /dev/shm line in /etc/fstab"
+  if [ -n "$pkgs" ]; then
+    echo "  Packages:  distribution packages stay installed. Remove the ones nothing else on this system"
+    echo "             needs with:  sudo apt remove $pkgs"
+    echo "             FEX package source:  sudo add-apt-repository --remove $FEXPPA"
+  fi
+  [ "$binfmt" = 1 ] && echo "  box64 and box32, if installed, handle x86 programs again after next reboot."
+  return 0
+}
+if [ "$MODE" = remove ]; then remove_all; exit 0; fi
 if [ "$PAGESIZE" = 4096 ]; then
   if is_pi && ps_block && ! opt page-size; then
     [ "$(id -u)" = 0 ] || die "run as root"
@@ -306,42 +4679,69 @@ else
        STEAM_ARM_IGNORE_PAGESIZE=1 skips this check."
 fi
 [ "$(id -u)" = 0 ] || die "run as root"
+steam_up && steam_up_die
+# Client folder marker (--remove deletes only a marked folder): folder new or empty, or the client folder of an earlier install.
+# ARMHOME_FOREIGN=1 in the conf: folder held other files at first setup; it never gets the marker.
+ARMHOME_MARK=1; ARMHOME_FOREIGN=0
+ARMHOME_PRE="$(getent passwd "$GAMEUSER" 2>/dev/null | cut -d: -f6)"
+ARMHOME_SAME=0
+[ "$(conf_get ARMHOME_DIR)" = "$ARMHOME_DIR" ] && [ "$(conf_get GAMEUSER)" = "$GAMEUSER" ] && ARMHOME_SAME=1
+if [ -n "$ARMHOME_PRE" ] && { [ -e "$ARMHOME_PRE/$ARMHOME_DIR" ] || [ -L "$ARMHOME_PRE/$ARMHOME_DIR" ]; }; then
+  ARMHOME_PRE="$ARMHOME_PRE/$ARMHOME_DIR"
+  if [ -e "$ARMHOME_PRE/steamapps" ] || [ -e "$ARMHOME_PRE/ubuntu12_32" ]; then
+    die "$ARMHOME_PRE holds another Steam installation (steamapps or ubuntu12_32 in it). Steam ARM needs a folder of its own. Set ARMHOME_DIR to another folder (for example .local/share/steam-arm), then run this again."
+  fi
+  if [ "$ARMHOME_SAME" = 1 ] && [ "$(conf_get ARMHOME_FOREIGN)" = 1 ]; then ARMHOME_MARK=0; ARMHOME_FOREIGN=1
+  elif [ -f "$ARMHOME_PRE/.steam-arm-client" ] || [ -z "$(ls -A "$ARMHOME_PRE" 2>/dev/null)" ]; then :
+  # earlier client folder: recorded as not foreign, or (setup from before the record) default folder name only
+  elif [ "$ARMHOME_SAME" = 1 ] && [ -d "$ARMHOME_PRE/.local/share/Steam/steamrtarm64" ] \
+       && { [ "$(conf_get ARMHOME_FOREIGN)" = 0 ] || [ "$ARMHOME_DIR" = .local/share/steam-arm ]; }; then :
+  else ARMHOME_MARK=0; ARMHOME_FOREIGN=1
+  fi
+fi
+[ "$RETIRE_OTHER" = 1 ] && retire_other
 
 # wait for any boot-time apt/dpkg (unattended-upgrades, armbian online-extras) to release the lock
 wait_apt(){
   local n=0
   while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do
     [ $n = 0 ] && warn "another apt/dpkg is running; waiting for the lock..."
-    sleep 5; n=$((n+5)); [ $n -ge 600 ] && die "dpkg lock still held after 10 min"
+    sleep 5; n=$((n+5)); [ $n -ge 600 ] && die "another package manager still holds the dpkg lock after 10 minutes. Let it finish (or restart this system), then run this again."
   done
 }
+NETHINT="Check the network connection (and that this system's date is right), then run this again."
 
 # ---------------------------------------------------------------------------
-steam_banner "Native ARM64 Steam client setup" \
+steam_banner "Steam ARM $SA_VERSION: native ARM64 Steam client setup" \
              "Valve's ARM Linux client, x86 titles through the emulation tool it downloads"
 printf 'Optional components:'; for c in $COMPONENTS; do opt "$c" && printf ' %s' "$c" || printf ' [no %s]' "$c"; done; echo
 say "1/11  host packages"
 export DEBIAN_FRONTEND=noninteractive
 wait_apt
-# FEX serves Remote Play and the thunk libraries; the client's own emulator tool ships separately.
+# FEX serves Remote Play and the thunk libraries; the client's own emulator tool comes separately.
 if ! command -v FEX >/dev/null 2>&1; then
-  command -v add-apt-repository >/dev/null || apt-get install -y software-properties-common
-  grep -rq "fex-emu/fex" /etc/apt/sources.list.d/ 2>/dev/null || add-apt-repository -y "$FEXPPA"
+  command -v add-apt-repository >/dev/null || apt-get install -y software-properties-common \
+    || die "software-properties-common did not install (needed to add the FEX package source). $NETHINT"
+  grep -rq "fex-emu/fex" /etc/apt/sources.list.d/ 2>/dev/null || add-apt-repository -y "$FEXPPA" \
+    || die "could not add the FEX package source $FEXPPA. $NETHINT FEX packages exist for Ubuntu-based systems; on other distributions install FEX yourself first."
 fi
-wait_apt; apt-get update -y
+wait_apt; apt-get update -y || die "package lists could not be updated (apt-get update failed). $NETHINT"
 BUILDPKGS=""; opt vk-spoof && BUILDPKGS="gcc libc6-dev libvulkan-dev"
 opt glx-lax && BUILDPKGS="$BUILDPKGS patchelf"
+opt gpu-in-emulation && BUILDPKGS="$BUILDPKGS zstd"                                  # driver archive
 want_icons(){ opt desktop || opt desktop-mode || opt icon-bigpicture || opt icon-desktop; }
 want_icons && BUILDPKGS="$BUILDPKGS python3-pil"                                     # menu and desktop icons
 opt tray && BUILDPKGS="$BUILDPKGS gir1.2-ayatanaappindicator3-0.1"                   # tray helper binding
 wait_apt; apt-get install -y fex-emu-armv8.2 fex-emu-binfmt32 fex-emu-binfmt64 bubblewrap dbus-daemon xz-utils \
-  libsdl3-0 libsdl3-image0 libsdl3-ttf0 libgtk2.0-0t64 libopenal1 zenity xdotool curl python3 file $BUILDPKGS
-command -v FEX >/dev/null || die "FEX did not install"
-for l in libSDL3.so.0 libopenal.so.1 libgtk-x11-2.0.so.0; do ldconfig -p | grep -q "$l" || die "$l missing after install"; done
+  libsdl3-0 libsdl3-image0 libsdl3-ttf0 libgtk2.0-0t64 libopenal1 zenity xdotool curl python3 file $BUILDPKGS \
+  || die "host packages did not install (apt-get install failed; its message is above). $NETHINT If it reports packages it cannot find, this distribution release lacks them; README lists supported systems."
+command -v FEX >/dev/null || die "FEX is not on this system after package install. Install fex-emu-armv8.2 by hand (sudo apt install fex-emu-armv8.2), then run this again."
+for l in libSDL3.so.0 libopenal.so.1 libgtk-x11-2.0.so.0; do
+  ldconfig -p | grep -q "$l" || die "$l missing after package install. Run this again; if it stays missing, report it with the output above."
+done
 # FEX owns x86 execution (box64/box32 binfmt off), persistent
 echo 0 > /proc/sys/fs/binfmt_misc/box64 2>/dev/null || true
 echo 0 > /proc/sys/fs/binfmt_misc/box32 2>/dev/null || true
-if [ ! -f /etc/systemd/system/steam-arm-fex-binfmt.service ]; then
 cat > /etc/systemd/system/steam-arm-fex-binfmt.service <<'UNIT'
 [Unit]
 Description=Disable box64/box32 binfmt so FEX owns x86-64 execution
@@ -354,96 +4754,187 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload; systemctl enable --now steam-arm-fex-binfmt.service >/dev/null 2>&1 || true
-fi
 
 # ---------------------------------------------------------------------------
 say "2/11  game user '$GAMEUSER', /dev/shm, kernel limits"
+mkdir -p /etc/steam-arm
 if ! id "$GAMEUSER" >/dev/null 2>&1; then
   [ "$GAMEUSER_MAY_CREATE" = 1 ] || die "account '$GAMEUSER' not found and this source may not create one"
-  useradd -m -s /bin/bash -G video,render,input,audio "$GAMEUSER"
+  # only groups that exist (some systems have no render group)
+  GRPS=$(for g in video render input audio; do getent group "$g" >/dev/null 2>&1 && printf '%s,' "$g"; done)
+  useradd -m -s /bin/bash ${GRPS:+-G "${GRPS%,}"} "$GAMEUSER" \
+    || die "account '$GAMEUSER' could not be created (useradd failed). Pick another name with GAMEUSER=name, then run this again."
+  conf_set ACCOUNT_CREATED 1
+  # Password: from --password-stdin (never printed), else made here and shown once; no terminal: root-only file.
   if [ -z "$GAMEPASS" ]; then
     GAMEPASS=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 14)
-    say "     created account '$GAMEUSER' with password: $GAMEPASS"
-    say "     write it down now; change it with: passwd $GAMEUSER"
+    if [ -t 1 ]; then
+      say "     created account '$GAMEUSER' with password: $GAMEPASS"
+      say "     write it down now; change it with: passwd $GAMEUSER"
+    else
+      PWFILE="/root/steam-arm-password-$GAMEUSER.txt"
+      ( umask 077; printf '%s\n' "$GAMEPASS" > "$PWFILE" ) && chmod 600 "$PWFILE"
+      say "     created account '$GAMEUSER'; its password is in $PWFILE (readable by root only)."
+      say "     read it with: sudo cat $PWFILE   then delete the file; change the password with: passwd $GAMEUSER"
+    fi
+  else
+    say "     created account '$GAMEUSER' with the password given"
   fi
-  echo "$GAMEUSER:$GAMEPASS" | chpasswd
+  printf '%s:%s\n' "$GAMEUSER" "$GAMEPASS" | chpasswd || warn "password of '$GAMEUSER' could not be set; set one with: sudo passwd $GAMEUSER"
 fi
-for g in video render input audio; do usermod -aG "$g" "$GAMEUSER" 2>/dev/null; done
-loginctl enable-linger "$GAMEUSER" >/dev/null 2>&1 || true
-UID_N=$(id -u "$GAMEUSER"); UHOME=$(getent passwd "$GAMEUSER" | cut -d: -f6)
+# Groups apply at next login; say so when an existing account gained any.
+NEWGROUPS=
+for g in video render input audio; do
+  getent group "$g" >/dev/null 2>&1 || continue
+  id -nG "$GAMEUSER" | tr ' ' '\n' | grep -qx "$g" && continue
+  usermod -aG "$g" "$GAMEUSER" 2>/dev/null && NEWGROUPS="$NEWGROUPS $g"
+done
+if [ -n "$NEWGROUPS" ]; then
+  warn "account '$GAMEUSER' added to groups:$NEWGROUPS"
+  warn "log out and log back in (or restart) before first start of Steam ARM, so they take effect"
+fi
+# Linger keeps the user's runtime folder for the client; recorded only when setup turned it on, so --remove undoes only that.
+if [ ! -e "/var/lib/systemd/linger/$GAMEUSER" ] && loginctl enable-linger "$GAMEUSER" >/dev/null 2>&1; then
+  conf_set LINGER_SET 1
+fi
+UHOME=$(getent passwd "$GAMEUSER" | cut -d: -f6)
+[ -d "$UHOME" ] || die "home folder of '$GAMEUSER' ($UHOME) does not exist. Create it (sudo mkhomedir_helper $GAMEUSER), then run this again."
 ARMHOME="$UHOME/$ARMHOME_DIR"
-if ! mountpoint -q /dev/shm || [ "$(stat -c %a /dev/shm)" != 1777 ]; then
-  mountpoint -q /dev/shm && umount /dev/shm 2>/dev/null
-  mount -t tmpfs -o rw,nosuid,nodev,mode=1777 tmpfs /dev/shm; chmod 1777 /dev/shm
+# /dev/shm: tmpfs with mode 1777; a mounted one is fixed in place, never mounted over (programs may hold it).
+if ! mountpoint -q /dev/shm; then
+  mount -t tmpfs -o rw,nosuid,nodev,mode=1777 tmpfs /dev/shm || warn "could not mount tmpfs on /dev/shm; Proton titles may not start"
+elif [ "$(stat -f -c %T /dev/shm)" != tmpfs ]; then
+  warn "/dev/shm is mounted but is not tmpfs; left as it is. Proton titles may not start"
+elif [ "$(stat -c %a /dev/shm)" != 1777 ]; then
+  chmod 1777 /dev/shm
 fi
-grep -q '[[:space:]]/dev/shm[[:space:]]' /etc/fstab || echo 'tmpfs /dev/shm tmpfs rw,nosuid,nodev,mode=1777 0 0' >> /etc/fstab
-# zz- sorts after 99-sysctl.conf (else its vm.max_map_count would win at boot); drop-in saves the prior value as a comment, restored on deselect.
-MC=/etc/sysctl.d/zz-steam-arm.conf
-MC_PRIOR='# steam-arm-setup map-count; value before setup: '
+# fstab line only when nothing else mounts /dev/shm at boot (a line of its own, or a dev-shm.mount unit)
+if ! grep -q '^[^#]*[[:space:]]/dev/shm[[:space:]]' /etc/fstab 2>/dev/null && ! systemctl cat dev-shm.mount >/dev/null 2>&1; then
+  if fstab_edit add; then conf_set FSTAB_ADDED 1; else warn "could not add the /dev/shm line to /etc/fstab"; fi
+fi
 if opt map-count; then
   rm -f /etc/sysctl.d/99-steam-arm.conf
   if [ -f "$MC" ]; then prior=$(sed -n "s/^$MC_PRIOR//p" "$MC" | head -1)
   else prior=$(sysctl -n vm.max_map_count 2>/dev/null); fi
+  # the value setup writes is no earlier value (another setup's drop-in, or a run that stopped)
+  [ "$prior" = 2147483642 ] && prior=
   { [ -n "$prior" ] && printf '%s%s\n' "$MC_PRIOR" "$prior"; printf 'vm.max_map_count = 2147483642\n'; } > "$MC"
   sysctl -q -p "$MC" 2>/dev/null || true
 else
-  rm -f /etc/sysctl.d/99-steam-arm.conf
-  if [ -f "$MC" ]; then
-    prior=$(sed -n "s/^$MC_PRIOR//p" "$MC" | head -1)
-    rm -f "$MC"
-    case "$prior" in
-      ''|*[!0-9]*) echo "  map-count deselected: vm.max_map_count returns to system setting at next boot";;
-      *) sysctl -q -w vm.max_map_count="$prior" 2>/dev/null || true
-         echo "  map-count deselected: vm.max_map_count back to $prior";;
-    esac
-  fi
+  mc_restore "map-count deselected: "
 fi
 
 # ---------------------------------------------------------------------------
 say "3/11  x86-64 RootFS (graphics provider) + emulator configuration"
 # Fetch the x86-64 Ubuntu 24.04 RootFS (graphics provider) via FEXRootFSFetcher.
+# Files every usable RootFS has; prints the missing ones.
+rfs_missing(){ local f; for f in usr/lib/x86_64-linux-gnu/libc.so.6 usr/lib/i386-linux-gnu/libc.so.6 usr/bin/bash; do [ -e "$1/$f" ] || printf ' %s' "$f"; done; }
+# Moved in through $RFS.part, completeness checked, marker written last; a stopped earlier run leaves only $RFS.part, removed here.
+rm -rf "$RFS.part"
+# Fetcher's folders; a fetched RootFS counts only once setup marked it complete there.
+RFS_DIRS=(/root/.fex-emu/RootFS /root/.local/share/fex-emu/RootFS)
+RFS_DONE=.steam-arm-fetch-complete
 if [ ! -d "$RFS" ]; then
-  SRC=$(find /root/.fex-emu/RootFS /root/.local/share/fex-emu/RootFS -maxdepth 1 -name Ubuntu_24_04 -type d 2>/dev/null | head -1)
+  SRC=
+  for d in "${RFS_DIRS[@]}"; do
+    [ -d "$d/Ubuntu_24_04" ] || continue
+    if [ -z "$SRC" ] && [ -f "$d/Ubuntu_24_04/$RFS_DONE" ]; then SRC=$d/Ubuntu_24_04; continue; fi
+    rm -rf "$d/Ubuntu_24_04"; echo "  unfinished or duplicate extraction removed: $d/Ubuntu_24_04"
+  done
+  # earlier download whose extraction stopped: extract again
+  for d in "${RFS_DIRS[@]}"; do
+    if [ -n "$SRC" ] || [ ! -f "$d/Ubuntu_24_04.sqsh" ] || ! command -v unsquashfs >/dev/null 2>&1; then continue; fi
+    echo "  extracting earlier download $d/Ubuntu_24_04.sqsh"
+    if unsquashfs -q -n -d "$d/Ubuntu_24_04" "$d/Ubuntu_24_04.sqsh" >/dev/null 2>&1 && [ -z "$(rfs_missing "$d/Ubuntu_24_04")" ]; then
+      : > "$d/Ubuntu_24_04/$RFS_DONE" && SRC=$d/Ubuntu_24_04
+    else
+      rm -rf "$d/Ubuntu_24_04"; echo "  earlier download unusable; downloading again"
+    fi
+  done
   if [ -z "$SRC" ]; then
     # leftover download from earlier run: fetcher's overwrite prompt aborts under -y
-    rm -f /root/.fex-emu/RootFS/Ubuntu_24_04.sqsh /root/.local/share/fex-emu/RootFS/Ubuntu_24_04.sqsh
-    ( cd /opt 2>/dev/null; env -u DISPLAY FEXRootFSFetcher -y -x --force-ui=tty --distro-name=ubuntu --distro-version=24.04 )
-    SRC=$(find /root/.fex-emu/RootFS /root/.local/share/fex-emu/RootFS -maxdepth 1 -name Ubuntu_24_04 -type d 2>/dev/null | head -1)
+    for d in "${RFS_DIRS[@]}"; do rm -f "$d/Ubuntu_24_04.sqsh"; done
+    if ( cd /opt 2>/dev/null; env -u DISPLAY FEXRootFSFetcher -y -x --force-ui=tty --distro-name=ubuntu --distro-version=24.04 ); then
+      SRC=$(find "${RFS_DIRS[@]}" -maxdepth 1 -name Ubuntu_24_04 -type d 2>/dev/null | head -1)
+      [ -n "$SRC" ] && : > "$SRC/$RFS_DONE"
+    fi
   fi
-  [ -n "$SRC" ] || die "RootFS fetch failed"
-  mkdir -p /opt/fex-rootfs && mv "$SRC" "$RFS"
+  [ -n "$SRC" ] || die "x86-64 root filesystem download failed (FEXRootFSFetcher, about 525 MB; it needs about 2.5 GB free in /root and /opt). $NETHINT"
+  { mkdir -p /opt/fex-rootfs && mv "$SRC" "$RFS.part"; } \
+    || { rm -rf "$RFS.part"; die "could not move the x86-64 root filesystem from $SRC to $RFS (about 2 GB). Free some space on the disk that holds /opt, then run this again."; }
+  MISS=$(rfs_missing "$RFS.part")
+  if [ -n "$MISS" ]; then
+    rm -rf "$RFS.part"
+    die "x86-64 root filesystem download was incomplete (missing:$MISS) and is deleted. Free some space in /root and /opt, then run this again."
+  fi
+  # marker records that setup downloaded it (kept across --remove, so a later --purge still knows)
+  rm -f "$RFS.part/$RFS_DONE"
+  echo "downloaded by steam-arm-setup $(date '+%F %T')" > "$RFS.part/.steam-arm-rootfs"
+  conf_set RFS_CREATED 1
+  mv "$RFS.part" "$RFS" || die "could not move $RFS.part to $RFS; run this again"
   # download no longer needed once extracted (525 MB)
-  rm -f /root/.fex-emu/RootFS/Ubuntu_24_04.sqsh /root/.local/share/fex-emu/RootFS/Ubuntu_24_04.sqsh
+  for d in "${RFS_DIRS[@]}"; do rm -f "$d/Ubuntu_24_04.sqsh"; done
+elif [ ! -f "$RFS/.steam-arm-rootfs" ] && MISS=$(rfs_missing "$RFS") && [ -n "$MISS" ]; then
+  die "x86-64 root filesystem $RFS is incomplete (missing:$MISS). Move it away or delete it (sudo rm -rf $RFS), then run this again to download it."
+elif grep -qs '^downloaded by steam-arm-setup' "$RFS/.steam-arm-rootfs"; then
+  conf_set RFS_CREATED 1
 fi
 chmod o+rx /opt /opt/fex-rootfs "$RFS"
 [ -f "$RFS/usr/lib/x86_64-linux-gnu/libGL.so.1" ] || warn "RootFS carries no x86-64 libGL; games will not reach the GPU"
-# graphics_provider.json makes the runtime use this RootFS as the emulation path.
-cat > "$RFS/graphics_provider.json" <<'JSON'
-{
-  "graphics_provider_v0": {
-    "architectures": ["x86_64-linux-gnu", "i386-linux-gnu"]
-  }
-}
-JSON
-chmod 644 "$RFS/graphics_provider.json"
-mkdir -p /usr/share/guestos && ln -sfn "$RFS" /usr/share/guestos/fex-mesa
+# Pre-release layout laid the drivers over this RootFS: distro Mesa back first (second tree is built from it).
+if [ -d "$PSTATE" ]; then
+  echo "  earlier driver layout found: putting distro Mesa back into $RFS"
+  legacy_mesa_restore || die "run this again to finish putting distro Mesa back"
+fi
+rfs_guard "$RFS" || warn "package tools in $RFS could not be guarded; never run apt or dpkg inside the emulation"
+# graphics_provider.json makes the runtime use this RootFS as the emulation path (forwarding, default for every title).
+# A different file placed by something else stays untouched and that owner's (not recorded, so --remove keeps it).
+if [ -f "$RFS/graphics_provider.json" ] && ! awk -v p="$RFS/graphics_provider.json" 'substr($0, 67) == p {f=1} END {exit !f}' "$OWNED" 2>/dev/null \
+   && [ "$(cat "$RFS/graphics_provider.json")" != "$(gp_list_json)" ]; then
+  echo "  $RFS/graphics_provider.json was placed by other software; left as it is"
+else
+  gp_list_write || die "could not write $RFS/graphics_provider.json. Free some space on the disk that holds /opt, then run this again."
+  own_mark "$RFS/graphics_provider.json"
+fi
+# Same RootFS under the path Valve's runtime looks at; a folder or link placed there by other software stays.
+if [ -L /usr/share/guestos/fex-mesa ] && [ "$(readlink /usr/share/guestos/fex-mesa)" = "$RFS" ]; then :
+elif [ -e /usr/share/guestos/fex-mesa ] || [ -L /usr/share/guestos/fex-mesa ]; then
+  echo "  /usr/share/guestos/fex-mesa was placed by other software; left as it is"
+else
+  mkdir -p /usr/share/guestos && ln -s "$RFS" /usr/share/guestos/fex-mesa
+fi
+# Second graphics tree for titles that need Mali drivers inside the emulation (handler picks per title).
+# --provider-default: custom settings cleared only once the published tree is in place; on failure both stay.
+[ "$PROVIDER_DEFAULT" = 1 ] && grep -qs '^PROVIDER_CUSTOM_' "$CONF" \
+  && DIE_NOTE="Custom driver archive settings and $MALI kept: games keep the custom drivers. Fix the above, then run this again with --provider-default."
+if opt gpu-in-emulation; then
+  command -v zstd >/dev/null 2>&1 || die "zstd missing; install it (sudo apt install zstd), then run this again"
+  mali_tree_build
+else
+  mali_tree_remove && echo "  gpu-in-emulation deselected: $MALI deleted"
+fi
+DIE_NOTE=
+if [ "$PROVIDER_DEFAULT" = 1 ] && grep -qs '^PROVIDER_CUSTOM_' "$CONF"; then
+  conf_del PROVIDER_CUSTOM_SHA256; conf_del PROVIDER_CUSTOM_FILE
+  echo "  custom driver archive settings cleared: published drivers from now on"
+fi
 # FEX config for the game user; HostEnv entries select the GLX copy (step 4) and Vulkan layer path (step 5).
 FEXEXTRA=",
   \"Multiblock\":\"1\""
-opt glx-lax   && FEXEXTRA="$FEXEXTRA,
+opt glx-lax && FEXEXTRA="$FEXEXTRA,
   \"HostEnv\":\"__GLX_VENDOR_LIBRARY_NAME=steamarmlax\""
 opt vk-spoof  && FEXEXTRA="$FEXEXTRA,
   \"HostEnv\":\"VK_IMPLICIT_LAYER_PATH=/usr/share/vulkan/implicit_layer.d\""
-install -d -o "$GAMEUSER" -g "$GAMEUSER" "$UHOME/.fex-emu"
-cat > "$UHOME/.fex-emu/Config.json" <<JSON
+as_user mkdir -p "$UHOME/.fex-emu" || die "could not create $UHOME/.fex-emu as '$GAMEUSER'. Check that this account owns its home folder, then run this again."
+user_write "$UHOME/.fex-emu/Config.json" <<JSON || die "could not write $UHOME/.fex-emu/Config.json as '$GAMEUSER'. Free some space, then run this again."
 { "Config": { "RootFS":"$RFS",
   "ThunkHostLibs":"/usr/lib/aarch64-linux-gnu/fex-emu/HostThunks/",
   "ThunkGuestLibs":"/usr/share/fex-emu/GuestThunks/",
   "ThunkConfig":"/usr/share/fex-emu/ThunksDB.json"$FEXEXTRA },
   "ThunksDB":{"GL":1,"Vulkan":1} }
 JSON
-chown "$GAMEUSER:$GAMEUSER" "$UHOME/.fex-emu/Config.json"
-rm -f "$ARMHOME/.fex-emu/Config.json" 2>/dev/null   # the launcher copies the fresh one
+own_mark "$UHOME/.fex-emu/Config.json"
+as_user rm -f "$ARMHOME/.fex-emu/Config.json" 2>/dev/null   # the launcher copies the fresh one
 
 # ---------------------------------------------------------------------------
 if opt glx-lax; then
@@ -478,9 +4969,14 @@ SRC=$(realpath /usr/lib/aarch64-linux-gnu/libGLX_mesa.so.0 2>/dev/null) || exit 
 [ -f "$SRC" ] || exit 0
 OUT=/usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0
 STAMP=/usr/local/lib/steam-arm-glx-lax.src
+# Fast path for the apt hook: source path, size and mtime unchanged since last build.
+STAT=/usr/local/lib/steam-arm-glx-lax.stat
+ST="$SRC $(stat -c '%s %Y' "$SRC")"
+[ -f "$OUT" ] && [ "$(cat "$STAT" 2>/dev/null)" = "$ST" ] && exit 0
 SUM=$(sha256sum "$SRC" | cut -c1-64)
-[ -f "$OUT" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$SUM" ] && [ "$(patchelf --print-soname "$OUT" 2>/dev/null)" = libGLX_steamarmlax.so.0 ] && exit 0
+[ -f "$OUT" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$SUM" ] && [ "$(patchelf --print-soname "$OUT" 2>/dev/null)" = libGLX_steamarmlax.so.0 ] && { echo "$ST" > "$STAT"; exit 0; }
 T=$(mktemp "$OUT.XXXXXX") || exit 1
+trap 'rm -f "$T"' EXIT
 if python3 /usr/local/lib/steam-arm-glx-lax-patch.py "$SRC" "$T" >/dev/null 2>&1; then
   echo "steam-arm-glx-lax: patched copy built from $(basename "$SRC")"
 else
@@ -489,23 +4985,30 @@ else
 fi
 # Own SONAME so Steam Linux Runtime containers copy this vendor lib in too.
 command -v patchelf >/dev/null && patchelf --set-soname libGLX_steamarmlax.so.0 "$T"
-chmod 644 "$T" && mv -f "$T" "$OUT" && echo "$SUM" > "$STAMP" && ldconfig
+chmod 644 "$T" && mv -f "$T" "$OUT" && echo "$SUM" > "$STAMP" && echo "$ST" > "$STAT" && ldconfig
 GLX
 chmod 755 /usr/local/sbin/steam-arm-glx-lax
+# Rebuild after every dpkg run that changed system Mesa GLX; never fails the apt run.
+cat > "$GLX_HOOK" <<'APTHOOK'
+// steam-arm-setup glx-lax: keep the private GLX copy in step with system Mesa.
+DPkg::Post-Invoke { "if [ -x /usr/local/sbin/steam-arm-glx-lax ]; then /usr/local/sbin/steam-arm-glx-lax || true; fi"; };
+APTHOOK
+chmod 644 "$GLX_HOOK"
 /usr/local/sbin/steam-arm-glx-lax
 [ -f /usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0 ] && echo "  libGLX_steamarmlax.so.0 ready" || echo "  [warn] no native libGLX_mesa found; lax GLX copy skipped"
 else
 say "4/11  private Mesa GLX copy: not selected"
-rm -f /usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0 /usr/local/sbin/steam-arm-glx-lax /usr/local/lib/steam-arm-glx-lax-patch.py /usr/local/lib/steam-arm-glx-lax.src
+rm -f /usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0 /usr/local/sbin/steam-arm-glx-lax /usr/local/lib/steam-arm-glx-lax-patch.py \
+      /usr/local/lib/steam-arm-glx-lax.src /usr/local/lib/steam-arm-glx-lax.stat "$GLX_HOOK"
 fi
 
 # ---------------------------------------------------------------------------
 if opt vk-spoof; then
 say "5/11  Vulkan feature layer for Proton titles (DXVK on the Mali driver)"
-# DXVK requires Vulkan features panvk lacks; this layer spoofs them present, then strips them before vkCreateDevice. Enabled via STEAM_ARM_VK_SPOOF=1, opt-out STEAM_ARM_VK_SPOOF_DISABLE=1.
+# DXVK requires Vulkan features panvk lacks; this layer spoofs them present, then strips missing ones before vkCreateDevice. Enabled via STEAM_ARM_VK_SPOOF=1, opt-out STEAM_ARM_VK_SPOOF_DISABLE=1.
 cat > /usr/local/lib/steam-arm-vk-spoof.c <<'CEOF'
 /* VK_LAYER_STEAM_ARM_feature_spoof: report a fixed set of VkPhysicalDeviceFeatures as supported and strip
- * them again from vkCreateDevice so the driver never sees them enabled. */
+ * them again from vkCreateDevice where the driver lacks them, so it never sees a missing one enabled. */
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
@@ -530,9 +5033,10 @@ static void spoof_features(VkPhysicalDeviceFeatures *f) {
   f->fillModeNonSolid = VK_TRUE; f->geometryShader = VK_TRUE; f->multiViewport = VK_TRUE;
   f->shaderClipDistance = VK_TRUE; f->shaderCullDistance = VK_TRUE;
 }
+/* keep a requested feature only where the driver has it; never enable one the app left off */
 static void unspoof_features(VkPhysicalDeviceFeatures *f, const VkPhysicalDeviceFeatures *real) {
-  f->fillModeNonSolid = real->fillModeNonSolid; f->geometryShader = real->geometryShader; f->multiViewport = real->multiViewport;
-  f->shaderClipDistance = real->shaderClipDistance; f->shaderCullDistance = real->shaderCullDistance;
+  f->fillModeNonSolid &= real->fillModeNonSolid; f->geometryShader &= real->geometryShader; f->multiViewport &= real->multiViewport;
+  f->shaderClipDistance &= real->shaderClipDistance; f->shaderCullDistance &= real->shaderCullDistance;
 }
 
 static VKAPI_ATTR void VKAPI_CALL layer_GetPhysicalDeviceFeatures(VkPhysicalDevice pd, VkPhysicalDeviceFeatures *f) {
@@ -592,7 +5096,11 @@ static VKAPI_ATTR VkResult VKAPI_CALL layer_CreateDevice(VkPhysicalDevice pd, co
     if (p->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 && !have_f2) {
       f2 = *(VkPhysicalDeviceFeatures2 *)p; unspoof_features(&f2.features, &real); prev->pNext = (VkBaseOutStructure *)&f2; prev = (VkBaseOutStructure *)&f2; have_f2 = 1;
     } else if (p->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT && !have_r2) {
-      r2 = *(VkPhysicalDeviceRobustness2FeaturesEXT *)p; r2.robustBufferAccess2 = VK_FALSE; prev->pNext = (VkBaseOutStructure *)&r2; prev = (VkBaseOutStructure *)&r2; have_r2 = 1;
+      /* strip robustBufferAccess2 only where the driver lacks it; without gpdf2 it counts as missing */
+      VkPhysicalDeviceRobustness2FeaturesEXT rr = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT };
+      VkPhysicalDeviceFeatures2 rf = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &rr };
+      if (in->gpdf2) in->gpdf2(pd, &rf);
+      r2 = *(VkPhysicalDeviceRobustness2FeaturesEXT *)p; r2.robustBufferAccess2 &= rr.robustBufferAccess2; prev->pNext = (VkBaseOutStructure *)&r2; prev = (VkBaseOutStructure *)&r2; have_r2 = 1;
     } else prev = p;
   }
   ci2.pNext = head.pNext;
@@ -650,7 +5158,7 @@ if gcc -shared -fPIC -O2 -o /usr/lib/aarch64-linux-gnu/libVkLayer_steam_arm_spoo
     "library_path": "/usr/lib/aarch64-linux-gnu/libVkLayer_steam_arm_spoof.so",
     "api_version": "1.4.0",
     "implementation_version": "1",
-    "description": "Reports fillModeNonSolid, geometryShader, multiViewport, shaderClipDistance, shaderCullDistance and robustBufferAccess2 as supported and strips them from device creation",
+    "description": "Reports fillModeNonSolid, geometryShader, multiViewport, shaderClipDistance, shaderCullDistance and robustBufferAccess2 as supported and strips missing ones from device creation",
     "functions": {
       "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"
     },
@@ -711,8 +5219,284 @@ fi
 # ---------------------------------------------------------------------------
 if opt pad-hidraw; then
 say "7/11  controller access for the client"
-# hidraw nodes are root-only; Valve's rules list only Valve-supported pads, so add rules for the rest.
-# IDs are from the kernel's xpad_device[] table, matched vendor+product; regenerate with gen-gamepad-hidraw-rules.py.
+# Valve's own rules first; a system package copy (steam-devices) wins over this copy.
+if [ -f /usr/lib/udev/rules.d/60-steam-input.rules ] || [ -f /lib/udev/rules.d/60-steam-input.rules ]; then
+  grep -qs "$VALVE_MARK" /etc/udev/rules.d/60-steam-input.rules && rm -f /etc/udev/rules.d/60-steam-input.rules
+  echo "  Valve's controller rules come from a system package; kept"
+elif [ -f /etc/udev/rules.d/60-steam-input.rules ] && ! grep -qs "$VALVE_MARK" /etc/udev/rules.d/60-steam-input.rules; then
+  echo "  /etc/udev/rules.d/60-steam-input.rules was placed by someone else; kept"
+else
+cat > /etc/udev/rules.d/60-steam-input.rules <<'VALVERULES'
+# Valve steam-devices 60-steam-input.rules (https://github.com/ValveSoftware/steam-devices), MIT licence; installed by steam-arm-setup
+# Copyright (c) 2018 Valve Software
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+# and associated documentation files (the "Software"), to deal in the Software without
+# restriction, including without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all copies or
+# substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+# BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+# DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+# Valve USB devices
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="28de", MODE="0660", TAG+="uaccess"
+
+# Steam Controller udev write access
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
+
+# Valve HID devices over USB hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="28de", MODE="0660", TAG+="uaccess"
+
+# Valve HID devices hidraw
+SUBSYSTEM=="hidraw", KERNELS=="000[356]:28DE:*", MODE="0660", TAG+="uaccess"
+
+# Valve HID devices over bluetooth evdev
+SUBSYSTEM=="input", ATTRS{id/vendor}=="28de", MODE="0660", TAG+="uaccess"
+
+# Allow wakeup from Valve devices (Steam Controller 2015 receiver, Steam Controller 2026 receiver, Steam Machine Bluetooth) 
+ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="28de", ATTR{power/wakeup}=="*", ATTR{power/wakeup}="enabled"
+
+# DualShock 3 over USB hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="0268", MODE="0660", TAG+="uaccess"
+
+# DualShock 3 over bluetooth hidraw
+KERNEL=="hidraw*", KERNELS=="*054C:0268*", MODE="0660", TAG+="uaccess"
+
+# DualShock 4 over USB hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="05c4", MODE="0660", TAG+="uaccess"
+
+# DualShock 4 wireless adapter over USB hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="0ba0", MODE="0660", TAG+="uaccess"
+
+# DualShock 4 Slim over USB hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="09cc", MODE="0660", TAG+="uaccess"
+
+# DualShock 4 over bluetooth hidraw
+KERNEL=="hidraw*", KERNELS=="*054C:05C4*", MODE="0660", TAG+="uaccess"
+
+# DualShock 4 Slim over bluetooth hidraw
+KERNEL=="hidraw*", KERNELS=="*054C:09CC*", MODE="0660", TAG+="uaccess"
+
+# PS5 DualSense controller over USB hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="0ce6", MODE="0660", TAG+="uaccess"
+
+# PS5 DualSense controller over bluetooth hidraw
+KERNEL=="hidraw*", KERNELS=="*054C:0CE6*", MODE="0660", TAG+="uaccess"
+
+# Sony DualSense Edge Wireless-Controller over bluetooth hidraw
+KERNEL=="hidraw*", KERNELS=="*054C:0DF2*", MODE="0660", TAG+="uaccess"
+
+# Sony DualSense Edge Wireless-Controller over USB hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="0df2", MODE="0660", TAG+="uaccess"
+
+# Nintendo Switch Pro Controller over USB hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="2009", MODE="0660", TAG+="uaccess"
+
+# Nintendo Switch Pro Controller over bluetooth hidraw
+KERNEL=="hidraw*", KERNELS=="*057E:2009*", MODE="0660", TAG+="uaccess"
+
+# Nintendo Switch Joy-Con (L/R)
+KERNEL=="hidraw*", KERNELS=="*057E:200[67]*", MODE="0660", TAG+="uaccess"
+
+# PDP Faceoff Wired Pro Controller for Nintendo Switch
+KERNEL=="hidraw*", ATTRS{idVendor}=="0e6f", ATTRS{idProduct}=="0180", MODE="0660", TAG+="uaccess"
+
+# PDP Faceoff Deluxe+ Audio Wired Pro Controller for Nintendo Switch
+KERNEL=="hidraw*", ATTRS{idVendor}=="0e6f", ATTRS{idProduct}=="0184", MODE="0660", TAG+="uaccess"
+
+# PDP Wired Fight Pad Pro for Nintendo Switch
+KERNEL=="hidraw*", ATTRS{idVendor}=="0e6f", ATTRS{idProduct}=="0185", MODE="0660", TAG+="uaccess"
+
+# Logic3 Rock Candy Wired Controller for Nintendo Switch
+KERNEL=="hidraw*", ATTRS{idVendor}=="0e6f", ATTRS{idProduct}=="0187", MODE="0660", TAG+="uaccess"
+
+# PowerA Wired Controller for Nintendo Switch
+KERNEL=="hidraw*", ATTRS{idVendor}=="20d6", ATTRS{idProduct}=="a711", MODE="0660", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="20d6", ATTRS{idProduct}=="a712", MODE="0660", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="20d6", ATTRS{idProduct}=="a713", MODE="0660", TAG+="uaccess"
+
+# PowerA Wireless Controller for Nintendo Switch we have to use
+# ATTRS{name} since VID/PID are reported as zeros. We use /bin/sh
+# instead of udevadm directly becuase we need to use '*' glob at the
+# end of "hidraw" name since we don't know the index it'd have.
+#
+KERNEL=="input*", ATTRS{name}=="Lic Pro Controller", RUN{program}+="/bin/sh -c 'udevadm test-builtin uaccess /sys/%p/../../hidraw/hidraw*'"
+
+# Afterglow Deluxe+ Wired Controller for Nintendo Switch
+KERNEL=="hidraw*", ATTRS{idVendor}=="0e6f", ATTRS{idProduct}=="0188", MODE="0660", TAG+="uaccess"
+
+# Nacon PS4 Revolution Pro Controller
+KERNEL=="hidraw*", ATTRS{idVendor}=="146b", ATTRS{idProduct}=="0d01", MODE="0660", TAG+="uaccess"
+
+# Razer Raiju PS4 Controller
+KERNEL=="hidraw*", ATTRS{idVendor}=="1532", ATTRS{idProduct}=="1000", MODE="0660", TAG+="uaccess"
+
+# Razer Raiju 2 Tournament Edition
+KERNEL=="hidraw*", ATTRS{idVendor}=="1532", ATTRS{idProduct}=="1007", MODE="0660", TAG+="uaccess"
+
+# Razer Panthera EVO Arcade Stick
+KERNEL=="hidraw*", ATTRS{idVendor}=="1532", ATTRS{idProduct}=="1008", MODE="0660", TAG+="uaccess"
+
+# Razer Raiju PS4 Controller Tournament Edition over bluetooth hidraw
+KERNEL=="hidraw*", KERNELS=="*1532:100A*", MODE="0660", TAG+="uaccess"
+
+# Razer Raiju Ultimate over USB
+KERNEL=="hidraw*", ATTRS{idVendor}=="1532", ATTRS{idProduct}=="1004", MODE="0660", TAG+="uaccess"
+
+# Razer Raiju Ultimate over PC Bluetooth
+KERNEL=="hidraw*", KERNELS=="*1532:1009*", MODE="0660", TAG+="uaccess"
+
+# Razer Panthera Arcade Stick
+KERNEL=="hidraw*", ATTRS{idVendor}=="1532", ATTRS{idProduct}=="0401", MODE="0660", TAG+="uaccess"
+
+# Razer Wolverine V2 Pro in wired PS5 mode
+KERNEL=="hidraw*", ATTRS{idVendor}=="1532", ATTRS{idProduct}=="100b", MODE="0660", TAG+="uaccess"
+
+# Mad Catz - Street Fighter V Arcade FightPad PRO
+KERNEL=="hidraw*", ATTRS{idVendor}=="0738", ATTRS{idProduct}=="8250", MODE="0660", TAG+="uaccess"
+
+# Mad Catz - Street Fighter V Arcade FightStick TE S+
+KERNEL=="hidraw*", ATTRS{idVendor}=="0738", ATTRS{idProduct}=="8384", MODE="0660", TAG+="uaccess"
+
+# Brooks Universal Fighting Board
+KERNEL=="hidraw*", ATTRS{idVendor}=="0c12", ATTRS{idProduct}=="0c30", MODE="0660", TAG+="uaccess"
+
+# EMiO Elite Controller for PS4
+KERNEL=="hidraw*", ATTRS{idVendor}=="0c12", ATTRS{idProduct}=="1cf6", MODE="0660", TAG+="uaccess"
+
+# ZeroPlus P4 (hitbox)
+KERNEL=="hidraw*", ATTRS{idVendor}=="0c12", ATTRS{idProduct}=="0ef6", MODE="0660", TAG+="uaccess"
+
+# HORI RAP4
+KERNEL=="hidraw*", ATTRS{idVendor}=="0f0d", ATTRS{idProduct}=="008a", MODE="0660", TAG+="uaccess"
+
+# HORI Alpha for PS5 (PS5 Mode)
+KERNEL=="hidraw*", ATTRS{idVendor}=="0f0d", ATTRS{idProduct}=="0184", MODE="0660", TAG+="uaccess"
+
+# HORI Alpha for PS5 (PS4 Mode)
+KERNEL=="hidraw*", ATTRS{idVendor}=="0f0d", ATTRS{idProduct}=="011c", MODE="0660", TAG+="uaccess"
+
+# HORI Alpha for PS5 (PC Mode)
+KERNEL=="hidraw*", ATTRS{idVendor}=="0f0d", ATTRS{idProduct}=="011e", MODE="0660", TAG+="uaccess"
+
+# HORIPAD 4 FPS
+KERNEL=="hidraw*", ATTRS{idVendor}=="0f0d", ATTRS{idProduct}=="0055", MODE="0660", TAG+="uaccess"
+
+# HORIPAD 4 FPS Plus
+KERNEL=="hidraw*", ATTRS{idVendor}=="0f0d", ATTRS{idProduct}=="0066", MODE="0660", TAG+="uaccess"
+
+# HORIPAD for Nintendo Switch
+KERNEL=="hidraw*", ATTRS{idVendor}=="0f0d", ATTRS{idProduct}=="00c1", MODE="0660", TAG+="uaccess"
+
+# HORIPAD mini 4
+KERNEL=="hidraw*", ATTRS{idVendor}=="0f0d", ATTRS{idProduct}=="00ee", MODE="0660", TAG+="uaccess"
+
+# HORIPAD STEAM
+KERNEL=="hidraw*", ATTRS{idVendor}=="0f0d", ATTRS{idProduct}=="01ab", MODE="0660", TAG+="uaccess"
+
+# Armor Armor 3 Pad PS4
+KERNEL=="hidraw*", ATTRS{idVendor}=="0c12", ATTRS{idProduct}=="0e10", MODE="0660", TAG+="uaccess"
+
+# STRIKEPAD PS4 Grip Add-on
+KERNEL=="hidraw*", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="05c5", MODE="0660", TAG+="uaccess"
+
+# NVIDIA Shield Portable (2013 - NVIDIA_Controller_v01.01 - In-Home Streaming only)
+KERNEL=="hidraw*", ATTRS{idVendor}=="0955", ATTRS{idProduct}=="7203", MODE="0660", TAG+="uaccess", ENV{ID_INPUT_JOYSTICK}="1", ENV{ID_INPUT_MOUSE}=""
+
+# NVIDIA Shield Controller (2015 - NVIDIA_Controller_v01.03 over USB hidraw)
+KERNEL=="hidraw*", ATTRS{idVendor}=="0955", ATTRS{idProduct}=="7210", MODE="0660", TAG+="uaccess", ENV{ID_INPUT_JOYSTICK}="1", ENV{ID_INPUT_MOUSE}=""
+
+# NVIDIA Shield Controller (2017 - NVIDIA_Controller_v01.04 over bluetooth hidraw)
+KERNEL=="hidraw*", KERNELS=="*0955:7214*", MODE="0660", TAG+="uaccess"
+
+# Astro C40
+KERNEL=="hidraw*", ATTRS{idVendor}=="9886", ATTRS{idProduct}=="0025", MODE="0660", TAG+="uaccess"
+
+# Thrustmaster eSwap Pro
+KERNEL=="hidraw*", ATTRS{idVendor}=="044f", ATTRS{idProduct}=="d00e", MODE="0660", TAG+="uaccess"
+
+# EdgeTX and OpenTX radio controllers in gamepad mode over USB hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="4f54", MODE="0660", TAG+="uaccess"
+
+# Thrustmaster TFRP Rudder
+KERNEL=="hidraw*", ATTRS{idVendor}=="044f", ATTRS{idProduct}=="b679", MODE="0660", TAG+="uaccess"
+
+# Thrustmaster TWCS Throttle
+KERNEL=="hidraw*", ATTRS{idVendor}=="044f", ATTRS{idProduct}=="b687", MODE="0660", TAG+="uaccess"
+
+# Thrustmaster T.16000M Joystick
+KERNEL=="hidraw*", ATTRS{idVendor}=="044f", ATTRS{idProduct}=="b10a", MODE="0660", TAG+="uaccess"
+
+# Performance Designed Products Victrix Pro FS-12 for PS4 & PS5
+KERNEL=="hidraw*", ATTRS{idVendor}=="0e6f", ATTRS{idProduct}=="020c", MODE="0660", TAG+="uaccess"
+
+# Hori Co., Ltd HORI Wireless Pad ONYX PLUS Wired
+KERNEL=="hidraw*", ATTRS{idVendor}=="0f0d", ATTRS{idProduct}=="012d", MODE="0660", TAG+="uaccess"
+
+# Hori Co., Ltd HORI Wireless Pad ONYX PLUS Wireless
+KERNEL=="hidraw*", ATTRS{idVendor}=="0f0d", ATTRS{idProduct}=="012b", MODE="0660", TAG+="uaccess"
+
+# Xbox One Elite 2 Controller
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="*045E:0B22*", MODE="0660", TAG+="uaccess"
+
+# Generic SInput Device over USB hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="10c6", MODE="0660", TAG+="uaccess"
+
+# Generic SInput Device over bluetooth hidraw
+KERNEL=="hidraw*", KERNELS=="*2E8A:10C6*", MODE="0660", TAG+="uaccess"
+
+# ProGCC in SInput Mode over USB hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="10df", MODE="0660", TAG+="uaccess"
+
+# ProGCC in SInput Mode over bluetooth hidraw
+KERNEL=="hidraw*", KERNELS=="*2E8A:10DF*", MODE="0660", TAG+="uaccess"
+
+# GC Ultimate in SInput Mode over USB hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="10dd", MODE="0660", TAG+="uaccess"
+
+# GC Ultimate in SInput Mode over bluetooth hidraw
+KERNEL=="hidraw*", KERNELS=="*2E8A:10DD*", MODE="0660", TAG+="uaccess"
+
+# Firebird in SInput Mode over USB hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="10e0", MODE="0660", TAG+="uaccess"
+
+# 8bitdo 2.4 GHz / Wired
+KERNEL=="hidraw*", ATTRS{idVendor}=="2dc8", MODE="0660", TAG+="uaccess"
+
+# 8bitdo Bluetooth
+KERNEL=="hidraw*", KERNELS=="*2DC8:*", MODE="0660", TAG+="uaccess"
+
+# Flydigi 2.4 GHz / Wired
+KERNEL=="hidraw*", ATTRS{idVendor}=="04b4", MODE="0660", TAG+="uaccess"
+
+# Flydigi HIDAPI Enhanced Mode
+KERNEL=="hidraw*", ATTRS{idVendor}=="37d7", MODE="0660", TAG+="uaccess"
+
+# Nintendo Wii U/Switch Wired GameCube Controller Adapter
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="0337", MODE="0660", TAG+="uaccess"
+
+# Nintendo Switch 2 Joy-Con (R) over USB
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="2066", MODE="0660", TAG+="uaccess"
+
+# Nintendo Switch 2 Joy-Con (L) over USB
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="2067", MODE="0660", TAG+="uaccess"
+
+# Nintendo Switch 2 Pro Controller over USB
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="2069", MODE="0660", TAG+="uaccess"
+
+# Nintendo Switch 2 GameCube Controller over USB
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="2073", MODE="0660", TAG+="uaccess"
+VALVERULES
+chmod 644 /etc/udev/rules.d/60-steam-input.rules
+fi
+# Pads on the kernel's xpad table that Valve's rules lack; regenerate with gen-gamepad-hidraw-rules.py.
 PAD_IDS="
 0079:18d4 03eb:ff01 03eb:ff02 03f0:0495 044f:0f00 044f:0f03 044f:0f07
 044f:0f10 044f:b326 045e:0202 045e:0285 045e:0287 045e:0288 045e:0289
@@ -747,37 +5531,43 @@ PAD_IDS="
 24c6:530a 24c6:531a 24c6:5397 24c6:541a 24c6:542a 24c6:543a 24c6:5500
 24c6:5501 24c6:5502 24c6:5503 24c6:5506 24c6:550d 24c6:550e 24c6:5510
 24c6:551a 24c6:561a 24c6:5b00 24c6:5b02 24c6:5b03 24c6:5d04 24c6:fafe
-2563:058d 2dc8:2000 2dc8:310a 2e24:0652 31e3:1100 31e3:1200 31e3:1210
-31e3:1220 31e3:1300 31e3:1310 3285:0607 3767:0101
+2563:058d 2e24:0652 31e3:1100 31e3:1200 31e3:1210 31e3:1220 31e3:1300
+31e3:1310 3285:0607 3767:0101
 "
 {
-  echo "# Hand the logged-in user the hidraw node of a game controller."
+  echo "# Hand the logged-in user the hidraw node of a game controller Valve's rules do not list."
   echo "# Written by the Steam installer. uaccess grants the access to whoever holds the"
   echo "# active local seat, the same way it is granted for a keyboard or a sound card."
+  # Sony and Nintendo pads Valve lists only by model (e.g. Switch Online pads): matched by their kernel pad driver,
+  # so keyboards, mice and other devices of these makers stay out.
+  echo 'KERNEL=="hidraw*", DRIVERS=="playstation|sony|nintendo", MODE="0660", TAG+="uaccess"'
+  # kernel without the pad driver: no DRIVERS match, so the whole vendor gets the node
+  for vd in 057e:hid-nintendo 054c:hid-playstation,hid-sony; do
+    v=${vd%%:*}; m=0
+    for mod in $(echo "${vd#*:}" | tr ',' ' '); do modinfo "$mod" >/dev/null 2>&1 && m=1; done
+    [ $m = 1 ] && continue
+    u=$(echo "$v" | tr 'a-f' 'A-F')
+    echo "KERNEL==\"hidraw*\", ATTRS{idVendor}==\"$v\", MODE=\"0660\", TAG+=\"uaccess\""
+    echo "KERNEL==\"hidraw*\", KERNELS==\"*$u:*\", MODE=\"0660\", TAG+=\"uaccess\""
+  done
   for id in $PAD_IDS; do
     v=${id%:*}; p=${id#*:}
     u=$(printf '%s:%s' "$v" "$p" | tr 'a-f' 'A-F')
     echo "KERNEL==\"hidraw*\", ATTRS{idVendor}==\"$v\", ATTRS{idProduct}==\"$p\", MODE=\"0660\", TAG+=\"uaccess\""
     echo "KERNEL==\"hidraw*\", KERNELS==\"*$u*\", MODE=\"0660\", TAG+=\"uaccess\""
   done
-  echo "# Pads that speak HID rather than going through xpad"
-  for v in 054c 057e 28de; do
-    u=$(printf '%s' "$v" | tr 'a-f' 'A-F')
-    echo "KERNEL==\"hidraw*\", ATTRS{idVendor}==\"$v\", MODE=\"0660\", TAG+=\"uaccess\""
-    echo "KERNEL==\"hidraw*\", KERNELS==\"*$u:*\", MODE=\"0660\", TAG+=\"uaccess\""
-  done
-  echo "# The client also creates its virtual controller through /dev/uinput."
-  echo "KERNEL==\"uinput\", SUBSYSTEM==\"misc\", MODE=\"0660\", TAG+=\"uaccess\", OPTIONS+=\"static_node=uinput\""
 } > /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules
 chmod 644 /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules
 udevadm control --reload 2>/dev/null
 udevadm trigger --subsystem-match=hidraw --subsystem-match=misc 2>/dev/null
 udevadm settle 2>/dev/null
-n=$(grep -c '^KERNEL=="hidraw\*", ATTRS' /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules)
-say "     $n pads covered"
+n=$(grep -c 'ATTRS{idProduct}' /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules)
+say "     Valve's controller list, plus $n more pads"
 else
 say "7/11  controller access: not selected"
-rm -f /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules; udevadm control --reload 2>/dev/null
+rm -f /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules
+grep -qs "$VALVE_MARK" /etc/udev/rules.d/60-steam-input.rules && rm -f /etc/udev/rules.d/60-steam-input.rules
+udevadm control --reload 2>/dev/null
 fi
 
 # ---------------------------------------------------------------------------
@@ -880,46 +5670,66 @@ rm -f /usr/local/sbin/steam-arm-pad-xbox /etc/systemd/system/steam-arm-pad-xbox.
 fi
 
 # ---------------------------------------------------------------------------
-say "9/11  client package (publicbeta, linuxarm64) into $ARMHOME"
+say "9/11  client package (linuxarm64) into $ARMHOME"
 echo "  installed games, sign-in and settings are kept; only the client program folder is ever replaced"
+echo "  first start moves the client to its own ARM update channel"
 S="$ARMHOME/.local/share/Steam"; D="$S/steamrtarm64"
-install -d -o "$GAMEUSER" -g "$GAMEUSER" "$ARMHOME" "$ARMHOME/.local" "$ARMHOME/.local/share" "$S"
+as_user mkdir -p "$S" || die "could not create $S as '$GAMEUSER'. Check that this account owns its home folder, then run this again."
 if [ -x "$D/steam" ] && file -b "$D/steam" | grep -q aarch64; then
-  echo "  client present ($(cat "$D/builddate.txt" 2>/dev/null | head -1)); keeping it (the client updates itself)"
+  echo "  client present ($(head -1 "$D/builddate.txt" 2>/dev/null | tr -d '\r')); keeping it (the client updates itself)"
 else
-  TMPZ=$(mktemp /tmp/steam-arm64.XXXXXX.zip)
-  curl -fsSL -o "$TMPZ.manifest" "$MANIFEST" || die "client manifest download failed"
-  ENTRY=$(strings "$TMPZ.manifest" | grep -oE 'bins_linuxarm64_linuxarm64\.zip\.[0-9a-f]+' | grep -v '\.vz\.' | head -1)
-  [ -n "$ENTRY" ] || die "no linuxarm64 package entry in the client manifest"
+  # Download into a root-owned folder, then the game user unpacks it into a new folder and swaps it in.
+  STAGE=$(mktemp -d /var/tmp/steam-arm-client.XXXXXX) || die "could not create a folder in /var/tmp; free some space and run this again"
+  CLEANUP+=("$STAGE")
+  curl -fsSL --proto =https --proto-redir =https -o "$STAGE/manifest" "$MANIFEST" || die "client manifest download failed ($MANIFEST). $NETHINT"
+  ENTRY=$(grep -aoE 'bins_linuxarm64_linuxarm64\.zip\.[0-9a-f]+' "$STAGE/manifest" | head -1)
+  [ -n "$ENTRY" ] || die "Valve's client manifest has no linuxarm64 package entry (Valve may have renamed it). Run this again later; if it persists, report it."
+  # Manifest entry: "sha2" = sha256 of the zip; the name ends in its sha1.
+  SHA2=$(awk '/"bins_linuxarm64_linuxarm64"/ {b = 1} b && $1 == "\"sha2\"" {gsub(/"/, "", $2); print $2; exit} b && /^[[:space:]]*}/ {exit}' "$STAGE/manifest")
   echo "  package $ENTRY"
-  curl -fL --progress-bar -o "$TMPZ" "$CDN/$ENTRY" || die "client package download failed"
-  rm -rf "$D"
- # Archive has steamrtarm64/ prefix with backslash separators; unzip would create literal backslash names.
-  python3 - "$TMPZ" "$S" <<'PY'
+  curl -fL --proto =https --proto-redir =https "${CURL_SHOW[@]}" -o "$STAGE/client.zip" "$CDN/$ENTRY" || die "client package download failed ($CDN/$ENTRY, about 110 MB). $NETHINT"
+  if [ "${#SHA2}" = 64 ]; then CSUM=$(sha256sum "$STAGE/client.zip" | cut -c1-64); WANT=$SHA2
+  else CSUM=$(sha1sum "$STAGE/client.zip" | cut -c1-40); WANT=${ENTRY##*.}; fi
+  [ "$CSUM" = "$WANT" ] || die "client package does not match the checksum in Valve's manifest (download damaged or cut short). Run this again."
+  chmod 711 "$STAGE"; chmod 644 "$STAGE/client.zip"
+  NEW=$(as_user mktemp -d "$S/.steamrtarm64-new.XXXXXX") || die "could not create a folder in $S; free some space and run this again"
+  UCLEANUP+=("$NEW")
+  # Archive has steamrtarm64/ prefix with backslash separators; unzip would create literal backslash names.
+  as_user python3 - "$STAGE/client.zip" "$NEW" <<'PY' || die "client package could not be unpacked into $S (disk full?). Free some space, then run this again."
 import os, sys, zipfile
 zpath, root = sys.argv[1], sys.argv[2]
 z = zipfile.ZipFile(zpath); n = 0
 for i in z.infolist():
     name = i.filename.replace("\\", "/")
-    if name.endswith("/") or ".." in name.split("/"): continue
+    if name.endswith("/") or name.startswith("/") or ".." in name.split("/"): continue
     dst = os.path.join(root, name); os.makedirs(os.path.dirname(dst), exist_ok=True)
     with z.open(i) as src, open(dst, "wb") as out: out.write(src.read())
     mode = i.external_attr >> 16
-    if mode: os.chmod(dst, mode)
+    if mode: os.chmod(dst, mode & 0o755)   # archive modes are group/world writable
     n += 1
 print("  extracted %d files" % n)
 PY
-  rm -f "$TMPZ" "$TMPZ.manifest"
-  # the archive carries no unix modes; mark programs and scripts executable
-  find "$D" -type f | while read -r f; do file -b "$f" | grep -qE 'executable|shell script' && chmod 755 "$f"; done
-  chown -R "$GAMEUSER:$GAMEUSER" "$D"
-  [ -x "$D/steam" ] || die "client binary missing after extraction"
+  # archive modes are unreliable; mark programs and scripts executable (as the game user, inside its own folder)
+  # shellcheck disable=SC2016
+  as_user find "$NEW" -type f -exec sh -c 'for f; do file -b "$f" | grep -qE "executable|shell script" && chmod 755 "$f"; done; true' sh {} +
+  [ -x "$NEW/steamrtarm64/steam" ] || die "client program missing after unpacking (Valve may have changed the package layout). Run this again later; if it persists, report it."
+  steam_up && steam_up_die
+  # shellcheck disable=SC2016
+  as_user sh -c 'rm -rf "$2" && mv "$1/steamrtarm64" "$2" && rmdir "$1"' sh "$NEW" "$D" \
+    || die "could not put the new client folder in place at $D. Free some space, then run this again."
 fi
-# package channel at the data directory level (a copy under steamrtarm64 selects the generic client)
-install -d -o "$GAMEUSER" -g "$GAMEUSER" "$S/package"; echo publicbeta > "$S/package/beta"
+# Marker: --remove deletes this folder only when it carries this file; a folder that held other files gets none.
+if [ -f "$ARMHOME/.steam-arm-client" ]; then :
+elif [ "$ARMHOME_MARK" = 1 ]; then
+  printf 'Steam ARM client folder (games, sign-in, settings); steam-arm-setup --remove asks before deleting it.\n' \
+    | user_write "$ARMHOME/.steam-arm-client" || warn "could not write $ARMHOME/.steam-arm-client"
+else
+  echo "  $ARMHOME held other files before setup: --remove keeps this folder"
+fi
 # the -deckard client reads a VR runtime registry; an empty one keeps it quiet
-install -d -o "$GAMEUSER" -g "$GAMEUSER" "$ARMHOME/.config" "$ARMHOME/.config/openvr"
-[ -f "$ARMHOME/.config/openvr/openvrpaths.vrpath" ] || cat > "$ARMHOME/.config/openvr/openvrpaths.vrpath" <<'JSON'
+as_user mkdir -p "$ARMHOME/.config/openvr"
+if [ ! -e "$ARMHOME/.config/openvr/openvrpaths.vrpath" ] && [ ! -L "$ARMHOME/.config/openvr/openvrpaths.vrpath" ]; then
+  user_write "$ARMHOME/.config/openvr/openvrpaths.vrpath" <<'JSON'
 {
   "config": [],
   "external_drivers": null,
@@ -929,17 +5739,26 @@ install -d -o "$GAMEUSER" -g "$GAMEUSER" "$ARMHOME/.config" "$ARMHOME/.config/op
   "version": 1
 }
 JSON
-chown -R "$GAMEUSER:$GAMEUSER" "$ARMHOME"
+fi
 
 # ---------------------------------------------------------------------------
 say "10/11  launcher, configuration, menu entry"
 mkdir -p /etc/steam-arm
 conf_set ARMHOME_DIR "$ARMHOME_DIR"
 conf_set GAMEUSER "$GAMEUSER"
+conf_set ARMHOME_FOREIGN "$ARMHOME_FOREIGN"
 CONF_ON=; CONF_OFF=
 for c in $COMPONENTS; do if opt "$c"; then CONF_ON="$CONF_ON${CONF_ON:+,}$c"; else CONF_OFF="$CONF_OFF${CONF_OFF:+,}$c"; fi; done
 conf_set COMPONENTS_ON "$CONF_ON"
 conf_set COMPONENTS_OFF "$CONF_OFF"
+conf_set COMPONENTS_USER_SET "$(printf '%s' "$USER_SET" | tr -s ',' | sed 's/^,//; s/,$//')"
+conf_set COMPONENTS_FAMILY "$GPU_FAMILY"
+# GPU family for the launch handler's graphics rules; GPU_FAMILY_SET=user keeps a hand-picked family for later runs.
+conf_set GPU_FAMILY "$GPU_FAMILY"
+conf_set GPU_FAMILY_SET "$GPU_SRC"
+# Graphics for x86 titles: auto = forwarding plus the handler's rules; a (or forward) = forwarding only; b = every title on Mali drivers.
+[ -n "$(conf_get GFX_DEFAULT)" ] || conf_set GFX_DEFAULT auto
+conf_set VERSION "$SA_VERSION"
 # Launch handler: replaces the FEX tool's LD_PRELOAD deletion; picks overlay/MangoHud/engine fixes per title.
 cat > /usr/local/lib/steam-arm-handler.py <<'HANDLERPY'
 #!/usr/bin/env python3
@@ -960,17 +5779,35 @@ on the tool's os.environ and sys.argv and decides per title:
                   64-bit Unity players with a Vulkan renderer: -force-vulkan (Unity's OpenGL core
                   context needs a newer GL than Panfrost offers); overlay mode for Vulkan titles.
                   Other Unity 5+ players: GL 4.5 report, so the core context is created.
-                  32-bit titles: -vulkan/-force-vulkan removed (no 32-bit Vulkan thunk, so
-                  Vulkan lands on CPU renderer). Source 2 titles: warning only.
+                  Java titles with LWJGL 2: -DLWJGL_DISABLE_XRANDR=true added to JAVA_TOOL_OPTIONS.
+                  Source 2 titles: warning only.
+  Graphics        Forwarding (GL/Vulkan thunks to host GPU drivers) by default. Mali drivers
+                  inside the emulation (gpu-in-emulation, second RootFS tree) when installed,
+                  GPU_FAMILY in /etc/steam-arm/steam-arm.conf is a Mali family (panfrost/panthor), and:
+                  Java title (Java runtime in game folder; Java 21+ also gets FEX Multiblock off),
+                  or 32-bit title started with -vulkan/-force-vulkan (no 32-bit Vulkan thunk) on
+                  mali-csf-v10 or mali-csf-5thgen (panvk loads by default only there).
+                  Otherwise 32-bit -vulkan/-force-vulkan is removed (CPU renderer).
+                  Profile gfx=a|b overrides (gfx=b on other GPU: warning, forwarding). GFX_DEFAULT in
+                  /etc/steam-arm/steam-arm.conf: auto (or empty) = these rules; a (or forward) = every
+                  title on forwarding; b = every title on the second tree (Mali GPU only).
+                  Second tree from a custom driver archive (marker "custom"): gfx=b and GFX_DEFAULT=b
+                  on any GPU family; automatic rules stay Mali-only.
+  Kept settings   A value a rule would set that launch options or the environment already set
+                  stays, with a "launch option kept" log line naming both values (FEX Multiblock
+                  too, from a launch-option FEX_APP_CONFIG; Steam's own FEX setting is no choice). Mali drivers inside the emulation need thunks off and their own graphics
+                  provider and GLX vendor; launch options for these are replaced, with an
+                  "overridden for" log line. gl32=off sets GLX vendor mesa the same way.
   Script launchers  Source engine style start scripts are followed to binary they name, for detection.
 
 Profiles, one title per line, later files override earlier ones:
-  /usr/local/share/steam-arm/titles.conf      shipped with steam-arm-setup
+  /usr/local/share/steam-arm/titles.conf      included with steam-arm-setup
   /etc/steam-arm/titles.conf                  system
   ~/.config/steam-arm/titles.conf              client home (HOME inside the launcher)
 Line: <appid> key=value ...   keys: overlay=x86|vulkan|off  mangohud=on|off
       godot=gl|vulkan  unity=vulkan|gl  env=NAME=VALUE;NAME=VALUE  args=ARG;ARG
       gl32=off (32-bit title on emulated x86 Mesa, no GL thunk)  vk32=keep (keep -vulkan)
+      gfx=a (forwarding)  gfx=b (Mali drivers inside the emulation)
 Per-title launch options override profiles: STEAM_ARM_OVERLAY=x86|vulkan|off, and
 STEAM_ARM_PRELOAD_KEEP=a,b (keep exactly LD_PRELOAD entries containing these substrings).
 Every decision is printed to the tool's log, /tmp/fex-compat-tool-<pid>.log."""
@@ -981,10 +5818,21 @@ import os
 import re
 import struct
 import sys
+import tempfile
+import zipfile
 
 
 def log(*a):
     print("steam-arm:", *a)
+
+
+def keep_env(k, want):
+    """setdefault that logs when launch options or the environment already chose another value."""
+    cur = os.environ.get(k)
+    if cur is None:
+        os.environ[k] = want
+    elif cur != want:
+        log("launch option kept: %s=%s (rule wanted %s)" % (k, cur, want))
 
 
 APPID = os.environ.get("SteamAppId") or os.environ.get("SteamGameId") or ""
@@ -1100,8 +5948,13 @@ def source2():
     return False
 
 
-def gl_thunk_off():
-    """FEX app config with ThunksDB GL=0; FEX_APP_CONFIG is FEX's highest ThunksDB layer."""
+# Own file with a random name (created exclusively); in /tmp because the runtime container shares only that with FEX.
+APP_CFG = None
+
+
+def fex_app_config(thunks=None, config=None):
+    global APP_CFG
+    """Merge ThunksDB/Config keys into FEX_APP_CONFIG (FEX's highest layer); keeps user's or tool's own keys."""
     cfg = {}
     user = os.environ.get("FEX_APP_CONFIG")
     if user:
@@ -1116,14 +5969,19 @@ def gl_thunk_off():
             cfg = gen()
     if not isinstance(cfg, dict):
         cfg = {}
-    if not isinstance(cfg.get("ThunksDB"), dict):
-        cfg["ThunksDB"] = {}
-    cfg["ThunksDB"]["GL"] = 0
-    path = "/tmp/steam-arm-fex-app-config-%d.json" % os.getpid()
-    with open(path, "w") as f:
+    for key, add in (("ThunksDB", thunks), ("Config", config)):
+        if add:
+            if not isinstance(cfg.get(key), dict):
+                cfg[key] = {}
+            cfg[key].update(add)
+    if APP_CFG is None:
+        fd, path = tempfile.mkstemp(prefix="steam-arm-fex-app-config-", suffix=".json", dir="/tmp")
+        os.close(fd)
+        APP_CFG = path
+        atexit.register(lambda: os.path.exists(path) and os.unlink(path))
+    with open(APP_CFG, "w") as f:
         json.dump(cfg, f, indent=2)
-    os.environ["FEX_APP_CONFIG"] = path
-    atexit.register(lambda: os.path.exists(path) and os.unlink(path))
+    os.environ["FEX_APP_CONFIG"] = APP_CFG
 
 
 def engine_info():
@@ -1174,6 +6032,181 @@ def unity_has_vulkan():
         return False
 
 
+# Second RootFS tree with Mali drivers inside the emulation (gpu-in-emulation; setup's MALI).
+MALI_ROOT = "/opt/fex-rootfs/Ubuntu_24_04-mali"
+
+
+def mali_ready():
+    """True when the second tree is complete (setup writes its marker last)."""
+    return os.path.isfile(MALI_ROOT + "/.steam-arm-mali") and os.path.isfile(MALI_ROOT + "/graphics_provider.json")
+
+
+# GPU families the second tree's drivers cover (panfrost GL, panvk); panvk loads by default only on PANVK_FAMILIES.
+MALI_FAMILIES = ("mali-csf-v10", "mali-csf-5thgen", "mali-csf", "mali-valhall-jm", "mali-bifrost", "mali-midgard", "mali-panfrost")
+PANVK_FAMILIES = ("mali-csf-v10", "mali-csf-5thgen")
+# Drivers that outrank a Mali GPU in setup's detection (discrete, Adreno, Apple).
+GPU_OUTRANK = ("amdgpu", "radeon", "nouveau", "nvidia", "i915", "xe", "msm", "msm_dpu", "msm_mdp", "mdp4", "asahi")
+_GPU_FAMILY = None
+
+
+def sysfs_gpu_family():
+    """Mali family from render node driver and DT compatible; 'other' for other GPUs, 'none' without one."""
+    fams = []
+    for r in sorted(glob.glob("/sys/class/drm/renderD*")):
+        try:
+            drv = os.path.basename(os.readlink(r + "/device/driver"))
+        except OSError:
+            continue
+        try:
+            compat = open(r + "/device/of_node/compatible", "rb").read().decode("ascii", "replace")
+        except OSError:
+            compat = ""
+        if drv in GPU_OUTRANK:
+            return "other"
+        if drv in ("panthor", "tyr"):
+            fams.append("mali-csf-v10" if "rk3588-mali" in compat else "mali-csf-5thgen" if "mt8196-mali" in compat else "mali-csf")
+        elif drv == "panfrost":
+            fams.append("mali-valhall-jm" if "mali-valhall-jm" in compat else "mali-bifrost" if "mali-bifrost" in compat
+                        else "mali-midgard" if "arm,mali-t" in compat else "mali-panfrost")
+        elif drv not in ("vgem", "vkms"):
+            fams.append("other")
+    mali = [f for f in fams if f in MALI_FAMILIES]
+    return mali[0] if mali else fams[0] if fams else "none"
+
+
+def gpu_family():
+    """GPU_FAMILY from /etc/steam-arm/steam-arm.conf (setup writes it), else sysfs check; cached."""
+    global _GPU_FAMILY
+    if _GPU_FAMILY is None:
+        try:
+            v = [l[11:].strip().strip("'\"") for l in open("/etc/steam-arm/steam-arm.conf").read().splitlines()
+                 if l.startswith("GPU_FAMILY=")]
+        except OSError:
+            v = []
+        _GPU_FAMILY = v[-1] if v and v[-1] else sysfs_gpu_family()
+    return _GPU_FAMILY
+
+
+def user_fex():
+    """FEX settings chosen in launch options (a FEX_APP_CONFIG file); Steam's STEAM_COMPAT_FEX_CONFIG is its default, no choice."""
+    p = os.environ.get("FEX_APP_CONFIG")
+    if not p:
+        return {}
+    try:
+        c = json.load(open(p))
+    except (OSError, ValueError):
+        c = {}
+    return c if isinstance(c, dict) else {}
+
+
+def set_env(k, want, why, default=()):
+    """Set k; logs when launch options had chosen another value (values in default are the launcher's own)."""
+    cur = os.environ.get(k)
+    if cur is not None and cur != want and cur not in default:
+        log("overridden for %s: %s=%s (now %s)" % (why, k, cur, want))
+    os.environ[k] = want
+
+
+def gfx_default():
+    """GFX_DEFAULT from /etc/steam-arm/steam-arm.conf: 'auto' (auto or empty: rules decide), 'a' (a or forward:
+    every title on forwarding) or 'b' (every title on the second tree); other values: rules, logged."""
+    try:
+        v = [l[12:] for l in open("/etc/steam-arm/steam-arm.conf").read().splitlines() if l.startswith("GFX_DEFAULT=")]
+    except OSError:
+        return "auto"
+    v = v[-1].strip().strip("'\"") if v else ""
+    if v in ("", "auto"):
+        return "auto"
+    if v in ("a", "forward"):
+        return "a"
+    if v == "b":
+        return "b"
+    log("graphics: GFX_DEFAULT=%s unknown, automatic rules apply (values: auto, a, b)" % v)
+    return "auto"
+
+
+def mali_custom():
+    """True when the second tree comes from a custom driver archive (setup's marker starts with 'custom')."""
+    try:
+        return open(MALI_ROOT + "/.steam-arm-mali").read().startswith("custom ")
+    except OSError:
+        return False
+
+
+def game_dirs():
+    """Title folders: working directory, executable's folder, and for a bundled java its runtime root."""
+    dirs = [os.getcwd()]
+    exe = game_binary()
+    if exe:
+        d = os.path.dirname(exe)
+        dirs.append(d)
+        if os.path.basename(exe) == "java" and os.path.basename(d) == "bin":
+            dirs.append(os.path.dirname(d))
+    return dedupe(os.path.realpath(d) for d in dirs)
+
+
+def java_home(d):
+    """d itself when it is a Java runtime (bin/java or libjvm.so), else None."""
+    for sub in ("bin/java", "lib/server/libjvm.so", "lib/amd64/server/libjvm.so", "lib/i386/server/libjvm.so"):
+        if os.path.isfile(os.path.join(d, sub)):
+            return d
+    return None
+
+
+def java_runtime():
+    """Bundled Java runtime root: a title folder itself, one folder below it (jre/, runtime/, jdk-*/ ...), or lib/runtime (jpackage)."""
+    for d in game_dirs():
+        if java_home(d):
+            return d
+        for c in (os.path.join(d, "lib", "runtime"), os.path.join(os.path.dirname(d), "lib", "runtime")):
+            if java_home(c):
+                return c
+        try:
+            subs = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for n in subs:
+            p = os.path.join(d, n)
+            if os.path.isdir(p) and java_home(p):
+                return p
+    return None
+
+
+def java_major(home):
+    """Major version from the runtime's `release` file (JAVA_VERSION="17.0.2", "1.8.0_202"); None if unknown."""
+    try:
+        m = re.search(r'^JAVA_VERSION="?([0-9]+)(?:\.([0-9]+))?', open(os.path.join(home, "release")).read(), re.M)
+    except OSError:
+        return None
+    if not m:
+        return None
+    major = int(m.group(1))
+    return int(m.group(2) or 0) if major == 1 else major
+
+
+def lwjgl2():
+    """True when the title includes LWJGL 2: its window class org/lwjgl/opengl/Display.class in a jar
+    (LWJGL 3 has none), or its 64-bit native liblwjgl64.so (LWJGL 3 names it liblwjgl.so)."""
+    jars = 0
+    for top in game_dirs():
+        for root, subs, files in os.walk(top):
+            if root[len(top):].count(os.sep) >= 3:
+                subs[:] = []
+            if "liblwjgl64.so" in files:
+                return True
+            for n in files:
+                if not n.endswith(".jar") or jars >= 64:
+                    continue
+                jars += 1
+                try:
+                    with zipfile.ZipFile(os.path.join(root, n)) as z:
+                        if "org/lwjgl/opengl/Display.class" in z.namelist():
+                            return True
+                except (OSError, zipfile.BadZipFile, ValueError):
+                    pass
+    return False
+
+
 def dedupe(seq):
     out = []
     for s in seq:
@@ -1195,10 +6228,13 @@ if source2():
 engine_overlay = "off" if (engine == "unity" and bits == 32) else None
 # 64-bit Unity+Vulkan: Panfrost's GL is too old for Unity's core path (GLXBadFBConfig), so force Vulkan unless profile/launch overrides.
 unity_vk = False
-if engine == "unity" and bits == 64 and prof.get("unity", "vulkan") == "vulkan" \
-        and not any(a.startswith("-force-") for a in sys.argv + extra) and unity_has_vulkan():
-    unity_vk = True
-    engine_overlay = "vulkan"
+if engine == "unity" and bits == 64 and prof.get("unity", "vulkan") == "vulkan":
+    forced = [a for a in sys.argv + extra if a.startswith("-force-")]
+    if not forced and unity_has_vulkan():
+        unity_vk = True
+        engine_overlay = "vulkan"
+    elif forced and "-force-vulkan" not in forced and unity_has_vulkan():
+        log("launch option kept: %s (rule wanted -force-vulkan)" % " ".join(forced))
 entries = [e for e in os.environ.get("LD_PRELOAD", "").replace(" ", ":").split(":") if e]
 x86_overlay = [e for e in entries if "gameoverlayrenderer" in e and "steamrtarm64" not in e]
 arm_overlay = [e for e in entries if "gameoverlayrenderer" in e and "steamrtarm64" in e]
@@ -1211,7 +6247,10 @@ if explicit is not None:
     items = [e for e in entries if any(k in e for k in keep)]
     log("overlay: STEAM_ARM_PRELOAD_KEEP", keep)
 else:
-    mode = os.environ.get("STEAM_ARM_OVERLAY") or prof.get("overlay") or engine_overlay or "x86"
+    rule_mode = prof.get("overlay") or engine_overlay or "x86"
+    mode = os.environ.get("STEAM_ARM_OVERLAY") or rule_mode
+    if mode != rule_mode:
+        log("launch option kept: STEAM_ARM_OVERLAY=%s (rule wanted %s)" % (mode, rule_mode))
     items = []
     if mode in ("x86", "vulkan"):
         items += x86_overlay
@@ -1235,11 +6274,18 @@ elif wants_mh:
 # Godot 4
 major = godot_major()
 if major == 4 and prof.get("godot", "gl") == "gl":
-    os.environ.setdefault("MESA_GL_VERSION_OVERRIDE", "3.3")
-    os.environ.setdefault("MESA_GLSL_VERSION_OVERRIDE", "330")
-    if "--rendering-driver" not in sys.argv + extra:
+    keep_env("MESA_GL_VERSION_OVERRIDE", "3.3")
+    keep_env("MESA_GLSL_VERSION_OVERRIDE", "330")
+    args = sys.argv + extra
+    drv = "opengl3"
+    if "--rendering-driver" not in args:
         sys.argv += ["--rendering-driver", "opengl3"]
-    log("godot 4: OpenGL renderer, GL 3.3 report")
+    elif args[args.index("--rendering-driver") + 1:][:1] != ["opengl3"]:
+        drv = "".join(args[args.index("--rendering-driver") + 1:][:1])
+        log("launch option kept: --rendering-driver %s (rule wanted opengl3)" % drv)
+    # values in effect, launch options included
+    log("godot 4: %s renderer, GL %s report" % ("OpenGL" if drv == "opengl3" else drv or "default",
+                                               os.environ["MESA_GL_VERSION_OVERRIDE"]))
 elif major is not None:
     log("godot %d: left as is" % major)
 
@@ -1248,9 +6294,13 @@ if unity_vk:
     sys.argv += ["-force-vulkan"]
     log("unity: Vulkan renderer (-force-vulkan)")
 elif engine == "unity" and not unity_legacy_gl():
-    os.environ.setdefault("MESA_GL_VERSION_OVERRIDE", "4.5")
-    os.environ.setdefault("MESA_GLSL_VERSION_OVERRIDE", "450")
-    log("unity: OpenGL core, GL 4.5 report")
+    keep_env("MESA_GL_VERSION_OVERRIDE", "4.5")
+    keep_env("MESA_GLSL_VERSION_OVERRIDE", "450")
+    # values in effect, launch options included
+    if bits == 64 and "-force-vulkan" in sys.argv + extra:
+        log("unity: Vulkan renderer (launch option -force-vulkan)")
+    else:
+        log("unity: OpenGL core, GL %s report" % os.environ["MESA_GL_VERSION_OVERRIDE"])
 
 # profile extras
 for kv in [x for x in prof.get("env", "").split(";") if "=" in x]:
@@ -1261,16 +6311,84 @@ if extra:
     sys.argv += extra
     log("args:", extra)
 
-# 32-bit: FEX has no 32-bit Vulkan thunk, so a Vulkan renderer lands on lavapipe (CPU).
-if bits == 32 and prof.get("vk32") != "keep":
-    vk = [a for a in sys.argv if a in ("-vulkan", "-force-vulkan")]
-    if vk:
-        sys.argv = [a for a in sys.argv if a not in vk]
-        log("32-bit: removed", vk, "(Vulkan would run on CPU; vk32=keep keeps it)")
-# gl32=off: emulated x86 Mesa instead of the host GL thunk, for titles the thunk breaks.
-if prof.get("gl32") == "off" and bits != 64:
+# Java: LWJGL 2 fails on both graphics routes unless its XRandR mode switching is off.
+jre = java_runtime()
+if jre:
+    log("java: runtime %s, version %s" % (jre, java_major(jre) or "unknown"))
+    jto = os.environ.get("JAVA_TOOL_OPTIONS", "")
+    if lwjgl2() and "LWJGL_DISABLE_XRANDR" not in jto:
+        os.environ["JAVA_TOOL_OPTIONS"] = (jto + " -DLWJGL_DISABLE_XRANDR=true").strip()
+        log("java: LWJGL 2, -DLWJGL_DISABLE_XRANDR=true")
+    elif "LWJGL_DISABLE_XRANDR" in jto and "-DLWJGL_DISABLE_XRANDR=true" not in jto and lwjgl2():
+        log("launch option kept: JAVA_TOOL_OPTIONS=%s (rule wanted -DLWJGL_DISABLE_XRANDR=true)" % jto)
+
+# Graphics route: forwarding (a) unless a rule or setting picks Mali drivers inside the emulation (b); title profile wins.
+vk = [a for a in sys.argv if a in ("-vulkan", "-force-vulkan")] if bits == 32 else []
+fam = gpu_family()
+gd = gfx_default()
+custom = mali_ready() and mali_custom()
+# custom driver archive: chosen by hand (GFX_DEFAULT=b, gfx=b) on any GPU family; automatic rules stay Mali-only
+if gd == "b" and (fam in MALI_FAMILIES or custom):
+    gfx, why = "b", "GFX_DEFAULT=b"
+elif gd == "a":
+    gfx, why = "a", "GFX_DEFAULT=a"
+elif fam not in MALI_FAMILIES:
+    gfx, why = "a", ("Mali drivers inside the emulation do not cover GPU family %s" % fam if gd == "b" or jre or vk else None)
+elif jre:
+    gfx, why = "b", "Java title"
+elif vk and fam in PANVK_FAMILIES:
+    gfx, why = "b", "32-bit Vulkan"
+elif vk:
+    gfx, why = "a", "32-bit Vulkan: no default Vulkan driver on GPU family %s" % fam
+else:
+    gfx, why = "a", None
+if prof.get("gfx") == "b" and fam not in MALI_FAMILIES and not custom:
+    log("graphics: warning: Mali drivers inside the emulation do not cover GPU family %s; title profile gfx=b "
+        "not applied (a custom driver archive allows it)" % fam)
+    gfx, why = "a", "gfx=b needs a Mali GPU or a custom driver archive"
+elif prof.get("gfx") in ("a", "b"):
+    if prof["gfx"] != gfx:
+        log("title setting kept: gfx=%s (rule wanted gfx=%s)" % (prof["gfx"], gfx))
+    gfx, why = prof["gfx"], "title profile"
+if gfx == "b" and not mali_ready():
+    gfx, why = "a", "Mali drivers inside the emulation not installed"
+if gfx == "b":
     try:
-        gl_thunk_off()
+        uf = user_fex()
+        umb = uf.get("Config", {}).get("Multiblock") if isinstance(uf.get("Config"), dict) else None
+        cfg = None
+        if jre and (java_major(jre) or 0) >= 21:
+            if umb is None:
+                cfg = {"Multiblock": "0"}
+            else:
+                log("launch option kept: Multiblock=%s (rule wanted 0 for Java 21 or newer)" % umb)
+        utd = uf.get("ThunksDB") if isinstance(uf.get("ThunksDB"), dict) else {}
+        for k in ("GL", "Vulkan"):
+            if str(utd.get(k)).lower() in ("1", "true"):
+                log("overridden for Mali route: thunk %s=%s (now 0, drivers run inside the emulation)" % (k, utd[k]))
+        fex_app_config(thunks={"GL": 0, "Vulkan": 0}, config=cfg)
+        set_env("STEAM_COMPAT_GRAPHICS_PROVIDER", MALI_ROOT + "/graphics_provider.json", "Mali route",
+                ("/opt/fex-rootfs/Ubuntu_24_04/graphics_provider.json",))
+        set_env("__GLX_VENDOR_LIBRARY_NAME", "mesa", "Mali route", ("steamarmlax",))
+        log(("graphics: custom drivers inside the emulation (%s)" if custom else "graphics: Mali drivers in emulation (%s)") % why)
+        if cfg:
+            log("java: 21 or newer, FEX Multiblock off")
+    except OSError as e:
+        gfx = "a"
+        log("graphics: forwarding (could not write FEX app config: %s)" % e)
+else:
+    log("graphics: forwarding" + (" (%s)" % why if why else ""))
+
+# 32-bit on forwarding: no 32-bit Vulkan thunk, so a Vulkan renderer lands on lavapipe (CPU).
+if gfx == "a" and vk and prof.get("vk32") != "keep":
+    sys.argv = [a for a in sys.argv if a not in vk]
+    log("32-bit: removed", vk, "(Vulkan would run on CPU; vk32=keep keeps it)")
+# gl32=off: emulated x86 Mesa instead of the host GL thunk, for titles the thunk breaks.
+if gfx == "a" and prof.get("gl32") == "off" and bits != 64:
+    try:
+        fex_app_config(thunks={"GL": 0})
+        # x86 Mesa inside the emulation has no steamarmlax vendor library
+        set_env("__GLX_VENDOR_LIBRARY_NAME", "mesa", "gl32=off", ("steamarmlax",))
         log("gl32: GL thunk off (FEX_APP_CONFIG=%s)" % os.environ["FEX_APP_CONFIG"])
     except OSError as e:
         log("gl32: could not write FEX app config:", e)
@@ -1286,119 +6404,832 @@ HANDLERPY
 chmod 644 /usr/local/lib/steam-arm-handler.py
 mkdir -p /usr/local/share/steam-arm
 cat > /usr/local/share/steam-arm/titles.conf <<'TITLES'
-# Shipped title profiles; local overrides belong in /etc/steam-arm/titles.conf or ~/.config/steam-arm/titles.conf.
+# Included title profiles; local overrides belong in /etc/steam-arm/titles.conf or ~/.config/steam-arm/titles.conf.
 TITLES
 [ -f /etc/steam-arm/titles.conf ] || cat > /etc/steam-arm/titles.conf <<'TITLES'
 # Local title profiles; override /usr/local/share/steam-arm/titles.conf. One line per title: <appid> key=value ...
 #   overlay=x86|vulkan|off  mangohud=on|off  godot=gl|vulkan  env=A=1;B=2  args=-x;-y   (example: <appid> overlay=off)
 #   gl32=off (32-bit title on emulated x86 Mesa, no GL thunk)  vk32=keep (32-bit title keeps -vulkan)
+#   gfx=b (Mali drivers inside emulation)  gfx=a (forwarding); unset = automatic
 TITLES
 
 # FEX tool edit, shared by the launcher's start and its watcher (see the launcher).
 cat > /usr/local/lib/steam-arm-fexpatch.py <<'FEXPY'
 #!/usr/bin/env python3
-"""steam-arm-fexpatch FEXTOOLDIR: thunk overlay paths, server socket, GL and Vulkan thunks on.
+"""steam-arm-fexpatch FEXTOOLDIR: thunk overlay paths, server socket, GL and Vulkan thunks, logging off.
+
+GL and Vulkan thunks are on ("1"); titles on Mali drivers inside the emulation get them off per title
+through FEX_APP_CONFIG (steam-arm launch handler).
 
 FEX substitutes a thunk only when the guest opens a library path listed in ThunksDB's Overlay.
 Inside the runtime container the guest opens libGL, libEGL and libvulkan from pressure-vessel's
 overrides directory, or from /run/gfx/main where current runtimes mount the graphics provider,
-for 32-bit and 64-bit titles alike. Writes only when something is missing.
+for 32-bit and 64-bit titles alike. FEX 2609 and later list these paths itself (VERSIONS.txt
+names the release), so the overlay edit is skipped there. Writes only when something is missing.
 
 Also replaces the tool's deletion of LD_PRELOAD with a call to the steam-arm launch handler,
 /usr/local/lib/steam-arm-handler.py, which decides overlay, MangoHud and engine fixes per title
 (if it fails, the tool behaves as Valve wrote it). Patched only where Valve's two lines match
-exactly; an earlier steam-arm filter (v1) is replaced."""
-import json, os, sys
-F = sys.argv[1]
-db_p, tpl_p = F + "/usr/share/fex-emu/ThunksDB.json", F + "/ConfigTemplate.json"
-db = json.load(open(db_p)); changed = False
-names = {"GL": ["libGL.so", "libGL.so.1", "libGL.so.1.7.0", "libGL.so.1.2.0"],
+exactly; an earlier steam-arm filter (v1) is replaced.
+
+Before an edit Valve's file is saved as <file>.steam-arm-orig, unless the file is what this tool
+wrote last (sha256 in <file>.steam-arm-sha). Steam may be updating the tool: edits start only once the three
+files are unchanged for 2 s, and a file that changes before its edit lands is left alone (exit 75,
+the launcher tries again). --no-wait FEXTOOLDIR: no waiting; exit 75 unless the files are 2 s old.
+
+steam-arm-fexpatch --unpatch FEXTOOLDIR: puts back Valve's files. A file still as this tool wrote
+it gets the saved copy back byte for byte; otherwise the two lines, keys and overlay
+paths added here are taken out. Missing or stock tool is left as is."""
+import hashlib, json, os, re, sys, tempfile, time
+UNPATCH = sys.argv[1:2] == ["--unpatch"]
+NOWAIT = sys.argv[1:2] == ["--no-wait"]
+F = sys.argv[2] if UNPATCH or NOWAIT else sys.argv[1]
+db_p, tpl_p, ct_p = F + "/usr/share/fex-emu/ThunksDB.json", F + "/ConfigTemplate.json", F + "/fex-compat-tool"
+ORIG = ".steam-arm-orig"
+# sha256 of the bytes this tool last wrote to the file beside it
+SHA = ".steam-arm-sha"
+OLD_LINES = "    if 'LD_PRELOAD' in os.environ:\n        del os.environ['LD_PRELOAD']\n"
+POP_END = "        os.environ.pop('LD_PRELOAD', None)\n"
+MARK = "# steam-arm handler v2"
+V1 = "# steam-arm preload filter v1"
+HANDLER = "/usr/local/lib/steam-arm-handler.py"
+BLOCK = ("    " + MARK + "\n"
+         "    try:\n"
+         "        import runpy\n"
+         "        runpy.run_path('" + HANDLER + "')\n"
+         "    except Exception as _e:\n"
+         "        print('steam-arm: handler failed, Valve default applies:', _e)\n" + POP_END)
+SOCK_RE = r"/run/user/[0-9]+/(steam-arm|h96)-fexserver\.sock"
+NAMES = {"GL": ["libGL.so", "libGL.so.1", "libGL.so.1.7.0", "libGL.so.1.2.0"],
          "Vulkan": ["libvulkan.so", "libvulkan.so.1"], "EGL": ["libEGL.so", "libEGL.so.1"]}
-for lib, ns in names.items():
-    if lib not in db["DB"]:
-        continue
-    ov = db["DB"][lib].setdefault("Overlay", [])
+
+
+class Changed(Exception):
+    """A file changed on disk between its read and its replacement."""
+
+
+def overlay_paths(ns):
     for arch in ("i386-linux-gnu", "x86_64-linux-gnu"):
         for base in ("/usr/lib/pressure-vessel/overrides/lib/" + arch,
                      "/usr/lib/pressure-vessel/overrides/lib/%s/aliases" % arch,
                      "/run/gfx/main/usr/lib/" + arch):
             for n in ns:
-                p = base + "/" + n
-                if p not in ov:
-                    ov.append(p); changed = True
-if changed:
-    json.dump(db, open(db_p, "w"), indent=2)
-t = json.load(open(tpl_p)); c = t.setdefault("Config", {}); tc = False
-sock = "/run/user/%s/steam-arm-fexserver.sock" % os.getuid()
-if c.get("ServerSocketPath") != sock:
-    c["ServerSocketPath"] = sock; tc = True
-td = t.setdefault("ThunksDB", {})
-for k in ("GL", "Vulkan"):
-    if td.get(k) != "1":
-        td[k] = "1"; tc = True
-if tc:
-    json.dump(t, open(tpl_p, "w"), indent=4)
-ct_p = F + "/fex-compat-tool"
-MARK = "# steam-arm handler v2"
+                yield base + "/" + n
+
+
+def fstat(p):
+    try:
+        st = os.stat(p)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+SEEN = {}
+
+
+def read(p):
+    SEEN[p] = fstat(p)
+    with open(p, "rb") as f:
+        return f.read()
+
+
+def write_atomic(p, data, check=True):
+    # New file in the same folder renamed over p (Steam may read it at any time); mode kept.
+    try:
+        mode = os.stat(p).st_mode & 0o7777
+    except OSError:
+        mode = 0o644
+    fd, t = tempfile.mkstemp(prefix=".steam-arm-", dir=os.path.dirname(p) or ".")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data if isinstance(data, bytes) else data.encode())
+        os.chmod(t, mode)
+        if check and fstat(p) != SEEN.get(p):
+            raise Changed(p)
+        os.replace(t, p)
+    except BaseException:
+        try:
+            os.unlink(t)
+        except OSError:
+            pass
+        raise
+    SEEN[p] = fstat(p)
+
+
+def fex_yymm():
+    # First "FEX-YYMM" in VERSIONS.txt (FEX-2609.1, FEX-2607-76-g...); 0 when unknown. Launcher's fex_new() matches this.
+    try:
+        m = re.search(r"FEX-([0-9]{4})", open(F + "/VERSIONS.txt").read())
+    except OSError:
+        return 0
+    return int(m.group(1)) if m else 0
+
+
+def block_span(ct, mark):
+    # (start, end) of a handler block starting at mark, None when absent or without its end line
+    i = ct.find("    " + mark)
+    if i < 0:
+        return None
+    j = ct.find(POP_END, i)
+    return None if j < 0 else (i, j + len(POP_END))
+
+
+# --- fex-compat-tool ---
+def ct_parse(raw):
+    return raw.decode("utf-8")
+
+
+def ct_strip(ct, keep_other=False):
+    # Valve's two lines in place of each handler block; keep_other: the other flavour's handler stays
+    for mark in (MARK, V1):
+        sp = block_span(ct, mark)
+        if not sp:
+            continue
+        blk = ct[sp[0]:sp[1]]
+        if keep_other and HANDLER not in blk and "handler.py" in blk:
+            continue
+        ct = ct[:sp[0]] + OLD_LINES + ct[sp[1]:]
+    return ct
+
+
+def ct_patch(ct):
+    if MARK in ct and "run_path('%s')" % HANDLER in ct:
+        return ct
+    for mark in (MARK, V1):
+        sp = block_span(ct, mark)
+        if sp:
+            # patched for another handler (other steam-arm flavour) or an earlier filter: re-point the block
+            return ct[:sp[0]] + BLOCK + ct[sp[1]:]
+    if MARK not in ct and ct.count(OLD_LINES) == 1:
+        return ct.replace(OLD_LINES, BLOCK)
+    return None
+
+
+def ct_stock(ct):
+    return MARK not in ct and V1 not in ct and ct.count(OLD_LINES) == 1
+
+
+def ct_dump(ct):
+    compile(ct, ct_p, "exec")
+    return ct.encode("utf-8")
+
+
+# --- ConfigTemplate.json ---
+def tpl_parse(raw):
+    t = json.loads(raw.decode("utf-8"))
+    if not isinstance(t, dict) or not isinstance(t.get("Config", {}), dict):
+        raise ValueError("unknown layout")
+    return t
+
+
+def tpl_strip(t):
+    t = json.loads(json.dumps(t))
+    c = t.get("Config", {})
+    if re.fullmatch(SOCK_RE, str(c.get("ServerSocketPath", ""))):
+        del c["ServerSocketPath"]
+    if c.get("SilentLog") == "1":
+        del c["SilentLog"]
+    td = t.get("ThunksDB")
+    if isinstance(td, dict) and set(td) <= {"GL", "Vulkan"} and all(v in ("0", "1") for v in td.values()):
+        del t["ThunksDB"]
+    return t
+
+
+def tpl_patch(t):
+    t = json.loads(json.dumps(t))
+    c = t.setdefault("Config", {})
+    c["ServerSocketPath"] = "/run/user/%s/steam-arm-fexserver.sock" % os.getuid()
+    # FEX logging off: fewer steamwebhelper crashes under emulation.
+    c["SilentLog"] = "1"
+    td = t.setdefault("ThunksDB", {})
+    if not isinstance(td, dict):
+        raise ValueError("unknown layout")
+    td["GL"] = td["Vulkan"] = "1"
+    return t
+
+
+def tpl_stock(t):
+    return not re.fullmatch(SOCK_RE, str(t.get("Config", {}).get("ServerSocketPath", "")))
+
+
+def tpl_dump(t):
+    return json.dumps(t, indent=4).encode()
+
+
+# --- ThunksDB.json ---
+def db_parse(raw):
+    db = json.loads(raw.decode("utf-8"))
+    if not isinstance(db, dict) or not isinstance(db.get("DB"), dict):
+        raise ValueError("unknown layout")
+    return db
+
+
+def db_strip(db):
+    db = json.loads(json.dumps(db))
+    for lib, ns in NAMES.items():
+        e = db["DB"].get(lib)
+        ov = e.get("Overlay") if isinstance(e, dict) else None
+        if isinstance(ov, list):
+            ours = set(overlay_paths(ns))
+            keep = [p for p in ov if p not in ours]
+            if len(keep) != len(ov):
+                if keep:
+                    e["Overlay"] = keep
+                else:
+                    del e["Overlay"]
+    return db
+
+
+def db_patch(db):
+    db = json.loads(json.dumps(db))
+    for lib, ns in NAMES.items():
+        e = db["DB"].get(lib)
+        if not isinstance(e, dict):
+            continue
+        ov = e.setdefault("Overlay", [])
+        if not isinstance(ov, list):
+            raise ValueError("unknown layout")
+        for p in overlay_paths(ns):
+            if p not in ov:
+                ov.append(p)
+    return db
+
+
+def db_dump(db):
+    return json.dumps(db, indent=2).encode()
+
+
+FILES = {db_p: (db_parse, db_patch, db_strip, lambda db: True, db_dump),
+         tpl_p: (tpl_parse, tpl_patch, tpl_strip, tpl_stock, tpl_dump),
+         ct_p: (ct_parse, ct_patch, ct_strip, ct_stock, ct_dump)}
+
+
+def saved(p, parse):
+    # Saved original of p, parsed; None when absent or unreadable.
+    try:
+        raw = open(p + ORIG, "rb").read()
+        return raw, parse(raw)
+    except (OSError, ValueError):
+        return None, None
+
+
+def fail(what, code=3):
+    # Plain line for the launcher log; games still start with Valve's settings.
+    print("steam-arm-fexpatch: %s" % what, file=sys.stderr)
+    sys.exit(code)
+
+
+def settle(wait=True):
+    # True once the three files are unchanged for 2 s (at most 30 s of waiting); wait=False: True only
+    # when none was written in the last 2 s, no sleep. A future mtime (clock stepped back) counts as now.
+    if not wait:
+        now = time.time()
+        newest = min(max([s[2] / 1e9 for s in (fstat(p) for p in FILES) if s] or [0]), now)
+        return now - newest >= 2.0
+    end = time.monotonic() + 30
+    while time.monotonic() + 2.0 <= end:
+        s0 = [fstat(p) for p in FILES]
+        time.sleep(2.0)
+        if [fstat(p) for p in FILES] == s0:
+            return True
+    return False
+
+
+def written_here(p, raw):
+    # True/False: raw is/is not what this tool last wrote; None without a record (setup from before the record)
+    try:
+        return open(p + SHA).read().strip() == hashlib.sha256(raw).hexdigest()
+    except OSError:
+        return None
+
+
+def same_base(p, orig, cur, keep=False):
+    # True when cur is the saved original plus (some of) the edits of this tool; for files without a record
+    parse, patch, strip, stock, dump = FILES[p]
+    if patch(orig) == cur:
+        return True
+    if p == ct_p:
+        return strip(orig, keep) == strip(cur, keep)
+    return strip(orig) == strip(cur)
+
+
+def apply(p):
+    parse, patch, strip, stock, dump = FILES[p]
+    raw = read(p)
+    cur = parse(raw)
+    new = patch(cur)
+    if new is None:
+        return None
+    if new == cur:
+        return False
+    oraw, orig = saved(p, parse)
+    # file written here before (saved original stays), else Valve's: saved as original unless another tool edited it
+    w = written_here(p, raw)
+    if not (w if w is not None else orig is not None and same_base(p, orig, cur)):
+        if stock(cur):
+            write_atomic(p + ORIG, raw, check=False)
+        elif os.path.exists(p + ORIG):
+            os.remove(p + ORIG)
+    data = dump(new)
+    write_atomic(p, data)
+    write_atomic(p + SHA, hashlib.sha256(data).hexdigest() + "\n", check=False)
+    return True
+
+
+def unpatch_one(p, skip):
+    parse, patch, strip, stock, dump = FILES[p]
+    try:
+        if skip or not os.path.isfile(p):
+            return
+        raw = read(p)
+        cur = parse(raw)
+        keep = os.path.exists("/etc/h96/steam-arm.conf")
+        cleaned = strip(cur, keep) if p == ct_p else strip(cur)
+        oraw, orig = saved(p, parse)
+        w = written_here(p, raw)
+        if orig is not None and (w if w is not None else same_base(p, orig, cur, keep)):
+            if oraw != raw:
+                write_atomic(p, oraw)
+        elif cleaned != cur:
+            write_atomic(p, dump(cleaned))
+    except (OSError, ValueError, SyntaxError, Changed) as e:
+        print("steam-arm-fexpatch: %s left as it is (%s)" % (os.path.basename(p), e), file=sys.stderr)
+    finally:
+        for x in (p + ORIG, p + SHA):
+            if os.path.exists(x):
+                os.remove(x)
+
+
+if UNPATCH:
+    if os.path.isdir(F):
+        # 2609+ lists the overlay paths itself; its file was never edited here
+        for p in FILES:
+            unpatch_one(p, p == db_p and fex_yymm() >= 2609)
+    sys.exit(0)
+if not settle(not NOWAIT):
+    fail("the emulation tool is still being updated; changes apply once Steam has finished", 75)
 try:
-    ct = open(ct_p).read()
-except OSError:
-    ct = MARK
-block = ("    " + MARK + "\n"
-         "    try:\n"
-         "        import runpy\n"
-         "        runpy.run_path('/usr/local/lib/steam-arm-handler.py')\n"
-         "    except Exception as _e:\n"
-         "        print('steam-arm: handler failed, Valve default applies:', _e)\n"
-         "        os.environ.pop('LD_PRELOAD', None)\n")
-old = "    if 'LD_PRELOAD' in os.environ:\n        del os.environ['LD_PRELOAD']\n"
-out = None
-if MARK in ct and "run_path('/usr/local/lib/steam-arm-handler.py')" not in ct:
-    # patched for another handler (the other steam-arm flavour): re-point the block
-    i = ct.index("    " + MARK)
-    end = "        os.environ.pop('LD_PRELOAD', None)\n"
-    j = ct.index(end, i) + len(end)
-    out = ct[:i] + block + ct[j:]
-elif MARK not in ct:
-    if ct.count(old) == 1:
-        out = ct.replace(old, block)
-    elif "# steam-arm preload filter v1" in ct:
-        i = ct.index("    # steam-arm preload filter v1")
-        end = "        os.environ.pop('LD_PRELOAD', None)\n"
-        j = ct.index(end, i) + len(end)
-        out = ct[:i] + block + ct[j:]
-if out:
-    compile(out, ct_p, "exec")
-    open(ct_p, "w").write(out)
+    for p in (([] if fex_yymm() >= 2609 else [db_p]) + [tpl_p]):
+        apply(p)
+    if not os.path.isfile(ct_p):
+        sys.exit(0)
+    r = apply(ct_p)
+except Changed:
+    fail("the emulation tool changed while it was being patched; changes apply at the next look", 75)
+except OSError as e:
+    fail("could not read or write the emulation tool's settings (%s); games start with Valve's own settings" % e)
+except ValueError as e:
+    fail("could not read the emulation tool's settings (%s); games start with Valve's own settings" % e)
+except SyntaxError:
+    fail("the emulation tool's settings have a layout this version does not know; games start with Valve's own settings")
+if r is None and any(k in open(ct_p).read() for k in ("LD_PRELOAD", MARK)):
+    fail("Valve changed the text of fex-compat-tool, so the launch handler is not connected: overlay, MangoHud "
+         "and per-title fixes are off until a newer Steam ARM supports it; games still start")
 FEXPY
 chmod 755 /usr/local/lib/steam-arm-fexpatch.py
+# PhysX install-step skip for Proton titles, run by the launcher.
+cat > /usr/local/lib/steam-arm-physx.py <<'PHYSXPY'
+#!/usr/bin/env python3
+"""steam-arm-physx: PhysX install step of Proton titles, which hangs under emulation.
+
+1. Registry: installed title with a Proton prefix whose install script has a "Run Process" section
+   naming PhysX gets that section's has-run value in pfx/system.reg, max(1, MinimumHasRunValue),
+   so Steam skips the step. Written only while no wineserver runs on the prefix (it would overwrite
+   the file); an equal or higher value stays.
+2. Fallback (prefix not there yet on first start): a PhysX installer (or msiexec with a PhysX package) under Steam's reaper for over
+   60 s gets SIGTERM, never SIGKILL; Steam then continues to the title.
+Usage: steam-arm-physx.py watch <Steam dir> <log>  |  steam-arm-physx.py once <Steam dir>"""
+import glob
+import os
+import re
+import signal
+import sys
+import time
+
+HANG_S = 60
+NOTED = set()
+
+
+def logger(path):
+    def log(msg):
+        line = "%s physx: %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
+        if not path:
+            sys.stdout.write(line)
+            return
+        try:
+            with open(path, "a") as f:
+                f.write(line)
+        except OSError:
+            pass
+    return log
+
+
+def read(p):
+    with open(p, encoding="utf-8", errors="replace") as f:
+        return f.read().lstrip("\ufeff")
+
+
+def vdf_parse(text):
+    """Text KeyValues to nested dicts; keys keep their case, get() matches without it."""
+    root = {}
+    stack = [root]
+    key = None
+    for m in re.finditer(r'"((?:\\.|[^"\\])*)"|([{}])|//[^\n]*|([^\s{}"]+)', text):
+        q, brace, bare = m.groups()
+        if brace == "{":
+            d = {}
+            stack[-1][key if key is not None else ""] = d
+            stack.append(d)
+            key = None
+        elif brace == "}":
+            if len(stack) > 1:
+                stack.pop()
+            key = None
+        elif q is not None or bare is not None:
+            v = q.replace("\\\\", "\\").replace('\\"', '"') if q is not None else bare
+            if key is None:
+                key = v
+            else:
+                stack[-1][key] = v
+                key = None
+    return root
+
+
+def get(d, name):
+    if isinstance(d, dict):
+        for k, v in d.items():
+            if k.lower() == name.lower():
+                return v
+    return None
+
+
+def libraries(steam):
+    libs = [os.path.join(steam, "steamapps")]
+    try:
+        lf = get(vdf_parse(read(os.path.join(steam, "steamapps", "libraryfolders.vdf"))), "libraryfolders")
+    except OSError:
+        lf = None
+    for v in (lf or {}).values():
+        p = get(v, "path")
+        if isinstance(p, str):
+            sa = os.path.join(p, "steamapps")
+            if os.path.realpath(sa) not in [os.path.realpath(x) for x in libs]:
+                libs.append(sa)
+    return libs
+
+
+def titles(steam):
+    """(appid, library, install dir) of fully installed titles (StateFlags bit 4)."""
+    for lib in libraries(steam):
+        for acf in glob.glob(os.path.join(lib, "appmanifest_*.acf")):
+            try:
+                st = get(vdf_parse(read(acf)), "AppState")
+                flags = int(get(st, "StateFlags") or 0)
+            except (OSError, ValueError):
+                continue
+            appid, inst = get(st, "appid"), get(st, "installdir")
+            if isinstance(appid, str) and appid.isdigit() and flags & 4 and isinstance(inst, str) and inst:
+                yield appid, lib, os.path.join(lib, "common", inst)
+
+
+def install_scripts(gamedir):
+    """installscript*.vdf files in the install dir, two levels down at most."""
+    found = []
+    base = gamedir.rstrip("/").count("/")
+    for d, dirs, files in os.walk(gamedir):
+        if d.count("/") - base >= 2:
+            dirs[:] = []
+        found += [os.path.join(d, f) for f in files if f.lower().startswith("installscript") and f.lower().endswith(".vdf")]
+    return found
+
+
+def run_process_sections(d):
+    for k, v in d.items():
+        if isinstance(v, dict):
+            if k.lower() == "run process":
+                yield v
+            else:
+                yield from run_process_sections(v)
+
+
+def reg_key(hasrunkey, appid):
+    """Registry key path under HKLM for system.reg; Steam's install step is 32-bit, so Software maps to Wow6432Node."""
+    k = hasrunkey if isinstance(hasrunkey, str) and hasrunkey else "HKEY_LOCAL_MACHINE\\Software\\Valve\\Steam\\Apps\\" + appid
+    parts = [x for x in k.replace("/", "\\").split("\\") if x]
+    if not parts or parts[0].upper() not in ("HKEY_LOCAL_MACHINE", "HKLM"):
+        return None
+    rest = parts[1:]
+    if rest and rest[0].lower() == "software" and (len(rest) < 2 or rest[1].lower() != "wow6432node"):
+        rest = [rest[0], "Wow6432Node"] + rest[1:]
+    return "\\".join(rest) if rest else None
+
+
+def physx_rules(appid, scripts, log):
+    """{(key, value name): dword} for Run Process sections whose process/command names PhysX."""
+    rules = {}
+    for p in scripts:
+        try:
+            kv = vdf_parse(read(p))
+        except OSError:
+            continue
+        for rp in run_process_sections(kv):
+            for name, sec in rp.items():
+                if not isinstance(sec, dict) or not any(
+                        isinstance(v, str) and "physx" in v.lower()
+                        for k, v in sec.items() if re.match(r"(process|command)\s*\d*$", k, re.I)):
+                    continue
+                key = reg_key(get(sec, "HasRunKey"), appid)
+                if not key:
+                    msg = "%s: section %s has a non-HKLM HasRunKey, left to the installer" % (appid, name)
+                    if msg not in NOTED:
+                        NOTED.add(msg)
+                        log(msg)
+                    continue
+                try:
+                    mn = int(str(get(sec, "MinimumHasRunValue") or "0").strip())
+                except ValueError:
+                    mn = 0
+                val = min(max(1, mn), 0xFFFFFFFF)
+                rules[(key, name)] = max(val, rules.get((key, name), 0))
+    return rules
+
+
+def reg_set(path, key, name, value):
+    """Set dword `name` under `key` in a Wine registry file unless an equal or higher dword is there."""
+    with open(path, encoding="latin-1", newline="") as f:
+        lines = f.read().split("\n")
+    esc = key.replace("\\", "\\\\").lower()
+    line = '"%s"=dword:%08x' % (name.replace("\\", "\\\\").replace('"', '\\"'), value)
+    start = end = None
+    for i, l in enumerate(lines):
+        if not l.startswith("["):
+            continue
+        if start is not None:
+            end = i
+            break
+        m = re.match(r"\[(.*)\](?: \d+)?\s*$", l)
+        if m and m.group(1).lower() == esc:
+            start = i
+    if start is None:
+        now = int(time.time())
+        while lines and lines[-1] == "":
+            lines.pop()
+        lines += ["", "[%s] %d" % (key.replace("\\", "\\\\"), now),
+                  "#time=%x" % ((now + 11644473600) * 10000000), line, ""]
+    else:
+        end = len(lines) if end is None else end
+        at = None
+        for i in range(start + 1, end):
+            m = re.match(r'"((?:\\.|[^"\\])*)"=(.*)$', lines[i])
+            if m and m.group(1).replace('\\"', '"').replace("\\\\", "\\").lower() == name.lower():
+                at = i
+                v = m.group(2).strip()
+                if v.startswith("dword:"):
+                    try:
+                        if int(v[6:], 16) >= value:
+                            return False
+                    except ValueError:
+                        pass
+                break
+        if at is not None:
+            lines[at] = line
+        else:
+            i = start + 1
+            while i < end and lines[i].startswith("#"):
+                i += 1
+            lines.insert(i, line)
+    tmp = path + ".steam-arm.tmp"
+    with open(tmp, "w", encoding="latin-1", newline="") as f:
+        f.write("\n".join(lines))
+    os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+    os.replace(tmp, path)
+    return True
+
+
+def proc_stat(pid):
+    """(comm, ppid, start time in clock ticks) from /proc/<pid>/stat."""
+    st = open("/proc/%s/stat" % pid).read()
+    rest = st[st.rindex(")") + 2:].split()
+    return st[st.index("(") + 1:st.rindex(")")], rest[1], int(rest[19])
+
+
+def prefix_busy(pfx, uid):
+    """True while a wineserver of this user serves the prefix (by WINEPREFIX or its server dir name)."""
+    rp = os.path.realpath(pfx)
+    try:
+        st = os.stat(pfx)
+        sdir = "server-%x-%x" % (st.st_dev, st.st_ino)
+    except OSError:
+        sdir = None
+    for p in glob.glob("/proc/[0-9]*"):
+        try:
+            if os.stat(p).st_uid != uid or open(p + "/comm").read().strip() != "wineserver":
+                continue
+        except OSError:
+            continue
+        try:
+            if sdir and os.path.basename(os.readlink(p + "/cwd")) == sdir:
+                return True
+        except OSError:
+            pass
+        try:
+            env = open(p + "/environ", "rb").read().split(b"\0")
+        except OSError:
+            return True
+        for e in env:
+            if e.startswith(b"WINEPREFIX=") and os.path.realpath(e[11:].decode("utf-8", "replace")) == rp:
+                return True
+    return False
+
+
+def scan(steam, log, done, cache, waiting):
+    uid = os.getuid()
+    evdirs = [os.path.join(steam, "legacycompat"), os.path.join(steam, "steamrtarm64", "legacycompat")]
+    for appid, lib, gamedir in titles(steam):
+        if appid in done:
+            continue
+        pfx = None
+        for l in (lib, os.path.join(steam, "steamapps")):
+            c = os.path.join(l, "compatdata", appid, "pfx")
+            if os.path.isfile(os.path.join(c, "system.reg")):
+                pfx = c
+                break
+        if not pfx:
+            continue
+        if appid not in cache:
+            cache[appid] = physx_rules(appid, install_scripts(gamedir), log)
+        # Evaluator script is written per launch, so it is read again each pass.
+        ev = [p for p in (os.path.join(d, "evaluatorscript_%s.vdf" % appid) for d in evdirs) if os.path.isfile(p)]
+        rules = dict(cache[appid])
+        for k, v in physx_rules(appid, ev, log).items():
+            rules[k] = max(v, rules.get(k, 0))
+        if not rules:
+            continue
+        if prefix_busy(pfx, uid):
+            if appid not in waiting:
+                waiting.add(appid)
+                log("%s: prefix in use, PhysX value written once the title has ended" % appid)
+            continue
+        for (key, name), val in sorted(rules.items()):
+            try:
+                if reg_set(os.path.join(pfx, "system.reg"), key, name, val):
+                    log("%s: [%s] \"%s\"=dword:%08x written, PhysX install step skipped from next start" % (appid, key, name, val))
+            except OSError as e:
+                log("%s: could not write system.reg: %s" % (appid, e))
+                break
+        else:
+            done.add(appid)
+
+
+def physx_procs(uid):
+    for p in glob.glob("/proc/[0-9]*"):
+        try:
+            if os.stat(p).st_uid != uid:
+                continue
+            args = open(p + "/cmdline", "rb").read().split(b"\0")
+            comm = open(p + "/comm").read().strip()
+        except OSError:
+            continue
+        base = re.split(r"[\\/]", args[0].decode("utf-8", "replace"))[-1]
+        if base.lower().startswith("physx") or comm.lower().startswith("physx"):
+            yield int(p[6:]), base or comm
+        # msiexec running a PhysX .msi package
+        elif base.lower() == "msiexec.exe" and b"physx" in b" ".join(args[1:]).lower():
+            yield int(p[6:]), base
+
+
+def under_reaper(pid):
+    p = str(pid)
+    for _ in range(64):
+        try:
+            comm, ppid, _t = proc_stat(p)
+        except (OSError, ValueError, IndexError):
+            return False
+        if comm == "reaper":
+            return True
+        if ppid in ("0", "1"):
+            return False
+        p = ppid
+    return False
+
+
+def stop_stuck(uid, log, termed):
+    try:
+        up = float(open("/proc/uptime").read().split()[0])
+    except (OSError, ValueError):
+        return
+    hz = os.sysconf("SC_CLK_TCK")
+    for pid, name in physx_procs(uid):
+        if pid in termed:
+            continue
+        try:
+            age = up - proc_stat(pid)[2] / hz
+        except (OSError, ValueError, IndexError):
+            continue
+        if age > HANG_S and under_reaper(pid):
+            try:
+                os.kill(pid, signal.SIGTERM)
+                log("%s (pid %d) running %d s without finishing: sent SIGTERM, Steam continues to the title" % (name, pid, age))
+            except OSError:
+                pass
+            termed.add(pid)
+
+
+def main():
+    if len(sys.argv) < 3 or sys.argv[1] not in ("watch", "once"):
+        sys.exit(__doc__.rsplit("Usage: ", 1)[1])
+    steam = sys.argv[2]
+    log = logger(sys.argv[3] if sys.argv[1] == "watch" and len(sys.argv) > 3 else None)
+    done, cache, waiting, termed = set(), {}, set(), set()
+    if sys.argv[1] == "once":
+        scan(steam, log, done, cache, waiting)
+        return
+    uid, parent, last = os.getuid(), os.getppid(), 0.0
+    while os.getppid() == parent:
+        stop_stuck(uid, log, termed)
+        if time.time() - last >= 10:
+            last = time.time()
+            scan(steam, log, done, cache, waiting)
+        time.sleep(2)
+
+
+if __name__ == "__main__":
+    main()
+PHYSXPY
+chmod 755 /usr/local/lib/steam-arm-physx.py
 cat > /usr/local/bin/steam-arm <<'LAUNCHER'
 #!/bin/sh
 # steam-arm: launches native ARM64 Steam client; runs as desktop user, games through FEX against the RootFS.
+if [ "$(id -u)" = 0 ]; then
+  echo "steam-arm: run this as the desktop account that plays games, not as root" >&2; exit 1
+fi
 REALHOME="$HOME"
 ARMHOME_DIR=.local/share/steam-arm            # relative to the user's home
 [ -r /etc/steam-arm/steam-arm.conf ] && . /etc/steam-arm/steam-arm.conf
 ARMHOME="${STEAM_ARM_HOME:-$REALHOME/$ARMHOME_DIR}"
+S="$ARMHOME/.local/share/Steam"; D="$S/steamrtarm64"; F="$S/steamapps/common/FEX-Emu"
+# Stop before any write: message on stderr, plus a dialog when started from a menu (display, no terminal).
+stop(){
+  echo "steam-arm: $1" >&2
+  if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && [ ! -t 2 ] && command -v zenity >/dev/null 2>&1; then
+    zenity --error --title="Steam ARM" --width=480 --text="$(printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')" 2>/dev/null
+  fi
+  exit 1
+}
+if command -v steam-arm-setup >/dev/null 2>&1; then SETUP=steam-arm-setup
+elif [ -f /usr/local/share/steam-arm/steam-arm-install.sh ]; then SETUP="bash /usr/local/share/steam-arm/steam-arm-install.sh"
+else SETUP="bash steam-arm-install.sh"; fi
+# Client lives in the setup account's home; another account would find no client.
+ME=$(id -un); SA_USER=$(sed -n 's/^GAMEUSER=//p' /etc/steam-arm/steam-arm.conf 2>/dev/null | tail -1)
+if [ -z "${STEAM_ARM_HOME:-}" ] && [ -n "$SA_USER" ] && [ "$SA_USER" != "$ME" ]; then
+  stop "Steam ARM is set up for account $SA_USER. Log in as $SA_USER to play, or set it up for this account: sudo steam-arm-config, then Install / Setup, then pick $ME. Or: sudo env GAMEUSER=$ME $SETUP --keep"
+fi
+if [ ! -x "$D/steam" ]; then
+  stop "Steam client not installed in $S. Setup did not finish; run it again: sudo steam-arm-config (Maintenance > Update / Repair) or sudo $SETUP --keep. On Raspberry Pi 5, reboot first if setup switched to 4K page kernel."
+fi
 export HOME="$ARMHOME"
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
 export STEAM_COMPAT_GRAPHICS_PROVIDER=/opt/fex-rootfs/Ubuntu_24_04/graphics_provider.json
-export __GLX_VENDOR_LIBRARY_NAME=steamarmlax
 export STEAMOS=1
-export STEAM_ARM_VK_SPOOF=1
+LOG="$ARMHOME/steam-arm.log"
+lwarn(){ echo "steam-arm: $*" >&2; printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG" 2>/dev/null; }
+# Component chosen at install (COMPONENTS_ON in the settings file; all count as chosen when the file has no list).
+comp_on(){ [ -z "${COMPONENTS_ON+x}" ] && return 0; case ",$COMPONENTS_ON," in *",$1,"*) return 0;; esac; return 1; }
+# Graphics route is picked per title by the launch handler; here only a note when its second tree is gone.
+comp_on gpu-in-emulation && [ -n "${COMPONENTS_ON+x}" ] && [ ! -f /opt/fex-rootfs/Ubuntu_24_04-mali/.steam-arm-mali ] \
+  && lwarn "Mali drivers inside the emulation missing, titles that need them use forwarding; run the installer again to restore them"
+# Private GLX copy only when chosen and loadable; otherwise system Mesa GLX.
+LAX=/usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0; LAX_BAD=0
+if comp_on glx-lax; then
+  if [ ! -f "$LAX" ]; then
+    LAX_BAD=1; lwarn "private GLX copy missing, using system Mesa GLX; run the installer again to rebuild it"
+  elif ! out=$(ldd "$LAX" 2>&1) || printf '%s\n' "$out" | grep -q 'not found'; then
+    LAX_BAD=1; lwarn "private GLX copy cannot load its libraries, using system Mesa GLX; run: sudo steam-arm-glx-lax"
+  else
+    export __GLX_VENDOR_LIBRARY_NAME=steamarmlax
+  fi
+fi
+# shader-cache (listed by name only): pre-caching on; this key turns off Steam's arm64, x86_64 and i386 fossilize layers (arm64 one crashes Proton titles in vkCreateDevice).
+NOSHADERS=-noshaders
+if [ -n "${COMPONENTS_ON+x}" ] && comp_on shader-cache; then
+  NOSHADERS=; export DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1
+fi
+# Proton titles use host Vulkan.
+comp_on vk-spoof && [ -f /usr/share/vulkan/implicit_layer.d/VkLayer_steam_arm_spoof.json ] && export STEAM_ARM_VK_SPOOF=1
 # PROTON_DXVK_D3D8=1: use DXVK's d3d8 (wined3d's GL path misrenders on Mali); launch option can override.
 export PROTON_DXVK_D3D8="${PROTON_DXVK_D3D8:-1}"
-S="$ARMHOME/.local/share/Steam"; D="$S/steamrtarm64"; F="$S/steamapps/common/FEX-Emu"
 
 # Pause steam-arm-pad-xbox while this client runs (its own Steam Input re-IDs pads; the service would starve direct pad reads); resume on exit.
 PADSVC=0
-if systemctl is-active --quiet steam-arm-pad-xbox 2>/dev/null; then
+if [ -f /etc/systemd/system/steam-arm-pad-xbox.service ] && systemctl is-active --quiet steam-arm-pad-xbox 2>/dev/null; then
   PADSVC=1; sudo -n systemctl stop steam-arm-pad-xbox 2>/dev/null || systemctl stop steam-arm-pad-xbox 2>/dev/null
 fi
 restore_pad(){ [ "$PADSVC" = 1 ] && { sudo -n systemctl start steam-arm-pad-xbox 2>/dev/null || systemctl start steam-arm-pad-xbox 2>/dev/null; }; }
-FEXWATCH=
-# Single exit path: stop the FEX watcher, then restore the pad service.
-on_exit(){ [ -n "$FEXWATCH" ] && kill "$FEXWATCH" 2>/dev/null; restore_pad; }
+FEXWATCH=; PHYSXWATCH=
+# Single exit path: stop the watchers, then restore the pad service.
+on_exit(){ [ -n "$FEXWATCH" ] && kill "$FEXWATCH" 2>/dev/null; [ -n "$PHYSXWATCH" ] && kill "$PHYSXWATCH" 2>/dev/null; restore_pad; }
 trap on_exit EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 if pgrep -f 'ubuntu12_32/steam ' >/dev/null 2>&1; then
@@ -1411,7 +7242,6 @@ ln -sfn "$S" "$ARMHOME/.steam/steam"; ln -sfn "$S" "$ARMHOME/.steam/root"
 ln -sfn "$S/linux32" "$ARMHOME/.steam/sdk32"; ln -sfn "$S/linux64" "$ARMHOME/.steam/sdk64"
 ln -sfn "$S/linuxarm64" "$ARMHOME/.steam/sdkarm64"   # sdk dir: steamclient.so for games and Proton, steam-launch-wrapper
 ln -sfn "$S/ubuntu12_32" "$ARMHOME/.steam/bin32"; ln -sfn "$S/ubuntu12_64" "$ARMHOME/.steam/bin64"
-mkdir -p "$S/package"; [ -f "$S/package/beta" ] || echo publicbeta > "$S/package/beta"
 
 # --- launch wrapper stand-in (only if package copy missing) ---
 if [ ! -x "$S/linuxarm64/steam-launch-wrapper" ] && [ ! -x "$D/steam-launch-wrapper" ]; then
@@ -1435,7 +7265,7 @@ cat > "$D/streaming_client" <<'SH'
 #!/bin/sh
 # Stand-in: run the x86-64 streaming client from this package under FEX (see steam-arm).
 here="$(dirname "$0")"; S="$(dirname "$here")"
-set -- $(for a in "$@"; do [ "$a" = "--openvr" ] || printf '%s\n' "$a"; done)
+for a in "$@"; do shift; [ "$a" = "--openvr" ] || set -- "$@" "$a"; done
 export LD_LIBRARY_PATH="$S/linux64:$S/ubuntu12_64:$S/ubuntu12_32${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 unset __GLX_VENDOR_LIBRARY_NAME
 export SDL_VIDEO_X11_FORCE_EGL=0
@@ -1445,13 +7275,45 @@ chmod 755 "$D/streaming_client"
 fi
 # system FEX config for the x86 streaming client (same rootfs, thunks and host settings as the x86 stack)
 mkdir -p "$ARMHOME/.fex-emu"; [ -f "$ARMHOME/.fex-emu/Config.json" ] || cp -f "$REALHOME/.fex-emu/Config.json" "$ARMHOME/.fex-emu/Config.json" 2>/dev/null
+# Unusable GLX copy: drop its HostEnv entry from this copy; put it back once the copy works again.
+FEXCFG="$ARMHOME/.fex-emu/Config.json"
+if [ "$LAX_BAD" = 1 ] && grep -q steamarmlax "$FEXCFG" 2>/dev/null; then
+  python3 -c 'import sys; p = sys.argv[1]; s = open(p).read(); open(p, "w").write(s.replace(",\n  \"HostEnv\":\"__GLX_VENDOR_LIBRARY_NAME=steamarmlax\"", ""))' "$FEXCFG"
+elif [ -n "${__GLX_VENDOR_LIBRARY_NAME:-}" ] && ! grep -q steamarmlax "$FEXCFG" 2>/dev/null \
+     && grep -q steamarmlax "$REALHOME/.fex-emu/Config.json" 2>/dev/null; then
+  cp -f "$REALHOME/.fex-emu/Config.json" "$FEXCFG"
+fi
 
 # --- Valve's FEX compat tool: patch thunk paths/socket so GL/Vulkan aren't CPU (llvmpipe); a watcher re-applies it on change ---
 FEXPATCH=/usr/local/lib/steam-arm-fexpatch.py
-fex_ok(){ grep -q '/run/gfx/main/' "$F/usr/share/fex-emu/ThunksDB.json" 2>/dev/null && grep -q '"GL": "1"' "$F/ConfigTemplate.json" 2>/dev/null \
+# FEX 2609+ lists the container thunk paths itself; same VERSIONS.txt parse as steam-arm-fexpatch.py.
+fex_new(){ v=$(grep -o 'FEX-[0-9]\{4\}' "$F/VERSIONS.txt" 2>/dev/null | head -1 | cut -c5-8); [ -n "$v" ] && [ "$v" -ge 2609 ]; }
+# Thunks "1" in the template (per-title off goes through FEX_APP_CONFIG); same rule as steam-arm-fexpatch.py.
+fex_ok(){ { fex_new || grep -q '/run/gfx/main/' "$F/usr/share/fex-emu/ThunksDB.json" 2>/dev/null; } \
+  && grep -q '"GL": "1"' "$F/ConfigTemplate.json" 2>/dev/null && grep -q '"Vulkan": "1"' "$F/ConfigTemplate.json" 2>/dev/null \
+  && grep -Eq '"SilentLog" *: *"1"' "$F/ConfigTemplate.json" 2>/dev/null \
   && grep -q "\"/run/user/$(id -u)/steam-arm-fexserver.sock\"" "$F/ConfigTemplate.json" 2>/dev/null \
   && { grep -q '/usr/local/lib/steam-arm-handler.py' "$F/fex-compat-tool" 2>/dev/null || ! grep -q "LD_PRELOAD" "$F/fex-compat-tool" 2>/dev/null; }; }
-[ -d "$F" ] && ! fex_ok && python3 "$FEXPATCH" "$F" 2>/dev/null
+# Patch only when one of the three files changed since the last look (size, time, inode); a failure is logged once.
+FEXST=; FEXMSG=
+fex_stamp(){ stat -c '%s %Y %i' "$F/ConfigTemplate.json" "$F/fex-compat-tool" "$F/usr/share/fex-emu/ThunksDB.json" 2>/dev/null | tr '\n' ' '; }
+# $1 --no-wait: start-up call, never delays Steam (the watcher waits for a tool update to finish).
+fex_check(){
+  [ -d "$F" ] || return 0
+  st=$(fex_stamp); [ "$st" = "$FEXST" ] && return 0
+  if ! fex_ok; then
+    msg=$(python3 "$FEXPATCH" ${1:+"$1"} "$F" 2>&1); rc=$?
+    # 75: Steam is still writing the tool; next look tries again
+    [ "$rc" = 75 ] && return 0
+    if [ "$rc" != 0 ]; then
+      msg=$(printf '%s\n' "$msg" | tail -1)
+      [ "$msg" = "$FEXMSG" ] || lwarn "${msg:-steam-arm-fexpatch failed}"
+      FEXMSG=$msg
+    fi
+  fi
+  FEXST=$(fex_stamp)
+}
+fex_check --no-wait
 # Steam overlay/FEX leak /dev/shm segments (fills half of RAM -> SIGBUS); sweep unused ones at start and every minute.
 shm_sweep(){ python3 - "$(id -u)" 2>/dev/null <<'SHMPY'
 import ctypes, glob, os, sys, time
@@ -1510,8 +7372,17 @@ for f in glob.glob("/dev/shm/fex-*-stats"):
 SHMPY
 }
 shm_sweep
-( n=0; while sleep 1; do [ -d "$F" ] && ! fex_ok && python3 "$FEXPATCH" "$F" 2>/dev/null; n=$((n + 1)); [ $((n % 60)) -eq 0 ] && shm_sweep; done ) &
+( n=0; while sleep 1; do fex_check; n=$((n + 1)); [ $((n % 60)) -eq 0 ] && shm_sweep; done ) &
 FEXWATCH=$!
+# physx-skip (listed by name; old settings file = on): PhysX install step of Proton titles hangs, mark it done in the prefix, else SIGTERM it after 60 s.
+# STEAM_ARM_PHYSX_SKIP=0 or =1 overrides it for this session.
+PHYSX=1
+case ",${COMPONENTS_ON:-}," in *,physx-skip,*) ;; *) case ",${COMPONENTS_OFF:-}," in *,physx-skip,*) PHYSX=0;; esac;; esac
+case "${STEAM_ARM_PHYSX_SKIP:-}" in 0) PHYSX=0;; 1) PHYSX=1;; esac
+if [ "$PHYSX" = 1 ] && [ -f /usr/local/lib/steam-arm-physx.py ]; then
+  python3 /usr/local/lib/steam-arm-physx.py watch "$S" "$LOG" </dev/null >/dev/null 2>&1 &
+  PHYSXWATCH=$!
+fi
 
 # --- Remote Play settings: pin hardware decode + HEVC off before start (client rewrites the file on exit) ---
 if command -v steam-arm-remoteplay >/dev/null 2>&1 && ! pgrep -x steam >/dev/null 2>&1; then
@@ -1543,7 +7414,7 @@ if command -v steam-arm-icon >/dev/null 2>&1 && [ ! -f /usr/share/icons/hicolor/
    && [ ! -f "$REALHOME/.local/share/icons/hicolor/256x256/apps/steam-arm.png" ]; then
   ICONLOCK="${XDG_RUNTIME_DIR:-/tmp}/steam-arm-icon-wait-$(id -u).lock"
   ( flock -n 9 || exit 0
-    STEP="${STEAM_ARM_ICON_POLL:-5}"; n=0
+    STEP=5; n=0
     while [ ! -f "$S/public/steam_tray.ico" ]; do
       n=$((n + STEP)); [ "$n" -ge 900 ] && exit 0
       sleep "$STEP"
@@ -1567,6 +7438,11 @@ fi
 VKL="$ARMHOME/.local/share/vulkan/implicit_layer.d"
 if [ -f "$D/steamoverlayvulkanlayer.so" ]; then
   mkdir -p "$VKL"; rm -f "$VKL/steamoverlay_arm64.json" "$VKL/steamoverlay_arm64.json.off"
+  # a second registration of this layer (other installer flavour) hangs Vulkan titles at start
+  for j in "$VKL"/*.json; do
+    [ "$j" = "$VKL/steamoverlay_arm64_steamarm.json" ] && continue
+    grep -qs 'steamrtarm64/steamoverlayvulkanlayer.so' "$j" && rm -f "$j"
+  done
   cat > "$VKL/steamoverlay_arm64_steamarm.json" <<VKJSON
 {
   "file_format_version": "1.0.0",
@@ -1594,8 +7470,31 @@ if [ ! -f "$S/linuxarm64/steamclient.so" ]; then
   [ -f "$S/linuxarm64/steamclient.so" ] || exit 1
   ln -sfn "$S/linuxarm64" "$ARMHOME/.steam/sdkarm64"
 fi
-./steam -deckard -steamos3 ${GPUI:+"$GPUI"} -noverifyfiles -norepairfiles -noshaders "$@"
-exit $?
+# Client exit after applying its own update: status 42 (restart request), or bootstrap log whose last
+# start ends in "Update complete, launching" with no client left running. Started again, at most twice.
+BOOTLOG="$S/logs/bootstrap_log.txt"
+# Status 0 when the log, from byte $1 on, ends with an applied update and no new start after it.
+updated_exit(){
+  sz=$(stat -c %s "$BOOTLOG" 2>/dev/null) || return 1
+  [ "$sz" -ge "$1" ] || set -- 0
+  tail -c +"$(($1 + 1))" "$BOOTLOG" | awk '/\] Startup - /{u=0} /\] Update complete, launching/{u=1} END{exit !u}'
+}
+client_up(){ pgrep -u "$(id -u)" -x steam >/dev/null 2>&1; }
+tries=0
+while :; do
+  off=$(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)
+  ./steam -deckard -steamos3 ${GPUI:+"$GPUI"} -noverifyfiles -norepairfiles ${NOSHADERS:+"$NOSHADERS"} "$@"
+  rc=$?
+  [ "$tries" -lt 2 ] || exit $rc
+  if [ "$rc" != 42 ]; then
+    updated_exit "$off" || exit $rc
+    # a client that starts itself again is left to run; watchers stay until it exits
+    n=0; while [ $n -lt 5 ] && ! client_up; do sleep 1; n=$((n + 1)); done
+    if client_up; then while client_up; do sleep 2; done; exit 0; fi
+  fi
+  tries=$((tries + 1))
+  lwarn "client exited after applying its update; starting it again"
+done
 LAUNCHER
 chmod 755 /usr/local/bin/steam-arm
 # Power menu calls steamos-session-select; here it just restarts the client in the matching interface (plain env restored first).
@@ -1618,14 +7517,14 @@ chmod 755 /usr/local/bin/steamos-session-select
 # Pin Remote Play settings (hardware decode + HEVC off); launcher runs this before each start; --check only reports.
 cat > /usr/local/bin/steam-arm-remoteplay <<'RPPY'
 #!/usr/bin/env python3
-"""Pin the Remote Play client settings the native ARM64 Steam client needs on this box.
+"""Pin the Remote Play client settings the native ARM64 Steam client needs on this system.
 
 The client stores its Remote Play settings as a serialized protobuf (CStreamingClientConfig
 from steammessages_remoteplay.proto), hex-encoded under "ClientConfig" in the account's
-localconfig.vdf. Two of its fields default to values this box cannot honour:
+localconfig.vdf. Two of its fields default to values this system cannot honour:
 
   enable_hardware_decoding (field 7) defaults to true. The streaming client decodes through
-  Vulkan Video, which the Mali driver on this box does not provide, so the client advertises
+  Vulkan Video, which Mesa's Mali driver does not provide, so the client advertises
   a decoder it does not have and the session never leaves negotiation. Titles with a light
   stream can still come up; heavier ones sit on the launch screen.
   enable_video_hevc (field 13) defaults to false, and is pinned false so the host keeps to
@@ -1833,57 +7732,137 @@ if __name__ == "__main__":
 RPPY
 chmod 755 /usr/local/bin/steam-arm-remoteplay
 chmod 755 /usr/local/bin/steam-arm
-# the launcher pauses the pad re-identification service (emulated-client component) while it runs
-cat > /etc/sudoers.d/steam-arm <<SUDO
-$GAMEUSER ALL=(root) NOPASSWD: /usr/bin/systemctl start steam-arm-pad-xbox, /usr/bin/systemctl stop steam-arm-pad-xbox
-SUDO
-chmod 440 /etc/sudoers.d/steam-arm
+# Launcher pauses the pad-xbox service while it runs; the sudo rule exists only with that component.
+if opt pad-xbox; then
+# Checked with visudo before it goes live (a bad line would stop every sudo); a dotted name is skipped by sudo meanwhile.
+SUDOSKIP="sudo rule for the pad service skipped; the launcher cannot pause pad-xbox while the client runs. If pads act twice in games, stop it by hand: sudo systemctl stop steam-arm-pad-xbox"
+if [ -d /etc/sudoers.d ] && command -v visudo >/dev/null 2>&1 && T=$(mktemp /etc/sudoers.d/.steam-arm.XXXXXX); then
+  CLEANUP+=("$T")
+  printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl start steam-arm-pad-xbox, /usr/bin/systemctl stop steam-arm-pad-xbox\n' "$GAMEUSER" > "$T"
+  if visudo -cqf "$T" >/dev/null 2>&1 && chmod 440 "$T" && mv -f "$T" /etc/sudoers.d/steam-arm; then :
+  else rm -f "$T" /etc/sudoers.d/steam-arm; warn "sudo did not accept a rule for account '$GAMEUSER': $SUDOSKIP"; fi
+else
+  warn "sudo is not set up on this system: $SUDOSKIP"
+fi
+else
+rm -f /etc/sudoers.d/steam-arm
+fi
 # compat tool mapping helper (titles with a Linux build on record but Windows files installed)
 cat > /usr/local/lib/steam-arm-compatmap.py <<'PYEOF'
 #!/usr/bin/env python3
-# Insert or replace a CompatToolMapping entry in Steam's config.vdf (run with Steam closed).
-# usage: steam-arm-compatmap.py <config.vdf> <appid> <tool name, e.g. proton_11>
-import re, sys, shutil
+# Insert, replace or remove a CompatToolMapping entry in Steam's config.vdf (run with Steam closed).
+# usage: steam-arm-compatmap.py <config.vdf> <appid> <tool name, e.g. proton_11 | --remove>
+import glob, os, re, sys, tempfile
+if len(sys.argv) != 4:
+    sys.exit("usage: steam-arm-compatmap <appid> <tool> | <appid> --remove")
 path, appid, tool = sys.argv[1], sys.argv[2], sys.argv[3]
-s = open(path, encoding="utf-8", errors="surrogateescape").read()
+remove = tool == "--remove"
+if not re.fullmatch(r"[0-9]{1,10}", appid):
+    sys.exit("steam-arm-compatmap: app id must be a number, got %r" % appid)
+if not remove and not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", tool):
+    sys.exit("steam-arm-compatmap: tool name may hold letters, digits, '_', '.' and '-' only, got %r" % tool)
+
+
+def steam_up():
+    # the client writes config.vdf back on exit, so a change made now would be lost
+    for p in glob.glob("/proc/[0-9]*"):
+        try:
+            if os.stat(p).st_uid == os.getuid() and open(p + "/comm").read().strip() == "steam":
+                return True
+        except OSError:
+            pass
+    return False
+
+
+if steam_up():
+    sys.exit("steam-arm-compatmap: Steam ARM is running. Close it first (exit from its menu, or Stop Steam in the tray), then run this again.")
+try:
+    raw = open(path, "rb").read()
+except OSError as e:
+    sys.exit("steam-arm-compatmap: could not read %s (%s). Start Steam ARM once and sign in, then run this again." % (path, e.strerror))
+s = raw.decode("utf-8", "surrogateescape")
+
 
 def body(ind):
     return ('{i}\t"{a}"\n{i}\t{{\n{i}\t\t"name"\t\t"{t}"\n{i}\t\t"config"\t\t""\n'
             '{i}\t\t"priority"\t\t"250"\n{i}\t}}\n').format(i=ind, a=appid, t=tool)
 
+
+def balanced(t):
+    # braces outside quoted strings close in order
+    d = 0
+    for tok in re.finditer(r'"(?:[^"\\\n]|\\.)*"|[{}]', t):
+        d += {"{": 1, "}": -1}.get(tok.group(0), 0)
+        if d < 0:
+            return False
+    return d == 0
+
+
 m = re.search(r'\n(\t+)"CompatToolMapping"\n\1\{\n', s)
+if remove and not m:
+    print("CompatToolMapping has no entry for app %s; file left unchanged" % appid); sys.exit(0)
 if not m:
     sm = re.search(r'\n(\t+)"Steam"\n\1\{\n', s)
     if not sm:
-        print("Software/Valve/Steam block not found", file=sys.stderr); sys.exit(1)
+        sys.exit("steam-arm-compatmap: Software/Valve/Steam block not found in %s; file left unchanged" % path)
     ind = sm.group(1) + "\t"
     ins = '%s"CompatToolMapping"\n%s{\n%s%s}\n' % (ind, ind, body(ind), ind)
     s = s[:sm.end()] + ins + s[sm.end():]; action = "block created"
 else:
-    ind = m.group(1); start = m.end(); end = s.find("\n" + ind + "}", start) + 1   # keep the final newline
+    ind = m.group(1); start = m.end(); close = s.find("\n" + ind + "}", start - 1)
+    if close < 0:
+        sys.exit("steam-arm-compatmap: CompatToolMapping block in %s has no closing brace; file left unchanged" % path)
+    end = close + 1   # keep the final newline
     block = s[start:end]
     am = re.search(r'^\t+"%s"\n\t+\{\n(?:.*\n)*?\t+\}\n' % re.escape(appid), block, re.M)
-    if am:
+    if remove and not am:
+        print("CompatToolMapping has no entry for app %s; file left unchanged" % appid); sys.exit(0)
+    if remove:
+        block = block[:am.start()] + block[am.end():]; action = "removed"
+    elif am:
         block = block[:am.start()] + body(ind) + block[am.end():]; action = "replaced"
     else:
         block = body(ind) + block; action = "inserted"
     s = s[:start] + block + s[end:]
-shutil.copy(path, path + ".bak-steam-arm")
-open(path, "w", encoding="utf-8", errors="surrogateescape").write(s)
-print("CompatToolMapping %s for app %s -> %s" % (action, appid, tool))
+
+
+def write_atomic(p, data, mode):
+    fd, t = tempfile.mkstemp(prefix=".steam-arm-", dir=os.path.dirname(os.path.abspath(p)))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.chmod(t, mode)
+        os.replace(t, p)
+    except BaseException:
+        try:
+            os.unlink(t)
+        except OSError:
+            pass
+        raise
+
+
+if not balanced(s):
+    sys.exit("steam-arm-compatmap: %s would not keep balanced braces; file left unchanged" % path)
+mode = os.stat(path).st_mode & 0o7777
+# first original kept; later runs never overwrite it
+bak = path + ".bak-steam-arm"
+if not os.path.lexists(bak):
+    write_atomic(bak, raw, mode)
+write_atomic(path, s.encode("utf-8", "surrogateescape"), mode)
+print("CompatToolMapping %s for app %s" % (action, appid) + ("" if remove else " -> " + tool))
 PYEOF
+QU=$(printf '%q' "$GAMEUSER"); QC=$(printf '%q' "$ARMHOME/.local/share/Steam/config/config.vdf")
 cat > /usr/local/bin/steam-arm-compatmap <<CM
 #!/bin/sh
-# usage: steam-arm-compatmap <appid> <tool>   (tool: proton-stable-arm64, proton_11, proton_experimental; Steam ARM closed)
-[ \$# -eq 2 ] || { echo "usage: steam-arm-compatmap <appid> <tool>" >&2; exit 2; }
-C=$ARMHOME/.local/share/Steam/config/config.vdf
-python3 /usr/local/lib/steam-arm-compatmap.py "\$C" "\$1" "\$2" && chown $GAMEUSER:$GAMEUSER "\$C"
+# usage: steam-arm-compatmap <appid> <tool>   (tool: proton-stable-arm64, proton_11, proton_experimental, steamlinuxruntime for Linux build; --remove drops the entry; Steam ARM closed)
+[ \$# -eq 2 ] || { echo "usage: steam-arm-compatmap <appid> <tool> | <appid> --remove" >&2; exit 2; }
+U=$QU; C=$QC
+# root runs it as the game account, so config.vdf and its backup stay that account's files
+[ "\$(id -u)" = 0 ] && exec runuser -u "\$U" -- python3 /usr/local/lib/steam-arm-compatmap.py "\$C" "\$1" "\$2"
+exec python3 /usr/local/lib/steam-arm-compatmap.py "\$C" "\$1" "\$2"
 CM
 chmod 755 /usr/local/bin/steam-arm-compatmap
 
-
-# KWin only re-reads kwinrulesrc when told; without a reconfigure signal, rules wait until next login.
-kwin_reload(){ su - "$GAMEUSER" -c "XDG_RUNTIME_DIR=/run/user/$UID_N DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$UID_N/bus dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure" >/dev/null 2>&1 || true; }
 
 # Generated menu icons (chartreuse=Big Picture, bone=desktop) distinguish this client from x86 Steam; drawn from the client's steam_tray.ico, so re-run once it exists after first start.
 steam_arm_icon(){
@@ -1962,20 +7941,39 @@ if os.path.isfile(os.path.join(dest, "index.theme")):
 ICONPY
   chmod 755 /usr/local/bin/steam-arm-icon
   rm -f /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png
-  if /usr/local/bin/steam-arm-icon "$S" /usr/share/icons/hicolor; then
+  if icon_system; then
     say "     menu icons made from client's own icon"
   else
     say "     menu icons: made at first start, once client has downloaded its files"
   fi
 }
+# Game user draws the icons into a root-made folder; root locks it, then copies plain files only.
+icon_system(){
+  local t sz n f ok=1
+  t=$(mktemp -d /var/tmp/steam-arm-icon.XXXXXX) || return 1
+  CLEANUP+=("$t")
+  chown "$GAMEUSER" "$t" || return 1
+  (cd / && as_user /usr/local/bin/steam-arm-icon "$S" "$t") || return 1
+  chown root:root "$t" && chmod 700 "$t" || return 1
+  [ -z "$(find "$t" -mindepth 1 \( -type l -o \( -type f -links +1 \) \) -print -quit)" ] || return 1
+  chown -R root:root "$t" || return 1
+  for sz in 16 32 48 64 128 256; do for n in steam-arm steam-arm-desktop; do
+    f="$t/${sz}x$sz/apps/$n.png"
+    if [ -L "$t/${sz}x$sz" ] || [ -L "$t/${sz}x$sz/apps" ] || [ -L "$f" ] || [ ! -f "$f" ] || [ "$(stat -c %h "$f")" != 1 ]; then ok=0; continue; fi
+    install -D -m 644 -o root -g root "$f" "/usr/share/icons/hicolor/${sz}x$sz/apps/$n.png" || ok=0
+  done; done
+  [ $ok = 1 ] || rm -f /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png
+  [ -f /usr/share/icons/hicolor/index.theme ] && gtk-update-icon-cache -q -f -t /usr/share/icons/hicolor 2>/dev/null
+  [ $ok = 1 ]
+}
 
 # Same two entries serve the app menu and the desktop icons; one function each.
-bp_entry(){ cat > "$1" <<'DESK'
+bp_entry(){ cat <<'DESK'
 [Desktop Entry]
 Type=Application
 Name=Steam ARM
 GenericName=Steam client, native ARM64
-Comment=Native ARM64 Steam client; games run through the client's emulation tool on the Mali GPU
+Comment=Native ARM64 Steam client; x86 games run through the client's emulation tool
 Exec=/usr/local/bin/steam-arm
 Icon=steam-arm
 Terminal=false
@@ -1993,7 +7991,7 @@ Name=Open in Big Picture
 Exec=/usr/local/bin/steam-arm --bigpicture
 DESK
 }
-dm_entry(){ cat > "$1" <<'DMDESK'
+dm_entry(){ cat <<'DMDESK'
 [Desktop Entry]
 Type=Application
 Name=Steam ARM (Desktop mode)
@@ -2008,7 +8006,7 @@ StartupNotify=false
 DMDESK
 }
 # desktop icon: entry written to the game user's Desktop, executable, owned by that user
-desk_icon(){ install -d -o "$GAMEUSER" -g "$GAMEUSER" "$UHOME/Desktop"; "$1" "$2"; chmod 755 "$2"; chown "$GAMEUSER:$GAMEUSER" "$2"; }
+desk_icon(){ if ! { as_user mkdir -p "$UHOME/Desktop" && "$1" | user_write "$2" 755; }; then warn "desktop icon $2 could not be written"; fi; }
 BP_ICON="$UHOME/Desktop/Steam ARM.desktop"; DM_ICON="$UHOME/Desktop/Steam ARM (Desktop mode).desktop"
 
 if want_icons; then
@@ -2016,42 +8014,36 @@ if want_icons; then
 else
   rm -f /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png \
         /usr/local/bin/steam-arm-icon
-  for n in steam-arm steam-arm-desktop; do rm -f "$UHOME"/.local/share/icons/hicolor/*/apps/"$n".png; done
+  for n in steam-arm steam-arm-desktop; do as_user rm -f "$UHOME"/.local/share/icons/hicolor/*/apps/"$n".png; done
 fi
 
 # "Steam ARM" menu entry, and the window frame rule for the desktop interface
 if opt desktop; then
-  bp_entry /usr/share/applications/steam-arm.desktop
+  bp_entry > /usr/share/applications/steam-arm.desktop
   # Client's own drawn frame doesn't move on drag; a KWin rule gives normal windows the WM frame instead (Big Picture, fullscreen, is unaffected).
   RID=steam-arm-frame
-  kw() { su - "$GAMEUSER" -c "kwriteconfig6 --file kwinrulesrc --group $1 --key $2 '$3'" 2>/dev/null; }
+  kw() { login_sh "kwriteconfig6 --file kwinrulesrc --group $1 --key $2 '$3'" 2>/dev/null; }
   if command -v kwriteconfig6 >/dev/null 2>&1; then
     kw "$RID" Description "Steam ARM: window manager frame"
     kw "$RID" wmclass steam; kw "$RID" wmclassmatch 1; kw "$RID" wmclasscomplete false
     kw "$RID" types 1; kw "$RID" noborder false; kw "$RID" noborderrule 2
-    cur=$(su - "$GAMEUSER" -c "kreadconfig6 --file kwinrulesrc --group General --key rules" 2>/dev/null)
+    cur=$(login_sh "kreadconfig6 --file kwinrulesrc --group General --key rules" 2>/dev/null)
     case ",$cur," in *",$RID,"*) new="$cur";; *) new="${cur:+$cur,}$RID";; esac
     kw General rules "$new"; kw General count "$(printf '%s' "$new" | awk -F, '{print NF}')"
     kwin_reload
   fi
 else
   rm -f /usr/share/applications/steam-arm.desktop
-  if command -v kwriteconfig6 >/dev/null 2>&1; then
-    cur=$(su - "$GAMEUSER" -c "kreadconfig6 --file kwinrulesrc --group General --key rules" 2>/dev/null)
-    new=$(printf '%s' "$cur" | tr ',' '\n' | grep -vx steam-arm-frame | paste -sd, -)
-    n=$(printf '%s' "$new" | awk -F, 'NF{print NF} !NF{print 0}')
-    su - "$GAMEUSER" -c "kwriteconfig6 --file kwinrulesrc --group General --key rules '$new'; kwriteconfig6 --file kwinrulesrc --group General --key count $n; kwriteconfig6 --file kwinrulesrc --group steam-arm-frame --key Description --delete" 2>/dev/null
-    kwin_reload
-  fi
+  kwin_rule_remove
 fi
 
 # Desktop mode entry restarts a Big-Picture-running client into the desktop interface.
-if opt desktop-mode; then dm_entry /usr/share/applications/steam-arm-desktop.desktop
+if opt desktop-mode; then dm_entry > /usr/share/applications/steam-arm-desktop.desktop
 else rm -f /usr/share/applications/steam-arm-desktop.desktop; fi
 
 # desktop icons, each on its own
-if opt icon-bigpicture; then desk_icon bp_entry "$BP_ICON"; else rm -f "$BP_ICON"; fi
-if opt icon-desktop; then desk_icon dm_entry "$DM_ICON"; else rm -f "$DM_ICON"; fi
+if opt icon-bigpicture; then desk_icon bp_entry "$BP_ICON"; else as_user rm -f "$BP_ICON"; fi
+if opt icon-desktop; then desk_icon dm_entry "$DM_ICON"; else as_user rm -f "$DM_ICON"; fi
 
 # panel tray icon
 if opt tray; then
@@ -2060,7 +8052,7 @@ cat > /usr/local/bin/steam-arm-tray <<'TRAYPY'
 #!/usr/bin/env python3
 """Plasma system tray icon for the native ARM64 Steam client.
 
-Valve's Deck build of Steam (the aarch64 client used on this box) registers
+Valve's Deck build of Steam (the aarch64 client used here) registers
 no status-notifier item of its own, so the panel's tray never shows it. This
 script supplies that item: a Steam icon, a menu to open the client in either
 interface or stop it, and a title that reports whether it is running.
@@ -2207,7 +8199,7 @@ class SteamTray:
         GLib.timeout_add_seconds(3, self.on_poll)
 
     def on_stop(self, *_):
-        # SIGTERM only: SIGKILL leaves the box in a misplaced-window/wrong-resolution state.
+        # SIGTERM only: SIGKILL leaves the display in a misplaced-window/wrong-resolution state.
         signal_processes("steam", signal.SIGTERM)
         signal_processes("steamwebhelper", signal.SIGTERM)
 
@@ -2235,8 +8227,8 @@ if __name__ == "__main__":
     main()
 TRAYPY
 chmod 755 /usr/local/bin/steam-arm-tray
-install -d -o "$GAMEUSER" -g "$GAMEUSER" "$UHOME/.config/autostart"
-cat > "$UHOME/.config/autostart/steam-arm-tray.desktop" <<'TRAYDESK'
+as_user mkdir -p "$UHOME/.config/autostart"
+user_write "$UHOME/.config/autostart/steam-arm-tray.desktop" <<'TRAYDESK' || warn "tray autostart entry could not be written"
 [Desktop Entry]
 Type=Application
 Name=Steam tray
@@ -2248,12 +8240,27 @@ NoDisplay=true
 X-GNOME-Autostart-enabled=true
 OnlyShowIn=KDE;GNOME;XFCE;
 TRAYDESK
-chown "$GAMEUSER:$GAMEUSER" "$UHOME/.config/autostart/steam-arm-tray.desktop"
 say "     tray helper installed; it appears in the panel when the client starts"
 else
-  rm -f /usr/local/bin/steam-arm-tray "$UHOME/.config/autostart/steam-arm-tray.desktop"
+  rm -f /usr/local/bin/steam-arm-tray; as_user rm -f "$UHOME/.config/autostart/steam-arm-tray.desktop"
   pkill -TERM -u "$GAMEUSER" -f /usr/local/bin/steam-arm-tray 2>/dev/null || true
 fi
+
+# Settings menu, and a copy of this installer for it (Update / Repair, Components, Uninstall).
+if ! { T=$(mktemp /usr/local/bin/.steam-arm-config.XXXXXX) && CLEANUP+=("$T") && menu_app > "$T" && chmod 755 "$T" \
+         && mv -f "$T" /usr/local/bin/steam-arm-config; }; then
+  warn "settings menu /usr/local/bin/steam-arm-config could not be written"
+fi
+SELF=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null)
+SHARE=/usr/local/share/steam-arm/steam-arm-install.sh
+if [ -f "$SELF" ] && [ "$SELF" != "$SHARE" ]; then
+  # new file renamed into place: a copy that is running right now keeps reading its old one
+  if ! { mkdir -p /usr/local/share/steam-arm && T=$(mktemp "$SHARE.XXXXXX") && CLEANUP+=("$T") && cp "$SELF" "$T" \
+         && chmod 755 "$T" && mv -f "$T" "$SHARE"; }; then
+    warn "installer copy $SHARE could not be written; the settings menu then needs this script beside it"
+  fi
+fi
+say "     settings menu: steam-arm-config"
 
 # ---------------------------------------------------------------------------
 say "11/11  done"
@@ -2261,10 +8268,32 @@ cat <<EOM
   Client home:   $ARMHOME   (library under .local/share/Steam/steamapps)
   Games kept:    installed games, sign-in and settings were not touched
   Launch:        steam-arm   as $GAMEUSER, or the "Steam ARM" menu entry
-  First start:   downloads the client package and restarts itself; sign in from Big Picture.
+  First start:   downloads the client package and restarts itself; sign in from Big Picture,
+                 or from "Steam ARM (Desktop mode)".
   Games:         x86 Linux titles run through the client's emulation tool; Windows titles through
                  the ARM64 Proton build the client downloads. A title with a Linux build on
                  record but Windows files installed needs: steam-arm-compatmap <appid> proton-stable-arm64
   Optional:     $(for c in $COMPONENTS; do opt "$c" && printf ' %s' "$c" || printf ' [no %s]' "$c"; done)
   (re-run with --select or --skip to change; see --help)
+  Settings:      steam-arm-config   (menu: components, graphics, games, controllers, uninstall)
+  Uninstall:     sudo bash steam-arm-install.sh --remove   (package: sudo steam-arm-setup --remove);
+                 installed games are kept unless asked
 EOM
+# Desktop account (graphical session, else sudo caller) other than GAMEUSER finds no client in its home.
+DESK_USER=""
+if command -v loginctl >/dev/null 2>&1; then
+  while read -r ds_s _; do
+    ds_n=""; ds_t=""; ds_c=""
+    while IFS='=' read -r ds_k ds_v; do
+      case "$ds_k" in Name) ds_n=$ds_v;; Type) ds_t=$ds_v;; Class) ds_c=$ds_v;; esac
+    done < <(loginctl show-session "$ds_s" -p Name -p Type -p Class 2>/dev/null </dev/null)
+    case "$ds_t" in x11|wayland|mir) [ "$ds_c" = user ] && [ -n "$ds_n" ] && { DESK_USER=$ds_n; break; };; esac
+  done < <(loginctl list-sessions --no-legend 2>/dev/null </dev/null)
+fi
+[ -n "$DESK_USER" ] || DESK_USER=${SUDO_USER:-}
+if [ -n "$DESK_USER" ] && [ "$DESK_USER" != root ] && [ "$DESK_USER" != "$GAMEUSER" ]; then
+  warn "Play as $GAMEUSER: steam-arm uses that account's home."
+fi
+if [ -n "$NEWGROUPS" ]; then
+  warn "before first start: log out and log back in (or restart), so '$GAMEUSER' gets groups:$NEWGROUPS"
+fi

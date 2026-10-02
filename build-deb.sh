@@ -1,9 +1,9 @@
 #!/bin/sh
 # build-deb.sh: assemble the package tree from the files in this repository and build
-# steam-arm-setup_1.2_arm64.deb with dpkg-deb.
+# steam-arm-setup_2.0_arm64.deb with dpkg-deb.
 set -e
 
-VERSION=1.2
+VERSION=2.0
 PKG=steam-arm-setup
 DEB="${PKG}_${VERSION}_arm64.deb"
 
@@ -29,6 +29,7 @@ install -m 0755 "$SCRIPT_DIR/bin/steam-arm-setup" "$TREE/usr/bin/steam-arm-setup
 
 install -m 0644 "$SCRIPT_DIR/debian/control" "$TREE/DEBIAN/control"
 install -m 0755 "$SCRIPT_DIR/debian/postinst" "$TREE/DEBIAN/postinst"
+install -m 0755 "$SCRIPT_DIR/debian/prerm" "$TREE/DEBIAN/prerm"
 
 install -m 0644 "$SCRIPT_DIR/doc/README.md" "$TREE/usr/share/doc/$PKG/README.md"
 install -m 0644 "$SCRIPT_DIR/doc/copyright" "$TREE/usr/share/doc/$PKG/copyright"

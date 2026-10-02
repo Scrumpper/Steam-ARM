@@ -18,6 +18,15 @@ Run `steam-arm-setup --help` for list of options, including
 Installed games are kept. Re-running setup, changing components and
 upgrading package leave game library, sign-in and settings untouched.
 
+## Uninstall
+
+    sudo steam-arm-setup --remove
+
+Removes what setup added and keeps client folder with games unless deletion
+is confirmed. `--remove --purge` also deletes client folder and x86 root
+filesystem setup downloaded, after typed confirmation. Then
+`sudo apt remove steam-arm-setup`.
+
 ## Requirements
 
 - ARM64 (aarch64) system
@@ -29,7 +38,7 @@ upgrading package leave game library, sign-in and settings untouched.
 ## Issues
 
 Report problems in project's repository:
-https://github.com/Scrumpper/native-arm64-steam
+https://github.com/Scrumpper/Steam-ARM
 
 ## Disclaimer
 

@@ -2,20 +2,25 @@
 
 This installer writes little software of its own. It arranges other people's work into
 combination that runs native ARM64 Steam client on ARM64 system, and projects below
-are what it stands on. Nothing listed here is bundled in package: each is either already on
-system, installed from its own repository, or downloaded by client at first start.
+are what it stands on. Nothing listed here is bundled in installer: each is either already
+on system, installed from its own repository, or downloaded by client at first start. One
+exception is `gpu-in-emulation` archive, Mesa built for x86 by this project and
+published with its release under Mesa's own licences.
 
 ## Client and Runtime
 
-- **Valve Corporation**: ARM64 build of Steam client, published for Linux on ARM64 as
-  public beta. Also **Proton**, ARM64 build of which runs Windows titles; **Steam Linux
+- **Valve Corporation**: ARM64 build of Steam client, published for Linux on ARM64. Also **Proton**, ARM64 build of which runs Windows titles; **Steam Linux
   Runtime** and its **pressure-vessel** container tool, whose library overrides are what let
   guest reach host drivers; **Steam Input**, which re-identifies game controllers; and
   **Remote Play**. Client package and Proton are downloaded from Valve at run time.
+  Valve's Steam Frame packages place x86 Mesa inside emulation at
+  `/usr/share/guestos/fex-mesa`; `gpu-in-emulation` follows that layout. Valve's
+  **steam-devices** controller rules (MIT licence) are what `pad-hidraw` installs.
+  <https://github.com/ValveSoftware/steam-devices>
 - **Wine**: Windows compatibility layer Proton is built from.
   <https://www.winehq.org>
 - **DXVK** by Philip Rebohle and contributors: Direct3D to Vulkan layer inside Proton.
-  `Vk-spoof` component exists because DXVK requires set of Vulkan device features that
+  Component `vk-spoof` exists because DXVK requires set of Vulkan device features that
   Mali driver does not expose.
   <https://github.com/doitsujin/dxvk>
 
@@ -29,7 +34,7 @@ system, installed from its own repository, or downloaded by client at first star
 - **Canonical** and **Ubuntu** project: Ubuntu 24.04 x86-64 root filesystem FEX runs
   its guest against, and ARM64 distribution most target systems run.
   <https://ubuntu.com>
-- **Debian**: packaging format this tool ships in, and base Ubuntu derives from.
+- **Debian**: packaging format this tool is published in, and base Ubuntu derives from.
   <https://www.debian.org>
 - **box86** and **box64** by ptitSeb: translation layers behind older guides for running
   x86 Steam client on ARM. This project takes different route, running client natively
@@ -39,7 +44,9 @@ system, installed from its own repository, or downloaded by client at first star
 ## Graphics
 
 - **Mesa**: **Panfrost** for OpenGL and GLES and **PanVK** for Vulkan on Mali hardware.
-  Client, emulated games and Proton all render through these. `Glx-lax` component builds
+  Client, emulated games and Proton all render through these. `gpu-in-emulation` archive
+  is Mesa 26.1.8 built for x86-64 and i386 with two patches: GLX check relaxed as in
+  `glx-lax`, and PanVK option reporting features DXVK and vkd3d require. Component `glx-lax` builds
   private copy of Mesa's GLX client library with one check relaxed, for titles that bind
   single OpenGL context from more than one thread.
   <https://www.mesa3d.org>
@@ -53,11 +60,17 @@ system, installed from its own repository, or downloaded by client at first star
 
 - **bubblewrap**: unprivileged sandbox client's runtime uses to build its container.
   <https://github.com/containers/bubblewrap>
-- **Linux kernel** `xpad` driver maintainers: controller table `pad-hidraw` rules are
-  generated from, and `uinput` subsystem `pad-xbox` component presents pads through.
+- **Linux kernel** `xpad` driver maintainers: controller table `pad-hidraw` extra rules
+  are generated from, and `uinput` subsystem `pad-xbox` component presents pads through.
 - **patchelf**: used to give private GLX copy its own library name so it does not collide
   with system one.
   <https://github.com/NixOS/patchelf>
+- **Python** `curses` module: built-in screens of `steam-arm-config` settings menu.
+  <https://docs.python.org/3/library/curses.html>
+- **dialog**, **whiptail** (newt) and **zenity**: front ends of `steam-arm-config` settings
+  menu and component checklist.
+  <https://invisible-island.net/dialog/> <https://pagure.io/newt>
+  <https://gitlab.gnome.org/GNOME/zenity>
 
 ## Community
 
@@ -69,8 +82,8 @@ system, installed from its own repository, or downloaded by client at first star
 
 ## Development
 
-Developed and tested on one device: RK3588 board with Mali-G610 GPU.
-`COMPATIBILITY.md` records what has been tested and what has not.
+Developed on test device: RK3588 board with Mali-G610 GPU. `COMPATIBILITY.md` lists GPU
+families, their defaults and status.
 
 Development was done conversationally with **Claude Code**. 
 Treat everything in this repository as community work offered in good faith, with no warranty.

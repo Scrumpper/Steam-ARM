@@ -1,3 +1,28 @@
+steam-arm-setup (2.0) stable; urgency=low
+
+  * Graphics route per title, automatic: Java and 32-bit Vulkan titles
+    on Mali drivers inside emulation, others on forwarding; gfx=a|b.
+  * gpu-in-emulation component, on by default on Mali GPUs: x86-64 and
+    i386 Mesa with Panfrost and PanVK in second root filesystem tree.
+    Driver archive checked by SHA-256.
+  * GPU family detection sets component defaults; GPU_FAMILY=id by hand.
+  * PhysX install step skipped: has-run value written into title's Proton
+    prefix; stuck PhysX installer gets SIGTERM after 60 seconds.
+  * Uninstaller: --remove, --remove --purge. Client folder kept unless
+    confirmed; Valve's FEX tool files restored.
+  * Other variant of this installer retired cleanly with --replace-other;
+    its files kept in two backup tarballs (system, account).
+  * Controller rules from Valve's steam-devices plus pads it lacks.
+  * glx-lax rebuilt by apt hook after Mesa upgrades; launcher falls back
+    to system GLX when copy is missing.
+  * FEX tool 2609 and later: no ThunksDB path edit. FEX logging off.
+  * Client downloads from stable ARM64 channel; publicbeta no longer set.
+  * Fixed: second arm64 overlay layer registration hung Vulkan titles;
+    GLX copy and Vulkan layer enabled only when selected; sudo rule only
+    with pad-xbox; account creation without render group; re-login note.
+
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Thu, 01 Oct 2026 00:00:00 +0000
+
 steam-arm-setup (1.2) stable; urgency=low
 
   * Launcher frees memory Steam overlay holds in /dev/shm after game
@@ -35,7 +60,7 @@ steam-arm-setup (1.1) stable; urgency=low
     game sessions they filled /dev/shm and every title failed to start.
     Overlay segments steamwebhelper still maps are reclaimed at client
     restart.
-  * Installer ships as plain script steam-arm-install.sh; package still
+  * Installer published as plain script steam-arm-install.sh; package still
     builds with build-deb.sh.
   * Icons drawn during first start once client has downloaded its icon
     file; KDE menu cache refreshes after.

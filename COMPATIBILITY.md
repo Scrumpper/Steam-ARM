@@ -10,14 +10,19 @@ Confirmed by inspection of installer:
 
 FEX, emulation tool used for x86 game code, installs from Ubuntu PPA `ppa:fex-emu/fex`. Ubuntu family distribution is tested path for that step.
 
-Installer has no hardcoded GPU render node, no hardcoded card index, and no board detection.
+Installer has no hardcoded GPU render node and no hardcoded card index. GPU family detection reads every render node and sets component defaults per family (see GPU families). Page size check names fix for Raspberry Pi and Apple Silicon.
+
+Vulkan driver is needed for Windows titles; GPUs without one run native OpenGL titles.
 
 ## Before you install
 
-Five checks cover what installer depends on. Run them on desktop session; `glxinfo`
-comes from `mesa-utils` and `vulkaninfo` from `vulkan-tools`.
+`bash steam-arm-install.sh --detect` prints GPU family, kernel driver, Vulkan driver, page
+size, distribution and component defaults for this system; it installs nothing and needs
+no root. Five checks below cover same ground by hand. Run them on desktop session;
+`glxinfo` comes from `mesa-utils` and `vulkaninfo` from `vulkan-tools`.
 
 ```
+bash steam-arm-install.sh --detect          # GPU family and defaults
 lsmod | grep -w panthor                     # open Mali kernel driver loaded
 glxinfo -B | grep -i "renderer string"      # OpenGL renderer
 vulkaninfo --summary | grep -i "driverName\|deviceName"
@@ -25,7 +30,7 @@ grep -E "^ID=|VERSION_CODENAME" /etc/os-release
 getconf PAGESIZE
 ```
 
-Output on tested device, RK3588 board with Mali-G610 GPU:
+Output on test device, RK3588 board with Mali-G610 GPU (family `mali-csf-v10`):
 
 | Check           | Tested device                                | What other result means                                               |
 |-----------------|----------------------------------------------|-----------------------------------------------------------------------|
@@ -38,6 +43,12 @@ Output on tested device, RK3588 board with Mali-G610 GPU:
 Mesa on tested device comes from `kisak-mesa` PPA. Older Mesa releases carry earlier
 PanVK; when `vulkaninfo` lists no `panvk` device on Mali-G610, newer Mesa from that PPA
 is route tested device uses.
+
+Mesa 26.1 or newer is recommended: tested device runs 26.1, and 26.1 added PanVK
+extensions that DXVK uses (`RESEARCH.md`, M4). Installer does not check Mesa version.
+`gpu-in-emulation` component, on by default on Mali GPUs, brings its own x86 Mesa 26.1.8 for titles
+launch handler puts on Mali drivers in emulation (Java, 32-bit Vulkan); other titles and
+Windows titles use system Mesa.
 
 Board whose five results match first column matches tested device in every property
 installer depends on. That makes it expected to work, and still untested until someone
@@ -56,29 +67,105 @@ device. On Armbian, three choices at download time decide result:
 - **Mesa.** Image's stock Mesa may predate PanVK support in use here; `vulkaninfo` check
   above shows it.
 
-Reports from these boards are what turn this section from expectation into result.
+Reports from these boards are welcome.
+
+## GPU families
+
+Installer picks GPU family from kernel driver, Mali GPU id, device tree and PCI vendor;
+`--detect` prints it, `GPU_FAMILY=id` sets it by hand (kept for later runs,
+`GPU_FAMILY=auto` detects again). Family sets default state of three components; all
+other components keep their own defaults. Detection method and family notes: `README.md`,
+GPU detection.
+
+| Family                                                | GPU                             | `vk-spoof` | `gpu-in-emulation` | `glx-lax` | Status   | Note                                                                                            |
+|-------------------------------------------------------|---------------------------------|------------|--------------------|-----------|----------|-------------------------------------------------------------------------------------------------|
+| `mali-csf-v10`                                        | Mali-G610, G310 (Panthor)       | on         | on                 | on        | tested   | test device (RK3588)                                                                            |
+| `mali-csf-5thgen`                                     | Mali-G720, G725 class (Panthor) | on         | on                 | on        | untested |                                                                                                 |
+| `mali-csf`                                            | other Panthor Malis, Mali-G1    | off        | off                | on        | untested | Mesa does not support model yet; titles run through forwarding                                  |
+| `mali-valhall-jm`                                     | Mali-G57, G77, G78 (Panfrost)   | off        | on                 | on        | untested | no default Vulkan driver: native OpenGL titles; Windows titles unlikely                         |
+| `mali-bifrost`                                        | Mali-G31, G52, G76 (Panfrost)   | off        | on                 | on        | untested | same as above                                                                                   |
+| `mali-midgard`                                        | Mali-T600 to T880 (Panfrost)    | off        | on                 | on        | untested | same as above                                                                                   |
+| `mali-panfrost`                                       | other Panfrost Mali models      | off        | on                 | on        | untested | same as above                                                                                   |
+| `mali-utgard`                                         | Mali-400, 450 (Lima)            | off        | off                | on        | untested | not suitable for Steam games                                                                    |
+| `mali-kbase`                                          | Mali on closed `kbase` driver   | off        | off                | off       | untested | warning: install needs Mesa's Panfrost or Panthor kernel driver                                 |
+| `adreno-a8xx`, `adreno-a7xx`, `adreno-a6xx`, `adreno` | Adreno 6xx to 8xx (msm)         | off        | off                | on        | untested | Windows titles through DXVK expected to work; x86 Adreno drivers for 32-bit titles not included |
+| `adreno-a702`                                         | Adreno 702                      | off        | off                | on        | untested | Vulkan too limited for most Windows titles                                                      |
+| `adreno-legacy`                                       | Adreno 5xx and older            | off        | off                | on        | untested | no Vulkan driver; native OpenGL titles only                                                     |
+| `apple-agx`                                           | Apple GPU (Asahi)               | off        | off                | on        | untested | runs inside `muvm` on 16K page hosts                                                            |
+| `broadcom-v3d71`, `broadcom-v3d42`                    | Raspberry Pi 5, 4               | off        | off                | on        | untested | Vulkan too limited for most Windows titles                                                      |
+| `broadcom-vc4`                                        | Raspberry Pi 0 to 3             | off        | off                | on        | untested | not supported                                                                                   |
+| `vivante`                                             | Vivante (etnaviv)               | off        | off                | on        | untested | no Vulkan driver; most titles do not run                                                        |
+| `img-powervr`                                         | PowerVR                         | off        | off                | off       | untested | Vulkan driver in development; OpenGL through Zink                                               |
+| `amd-radv`                                            | AMD (amdgpu)                    | off        | off                | on        | untested | forwarding covers it; x86 root filesystem's Mesa has its drivers too                            |
+| `amd-radeon`                                          | AMD, older cards (radeon)       | off        | off                | on        | untested | OpenGL only, too old for most titles                                                            |
+| `nvidia-nouveau`                                      | NVIDIA (nouveau)                | off        | off                | on        | untested | forwarding covers it                                                                            |
+| `nvidia-prop`                                         | NVIDIA driver                   | off        | off                | off       | untested | `glx-lax` not applicable                                                                        |
+| `intel`                                               | Intel (i915, xe)                | off        | off                | on        | untested | forwarding covers it                                                                            |
+| `virtio-gpu`                                          | virtual machine                 | off        | off                | on        | untested |                                                                                                 |
+| `none`                                                | no GPU driver                   | off        | off                | on        | untested | warning: software rendering only                                                                |
+| `unknown`                                             | driver not in this list         | off        | off                | on        | untested | safe defaults                                                                                   |
+
+Mali drivers route in launch handler applies to Mali families only; 32-bit Vulkan titles
+switch to it on `mali-csf-v10` and `mali-csf-5thgen` only, since PanVK loads by default
+only there. On other families those titles lose `-vulkan` unless profile says
+`vk32=keep`.
 
 ## Component scope
 
-| Component    | Scope         | Note                                                                                               |
-|--------------|---------------|----------------------------------------------------------------------------------------------------|
-| `glx-lax`    | Mesa specific | Addresses Mesa client library limit with titles that bind one OpenGL context from several threads. |
-| `vk-spoof`   | Mali specific | Written for PanVK Vulkan driver on Mali; not needed on other Vulkan drivers.                       |
-| `map-count`  | Generic       | Raises `vm.max_map_count`; applies to any Linux system running Proton.                             |
-| `xpad-dedup` | Generic       | Applies to any system where kernel exposes duplicate joystick node for pad.                        |
-| `pad-hidraw` | Generic       | Applies to any system using kernel `xpad` driver's device list.                                    |
-| `pad-xbox`   | Generic       | Applies to any XInput pad from maker other than Microsoft.                                         |
-| `desktop`    | Generic       | Application menu entry and desktop icon; no hardware dependency.                                   |
+| Component                                                 | Scope         | Note                                                                                                       |
+|-----------------------------------------------------------|---------------|------------------------------------------------------------------------------------------------------------|
+| `glx-lax`                                                 | Mesa specific | Addresses Mesa client library limit with titles that bind one OpenGL context from several threads.         |
+| `vk-spoof`                                                | Mali specific | Written for PanVK Vulkan driver on Mali; on by default on Mali-G610 class and Mali 5th gen only.           |
+| `gpu-in-emulation`                                        | Mali specific | Published archive: Panfrost and PanVK only; on by default on Mali GPUs. Custom archive: route set by hand. |
+| `shader-cache`                                            | Generic       | Off by default. Steam's shader pre-caching; in-game videos of Windows titles; several GB of download.      |
+| `physx-skip`                                              | Generic       | On by default. Marks PhysX install step of Windows titles done; off removes no files.                      |
+| `map-count`                                               | Generic       | Raises `vm.max_map_count`; applies to any Linux system running Proton.                                     |
+| `xpad-dedup`                                              | Generic       | Applies to any system where kernel exposes duplicate joystick node for pad.                                |
+| `pad-hidraw`                                              | Generic       | Valve's `steam-devices` rules plus pads from kernel `xpad` list; any udev system.                          |
+| `pad-xbox`                                                | Generic       | Applies to any XInput pad from maker other than Microsoft.                                                 |
+| `desktop`                                                 | Generic       | Application menu entry and window rule; no hardware dependency.                                            |
+| `desktop-mode`, `icon-bigpicture`, `icon-desktop`, `tray` | Generic       | Menu entry, desktop icons and tray icon; no hardware dependency.                                           |
+| `page-size`                                               | Raspberry Pi  | Selects 4K page kernel in firmware `config.txt`; listed only on Pi 5 class or Pi without 4K pages.         |
 
 ## Known to work
 
-Tested on one device: RK3588 board with Mali-G610 GPU, running
-Armbian based image.
+Test device: RK3588 board with Mali-G610 GPU (GPU family `mali-csf-v10`).
+
+## Not supported on Mali-G610
+
+Title classes below do not run on tested device, and no setting in this installer changes
+that. Each depends on PanVK features that have no release date; no timeline is given here.
+
+- **Direct3D 12 titles (vkd3d-proton).** vkd3d-proton needs `VK_EXT_transform_feedback`,
+  `robustBufferAccess2` and `robustImageAccess2` to create device; PanVK exposes none of
+  them. With those forced, ceiling would still be feature level 11_0 and Shader Model 6.0
+  (no `vertexPipelineStoresAndAtomics`, no `sparseResidencyAliased`,
+  `denormBehaviorIndependence` none).
+- **Unreal Engine 5 titles.** They render through Direct3D 12 or Shader Model 6; same
+  limits.
+- **Unreal Engine 4 Direct3D 11 titles.** Engine asks for feature level 11_0, which needs
+  tessellation; PanVK has none. DXVK offers 10_1. Raising level in `dxvk.conf` crashes
+  engine when it compiles geometry shader; reporting tessellation through Vulkan layer
+  crashed X server.
+- **Unity HDRP titles (Direct3D 11).** HDRP needs compute shaders, which Unity enables from
+  feature level 11_0; at 10_1 title shows black screen.
+- **Titles with kernel-level anti-cheat.** Anti-cheat and DRM components need system call
+  filter emulator does not implement.
+
+Direct3D 11 titles that accept feature level 10_1 run. Proton 11 ARM64 (DXVK 2.7.1) and
+Proton Experimental ARM64 (DXVK 3.1.1) both reach 10_1 on PanVK; results in `GAMES.md`.
+
+Vulkan features PanVK does not expose on Mali-G610 (Mesa 26.1): geometry shader,
+tessellation, transform feedback, `fillModeNonSolid`, `multiViewport`, clip and cull
+distance, `robustBufferAccess2`, `robustImageAccess2`. `vk-spoof` reports geometry shader,
+`fillModeNonSolid`, `multiViewport`, clip and cull distance and `robustBufferAccess2` to
+DXVK and removes them again at device creation; titles that use them in rendering still
+fail.
 
 ## Untested
 
-- Other RK3588 boards with Mali-G610 GPU (for example Rock 5B, Orange Pi 5, NanoPi, and other Radxa boards). These are closest match to tested device but have not been tested.
-- Boards with different SoC or GPU.
+- Other RK3588 boards with Mali-G610 GPU (for example Rock 5B, Orange Pi 5, NanoPi, and other Radxa boards): same GPU family as test device.
+- Boards with different SoC or GPU; defaults per family in GPU families.
 - Debian family distributions outside Ubuntu family.
 
 ## Non-Ubuntu Debian systems
@@ -87,7 +174,9 @@ Installer installs FEX from Ubuntu PPA `ppa:fex-emu/fex`. On Debian system witho
 
 ## Non-Mali GPUs
 
-`vk-spoof` exists to report device features that Direct3D translation layer requires and that Mali PanVK driver does not expose. On system with Vulkan driver that already exposes those features, `vk-spoof` is unnecessary.
+`vk-spoof` exists to report device features that Direct3D translation layer requires and that Mali PanVK driver does not expose. On system with Vulkan driver that already exposes those features, `vk-spoof` is unnecessary; GPU family detection leaves it and `gpu-in-emulation` off on non-Mali GPUs.
+
+Published driver archive of `gpu-in-emulation` carries Mali drivers only; on non-Mali GPU, profile `gfx=b` logs warning and title stays on forwarding. Custom driver archive (`STEAM_ARM_PROVIDER_TARBALL` with `STEAM_ARM_PROVIDER_SHA256`, see Custom driver archive in `README.md`) can carry Mesa drivers for other GPUs; with it, `gfx=b` and `GFX_DEFAULT=b` apply on any GPU family, while automatic rules stay Mali-only. Untested on non-Mali GPUs; results depend on Mesa and kernel versions.
 
 `glx-lax` addresses Mesa client library limit and applies to any Mesa based driver, not only Mali's, so it remains relevant on non-Mali GPUs that use Mesa.
 
@@ -109,31 +198,29 @@ Two properties decide whether this works on system, and neither is about board:
 
 What changes per graphics driver:
 
-| Driver                    | `vk-spoof`                                       | `glx-lax` | Notes                                 |
-|---------------------------|--------------------------------------------------|-----------|---------------------------------------|
-| PanVK on Mali             | needed                                           | applies   | tested configuration                  |
-| Turnip on Adreno          | not needed                                       | applies   | driver exposes features layer reports |
-| Other Mesa Vulkan drivers | not needed unless title fails at device creation | applies   | skip it with `--skip vk-spoof`        |
+| Driver                    | `vk-spoof`                                       | `glx-lax` | Notes                                                                  |
+|---------------------------|--------------------------------------------------|-----------|------------------------------------------------------------------------|
+| PanVK on Mali             | needed                                           | applies   | tested configuration; `gpu-in-emulation` on by default on Mali GPUs    |
+| Turnip on Adreno          | not needed                                       | applies   | driver exposes features layer reports; detection leaves `vk-spoof` off |
+| Other Mesa Vulkan drivers | not needed unless title fails at device creation | applies   | detection leaves both Mali components off                              |
 
 Distribution matters as much as hardware: installer uses apt throughout, and
 emulation tool comes from Ubuntu PPA, so Ubuntu family system is path that has been
 exercised. Debian system needs that tool from another source first. Distribution outside
 Debian family needs package steps rewritten.
 
-Everything in this section is reasoning from requirements, not result. One device has
-been tested.
+Everything in this section is reasoning from requirements, not result.
 
 ## Device classes
 
-Checked against public sources in September 2026. One device has been tested here; everything
-in this table is drawn from driver documentation and public reports, and last column is
-judgement, not result.
+Checked against public sources in September 2026. Entries other than RK3588 are drawn from
+driver documentation and public reports; grouping is judgement, not result.
 
-### Tested on one device, expected on same stack
+### Test device, expected on same stack
 
 **Rockchip RK3588 and RK3588S**, Mali-G610 through Panfrost and PanVK on Panthor kernel
-driver. This is configuration package was built against. Tested on one such board; other
-RK3588 boards running same stack are expected to work and have not been tested.
+driver. This is configuration package was built against and test device's family; other
+RK3588 boards running same stack are expected to work.
 
 ### Works after one change
 
@@ -185,11 +272,12 @@ system service manager, which several components require.
 
 ## What decides it, in practice
 
-**Which Mali driver image ships.** On Rockchip boards two stacks exist: open one,
+**Which Mali driver OS image includes.** On Rockchip boards two stacks exist: open one,
 Panfrost with PanVK on Panthor kernel driver, and vendor blob on its own kernel
 driver. They bind different GPU nodes in device tree and cannot both be active, so
 image carries one or other. This package expects open stack, which is what tested
-image uses. Vendor image is different configuration and has not been tested here.
+image uses. On vendor image installer finds closed `kbase` driver (family `mali-kbase`),
+warns and leaves Mali components off.
 `glxinfo -B` and `vulkaninfo --summary` name driver in use.
 
 **Which Mali generation chip is.** Open Vulkan driver is conformant on Mali-G610 and
@@ -239,22 +327,22 @@ first.
 **Graphics.** Pi's Mesa Vulkan driver is conformant, and it is smaller GPU than
 parts this has been tested against. Titles built for Linux are reasonable expectation;
 Windows titles through Direct3D translation layer are heavier ask. Whether
-`vk-spoof` component helps there is unknown, since it was written against different driver.
+`vk-spoof` component helps there is unknown, since it was written against different driver;
+GPU family detection leaves it off on Raspberry Pi GPUs.
 
-None of this has been tested.
+Status: untested.
 
 ## Not limited to single board computers
 
-Nothing in installer detects board, GPU render node or card index. Requirement
+Installer hardcodes no GPU render node or card index; GPU family detection reads every render node, and page size check looks at board. Requirement
 is ARM64 system, Debian or Ubuntu family distribution and Mesa graphics stack, which
 also describes ARM64 workstations, servers and laptops, not only single board computers.
 
-Two of seven components are help for specific driver rather than requirements:
+Three of thirteen components are help for specific driver rather than requirements:
 `vk-spoof` exists because Mali driver does not expose features Direct3D translation
-layer asks for, and is unnecessary on driver that exposes them; `glx-lax` applies to Mesa.
-Other five are generic.
-
-Testing has been done on one device, so anything beyond it is reasoning rather than result.
+layer asks for, and is unnecessary on driver that exposes them; `gpu-in-emulation` carries
+Mali drivers only; `glx-lax` applies to Mesa. `page-size` applies to Raspberry Pi only.
+Other nine are generic. Detection turns `vk-spoof` and `gpu-in-emulation` off on GPUs they do not serve.
 
 ## Disclaimer
 
