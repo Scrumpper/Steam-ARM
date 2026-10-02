@@ -12,14 +12,15 @@ Defaults reproduce the published archive (Mesa 26.1.8, panfrost and panvk, CPU f
 
 Options
   --mesa VERSION       Mesa release from archive.mesa3d.org (default 26.1.8)
-  --mesa-sha256 SHA    sha256 of that release tarball (known for the default release)
+  --mesa-sha256 SHA    sha256 of that release tarball (known for 26.1.8 and 26.2.3)
   --mesa-ref REF       Mesa git tag, branch or commit from gitlab.freedesktop.org in
                        place of a release
   --gallium LIST       Gallium drivers, comma separated
                        (default panfrost,llvmpipe,softpipe,zink)
   --vulkan LIST        Vulkan drivers, comma separated (default panfrost,swrast)
   --no-patches         build without the two Steam ARM Mesa patches (GL context
-                       bound from several threads; panvk features DXVK asks for)
+                       bound from several threads; panvk features DXVK asks for);
+                       patch sets exist for Mesa 26.1 and 26.2, others try 26.2
   --snapshot STAMP     Ubuntu package snapshot for build dependencies
                        (default 20260929T000000Z)
   --work DIR           build folder (default ./driver-build; about 25 GB)
@@ -80,7 +81,14 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ "$MESA_VER" = 26.1.8 ] && [ "$SHA_SET" = 0 ] && MESA_SHA=b320f65874fd9653ac6c0bd1616605387344e1247411a50c797b5f3fb9dc0b55
+# known release tarballs
+known_sha(){
+  case $1 in
+    26.1.8) echo b320f65874fd9653ac6c0bd1616605387344e1247411a50c797b5f3fb9dc0b55;;
+    26.2.3) echo 1628058a8d2c0615975de5a15ab7bbb9638c50000b5bed9456ff423ea034a81f;;
+  esac
+}
+[ "$SHA_SET" = 1 ] || MESA_SHA=$(known_sha "$MESA_VER")
 
 # --- option checks ---
 [[ "$MESA_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]] || die "--mesa: release number such as 26.1.8"
@@ -100,6 +108,9 @@ else
   SRC_DESC="Mesa $MESA_VER (archive.mesa3d.org, sha256 ${MESA_SHA:-not pinned})"
 fi
 NAME=steam-arm-fex-mesa-$VER-x86_64-i386
+# patch set by Mesa major.minor; other versions try the newest
+PSETS="26.1 26.2"
+pset_for(){ case $1 in 26.1|26.1.*) echo 26.1;; *) echo 26.2;; esac; }
 
 # --- host tools ---
 miss=""
@@ -110,10 +121,11 @@ if [ "$(id -u)" != 0 ] && ! unshare --map-auto --map-root-user true 2>/dev/null;
   die "unprivileged user namespaces are off or /etc/subuid has no range for this account; run as root, or enable them"
 fi
 
+if [ -n "$MESA_REF" ]; then PLAN_SET="from source VERSION"; else PLAN_SET=$(pset_for "$MESA_VER"); fi
 cat <<EOF
 Plan
   source     $SRC_DESC
-  patches    $([ "$PATCHES" = 1 ] && echo "glx cross-thread current, panvk DXVK features" || echo none)
+  patches    $([ "$PATCHES" = 1 ] && echo "glx cross-thread current, panvk DXVK features (set $PLAN_SET)" || echo none)
   gallium    $GALLIUM
   vulkan     $VULKAN
   snapshot   Ubuntu 24.04 packages of $SNAPSHOT
@@ -151,9 +163,12 @@ cat > "$R/files/graphics_provider.json" <<'EOF'
 }
 EOF
 
-rm -f "$R"/patches/*.patch
+rm -rf "$R/patches" "$R/patchsets"
+mkdir -p "$R/patches"
 if [ "$PATCHES" = 1 ]; then
-cat > "$R/patches/0001-glx-allow-cross-thread-current.patch" <<'EOF'
+for v in $PSETS; do mkdir -p "$R/patchsets/$v"; done
+# Mesa 26.1
+cat > "$R/patchsets/26.1/0001-glx-allow-cross-thread-current.patch" <<'EOF'
 --- a/src/glx/glxcurrent.c
 +++ b/src/glx/glxcurrent.c
 @@ -15,6 +15,15 @@
@@ -183,7 +198,7 @@ cat > "$R/patches/0001-glx-allow-cross-thread-current.patch" <<'EOF'
           __glXUnlock();
           __glXSendError(dpy, BadAccess, None, opcode, True);
 EOF
-cat > "$R/patches/0002-panvk-fake-dxvk-features.patch" <<'EOF'
+cat > "$R/patchsets/26.1/0002-panvk-fake-dxvk-features.patch" <<'EOF'
 --- a/src/panfrost/vulkan/panvk_instance.c
 +++ b/src/panfrost/vulkan/panvk_instance.c
 @@ -208,6 +208,7 @@
@@ -311,6 +326,137 @@ cat > "$R/patches/0002-panvk-fake-dxvk-features.patch" <<'EOF'
  /**
   * \brief Turnip specific configuration options
   */
+EOF
+# Mesa 26.2: fake_dxvk_features declared in panvk_drirc_gen.py, DXVK/vkd3d entries in 00-panvk-defaults.conf
+cat > "$R/patchsets/26.2/0001-glx-allow-cross-thread-current.patch" <<'EOF'
+--- a/src/glx/glxcurrent.c
++++ b/src/glx/glxcurrent.c
+@@ -15,6 +15,15 @@
+ #include "glxclient.h"
+ #include "glapi.h"
+ #include "glx_error.h"
++#include "util/u_debug.h"
++
++/* Build default for LIBGL_ALLOW_CROSS_THREAD_CURRENT; env var overrides. */
++#ifndef GLX_CROSS_THREAD_CURRENT_DEFAULT
++#define GLX_CROSS_THREAD_CURRENT_DEFAULT false
++#endif
++DEBUG_GET_ONCE_BOOL_OPTION(glx_cross_thread_current,
++                           "LIBGL_ALLOW_CROSS_THREAD_CURRENT",
++                           GLX_CROSS_THREAD_CURRENT_DEFAULT)
+ 
+ /*
+ ** We setup some dummy structures here so that the API can be used
+@@ -149,7 +158,8 @@
+       /* GLX spec 3.3: If ctx is current to some other thread, then
+        * glXMakeContextCurrent will generate a BadAccess error
+        */
+-      if (gc->currentDpy)
++      /* Some games bind one context on two threads; allow it when enabled. */
++      if (gc->currentDpy && !debug_get_option_glx_cross_thread_current())
+       {
+          __glXUnlock();
+          __glXSendError(dpy, BadAccess, None, opcode, True);
+EOF
+cat > "$R/patchsets/26.2/0002-panvk-fake-dxvk-features.patch" <<'EOF'
+--- a/src/panfrost/vulkan/00-panvk-defaults.conf
++++ b/src/panfrost/vulkan/00-panvk-defaults.conf
+@@ -10,5 +10,12 @@
+                -->
+             <option name="pan_enable_vertex_pipeline_stores_atomics" value="true" />
+         </engine>
++        <!-- DXVK and vkd3d-proton reject the device without these features. -->
++        <engine engine_name_match="DXVK">
++            <option name="pan_fake_dxvk_features" value="true" />
++        </engine>
++        <engine engine_name_match="vkd3d">
++            <option name="pan_fake_dxvk_features" value="true" />
++        </engine>
+     </device>
+ </driconf>
+--- a/src/panfrost/vulkan/panvk_drirc_gen.py
++++ b/src/panfrost/vulkan/panvk_drirc_gen.py
+@@ -36,6 +36,11 @@
+           "Enable fragmentStoresAndAtomics and vertexPipelineStoresAndAtomics on any "
+           "architecture. (This may not work reliably and is for debug purposes only!)",
+           c_name="force_enable_shader_atomics"),
++        B("pan_fake_dxvk_features", False,
++          "Report geometryShader, fillModeNonSolid, multiViewport, shaderClipDistance, "
++          "shaderCullDistance and robustBufferAccess2 as supported so DXVK/vkd3d accept "
++          "the device; they stay disabled in the driver.",
++          c_name="fake_dxvk_features"),
+     ]
+ 
+     debug_options = []
+--- a/src/panfrost/vulkan/panvk_physical_device.c
++++ b/src/panfrost/vulkan/panvk_physical_device.c
+@@ -466,6 +466,17 @@
+    panvk_arch_dispatch(arch, get_physical_device_features, instance,
+                        device, &supported_features);
+ 
++   memset(&device->faked_features, 0, sizeof(device->faked_features));
++   if (instance->drirc.misc.fake_dxvk_features) {
++#define PANVK_FAKE(f)                                                          \
++   if (!supported_features.f) {                                                \
++      supported_features.f = true;                                             \
++      device->faked_features.f = true;                                         \
++   }
++      PANVK_FAKE_DXVK_FEATURES(PANVK_FAKE)
++#undef PANVK_FAKE
++   }
++
+    struct vk_physical_device_dispatch_table dispatch_table;
+    vk_physical_device_dispatch_table_from_entrypoints(
+       &dispatch_table, &panvk_physical_device_entrypoints, true);
+--- a/src/panfrost/vulkan/panvk_physical_device.h
++++ b/src/panfrost/vulkan/panvk_physical_device.h
+@@ -57,6 +57,9 @@
+    char name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
+    uint8_t cache_uuid[VK_UUID_SIZE];
+ 
++   /* Features reported only because of pan_fake_dxvk_features. */
++   struct vk_features faked_features;
++
+    struct {
+       VkMemoryHeap heaps[1];
+       uint32_t heap_count;
+@@ -124,4 +127,25 @@
+    struct vk_properties *properties);
+ #endif
+ 
++/* Features pan_fake_dxvk_features reports; DXVK/vkd3d refuse the device without them. */
++#define PANVK_FAKE_DXVK_FEATURES(X)                                            \
++   X(geometryShader)                                                           \
++   X(fillModeNonSolid)                                                         \
++   X(multiViewport)                                                            \
++   X(shaderClipDistance)                                                       \
++   X(shaderCullDistance)                                                       \
++   X(robustBufferAccess2)
++
++/* Clear faked features from a device's enabled set so driver paths never see them. */
++static inline void
++panvk_strip_faked_features(const struct panvk_physical_device *pdev,
++                           struct vk_features *enabled)
++{
++#define PANVK_STRIP_FAKED(f)                                                   \
++   if (pdev->faked_features.f)                                                 \
++      enabled->f = false;
++   PANVK_FAKE_DXVK_FEATURES(PANVK_STRIP_FAKED)
++#undef PANVK_STRIP_FAKED
++}
++
+ #endif
+--- a/src/panfrost/vulkan/panvk_vX_device.c
++++ b/src/panfrost/vulkan/panvk_vX_device.c
+@@ -378,6 +378,8 @@
+    if (result != VK_SUCCESS)
+       goto err_free_dev;
+ 
++   panvk_strip_faked_features(physical_device, &device->vk.enabled_features);
++
+    /* Must be done after vk_device_init() because this function memset(0) the
+     * whole struct.
+     */
 EOF
 fi
 
@@ -564,11 +710,20 @@ if [ "$(cat "$WORK/share/.src" 2>/dev/null)" != "$STAMP" ]; then
     mkdir -p "$WORK/share/mesa"
     tar -xJf "$WORK/dl/mesa-$MESA_VER.tar.xz" -C "$WORK/share/mesa" --strip-components=1
   fi
+  FRESH=1
+fi
+if [ "$PATCHES" = 1 ]; then
+  SRCVER=$(cat "$WORK/share/mesa/VERSION" 2>/dev/null || echo "$MESA_VER")
+  PSET=$(pset_for "$SRCVER")
+  echo "  Mesa $SRCVER: patch set $PSET"
+  cp "$R/patchsets/$PSET"/*.patch "$R/patches/"
+fi
+if [ "${FRESH:-0}" = 1 ]; then
   for p in "$R"/patches/*.patch; do
     [ -f "$p" ] || continue
     echo "  patch $(basename "$p")"
     patch -d "$WORK/share/mesa" -p1 --forward --quiet < "$p" \
-      || die "$(basename "$p") does not apply to this Mesa source; try --no-patches, or a Mesa release near 26.1"
+      || die "$(basename "$p") does not apply to this Mesa source; try --no-patches, or a Mesa 26.1 or 26.2 release"
   done
   echo "$STAMP" > "$WORK/share/.src"
 fi
