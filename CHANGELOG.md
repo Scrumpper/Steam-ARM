@@ -26,6 +26,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `kde-input-prompt` component: pre-authorises input from X11 programs in KDE's permission store (`kde-authorized`, `remote-desktop`, empty app id) through `busctl`; value it replaces is saved and put back when component is turned off or on `--remove`. Listed only where KDE Plasma's Wayland compositor is installed or its setting is in place. Trade-off: every X11 program may then send input without asking. Setup, `--detect` and Information print one-line hint in KDE Plasma Wayland session.
 - Display mode restore (X11 session): saved per output (mode id and position), restored 2 s after last title ends; log line `display mode put back after game`. `STEAM_ARM_MODE_RESTORE=0` turns it off; skipped in Wayland sessions and without `xrandr`. Host packages now include `x11-xserver-utils`.
 - `steam-arm --shutdown`: `steam -shutdown`, SIGTERM after 20 s, never SIGKILL; exit status 1 when client still runs 30 s after SIGTERM.
+- `steam-arm --help` (also `-h`, `help`): prints launcher usage and exits; client not started.
 - Information: `OpenGL` line (host renderer, GL and core profile versions from `glxinfo -B`) and `CPU governor` line with governor and max clock per CPU cluster, `mixed` when clusters differ; note when host renderer is software (`llvmpipe`).
 - `Fixing a game` help page: "Game is slow (CPU-bound)" and "Proton version keeps changing back"; renderer line in "Reading rules".
 - `COMPATIBILITY.md`: Raspberry Pi graphics facts (V3D, V3DV) and Raspberry Pi 5 performance tips. `GAMES.md`: Raspberry Pi 5 and Pi 4 table with expectations and community reports.
@@ -46,10 +47,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Settings restore summary: its only button read Back but led on to confirm screen; it now reads Next.
 - Install / Setup: Back from parts could skip Vulkan screen, as key pressed while Vulkan screen loaded acted on it.
 - Information showed governor and max clock of first CPU only (little core on boards with two clusters).
+- `steam-arm --help` passed `--help` to client, which started second client session.
+- Included profile `248570 overlay=off` (custom OpenGL engine title that stops when Steam overlay attaches), absent since 1.2, restored.
 
 ### Known issues
 
 - One Java 17 title on Mali drivers route stopped with JVM crash after 21 s in one of three runs.
+- MangoHud draws no HUD in Unity titles on Vulkan renderer.
+- Custom OpenGL engine title with included `overlay=off` profile (app 248570) stops about 20 s in when MangoHud is loaded; leave MangoHud off for it.
+- `steam://rungameid/<appid>` for title not in library can leave install dialog over games started later; restart Steam to clear it.
+- `powerprofilesctl launch -p performance -- %command%` holds profile only when Steam was started from desktop session (menu or autostart); started from other context, hold is refused and title does not start.
 - Items listed under 2.0 Known issues still apply.
 
 ## [2.0] - 2026-10-01

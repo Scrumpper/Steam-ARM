@@ -6830,6 +6830,7 @@ chmod 644 /usr/local/lib/steam-arm-handler.py
 mkdir -p /usr/local/share/steam-arm
 cat > /usr/local/share/steam-arm/titles.conf <<'TITLES'
 # Included title profiles; local overrides belong in /etc/steam-arm/titles.conf or ~/.config/steam-arm/titles.conf.
+248570 overlay=off      # custom OpenGL engine: stops when Steam overlay attaches
 TITLES
 [ -f /etc/steam-arm/titles.conf ] || cat > /etc/steam-arm/titles.conf <<'TITLES'
 # Local title profiles; override /usr/local/share/steam-arm/titles.conf. One line per title: <appid> key=value ...
@@ -7603,6 +7604,16 @@ stop(){
   fi
   exit 1
 }
+# Help prints usage; it never starts a client (Steam itself has no --help).
+case "${1:-}" in
+  -h|--help|help)
+    printf '%s\n' "Usage: steam-arm [Steam client options]" \
+      "  steam-arm              start Steam client" \
+      "  steam-arm --shutdown   stop running client (asks it to exit, SIGTERM after 20 s)" \
+      "  steam-arm --help       show this text" \
+      "Other options pass to Steam client unchanged. Settings: sudo steam-arm-config"
+    exit 0;;
+esac
 if command -v steam-arm-setup >/dev/null 2>&1; then SETUP=steam-arm-setup
 elif [ -f /usr/local/share/steam-arm/steam-arm-install.sh ]; then SETUP="bash /usr/local/share/steam-arm/steam-arm-install.sh"
 else SETUP="bash steam-arm-install.sh"; fi

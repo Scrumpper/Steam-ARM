@@ -1064,6 +1064,18 @@ to repository.
   X11 program, so any of them may then send input without asking. Turning part off puts
   back value from before. Setup prints one-line hint when KDE Plasma Wayland session runs.
   Source: <https://discuss.kde.org/t/kde-linux-steam-controller-request-remote-access-dialog/30731>
+- MangoHud draws no HUD in Unity titles on Vulkan renderer (`mangohud=on` profile, three
+  titles); title itself runs. OpenGL titles draw it.
+- Custom OpenGL engine title with included `overlay=off` profile (app 248570) stops about
+  20 s in when MangoHud is loaded. Leave MangoHud off for it: no `mangohud=on` profile, no
+  `mangohud %command%` or `MANGOHUD=1` launch option.
+- `steam://rungameid/<appid>` link for title not in library opens install dialog that can
+  stay over games started later. Restart Steam (Exit from power menu or tray, then start it
+  again) to clear it.
+- Launch option `powerprofilesctl launch -p performance -- %command%`: profile hold works
+  only when Steam was started from desktop session (application menu or autostart). Steam
+  started from other context (SSH, `runuser`, service) gets hold refused, and title does not
+  start. Start Steam from desktop, or remove that launch option.
 - Hardware report for compatibility report: `steam-arm-config report`.
 
 ## What this does not do
