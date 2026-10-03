@@ -308,8 +308,8 @@ Installer offers set of optional components. Choose them with one of:
   controlling terminal in graphical session and zenity is present
 
 `--list` prints components; `--help` marks components on by default on this system.
-Defaults: `pad-xbox` and `shader-cache` off; `vk-spoof`, `gpu-in-emulation` and `glx-lax`
-follow GPU family (see GPU detection); all others on.
+Defaults: `pad-xbox`, `shader-cache` and `kde-input-prompt` off; `vk-spoof`,
+`gpu-in-emulation` and `glx-lax` follow GPU family (see GPU detection); all others on.
 
 When GPU family changes between runs, `vk-spoof`, `gpu-in-emulation` and `glx-lax` take
 new family's defaults, except parts set by hand in checklist, menu, `--select` or `--skip`
@@ -354,6 +354,13 @@ upgrade from 1.2, which saved no family record, only turns such parts off.
 - `icon-desktop`: Places "Steam ARM (Desktop mode)" icon on desktop. (scope: Generic)
 - `tray`: Steam icon in panel tray with Open, Open in desktop mode and Stop; client build
   shows none of its own. (scope: Generic)
+- `kde-input-prompt`: Off by default. On KDE Plasma (Wayland), pre-authorises input from
+  X11 programs in KDE's permission store, so controller that drives desktop raises no
+  "Remote control requested" prompt. Trade-off: every X11 program may then send input
+  without asking. Setup saves value it replaces; turning part off, or uninstall, puts
+  that value back. Applied inside desktop session, so with no session running it takes
+  effect at next start of Steam ARM. Listed only where KDE Plasma's Wayland compositor is
+  installed, or while its setting is in place. See Troubleshooting. (scope: KDE Plasma)
 - `page-size`: On Raspberry Pi with 16K page kernel, adds `kernel=kernel8.img` to firmware
   `config.txt`, so firmware boots its 4K page kernel; reboot, then run installer again.
   Listed only on Raspberry Pi 5 class boards, on other Raspberry Pi with page size other
@@ -435,7 +442,15 @@ Linux titles built for x86 run through FEX. Launch handler decides per title, wi
 launch options:
 
 - Steam overlay: x86 overlay for Linux x86 titles by default.
-- MangoHud: `mangohud %command%` or `MANGOHUD=1 %command%`, OpenGL and Vulkan.
+- MangoHud: `mangohud %command%`, `MANGOHUD=1 %command%` or profile `mangohud=on`,
+  OpenGL and Vulkan, 64-bit titles. Handler loads root filesystem's MangoHud from copy in
+  client folder (`.local/lib/steam-arm`). 32-bit titles: no MangoHud (root filesystem
+  carries 64-bit build only).
+- Display mode: title that changes display mode (fullscreen at other resolution or refresh
+  rate) and quits, crashes or is stopped without changing it back: launcher puts back mode
+  from before title started, once no title runs, and when Steam closes (X11 sessions;
+  `steam-arm.log` line `display mode put back after game`). `STEAM_ARM_MODE_RESTORE=0` in
+  `/etc/steam-arm/steam-arm.conf` turns it off.
 - Unity and Godot 4 titles get renderer settings Mali driver can run, found from game
   files.
 - Graphics route: forwarding, or Mali drivers in emulation for Java titles and 32-bit
@@ -459,6 +474,21 @@ effect, launch options included: renderer and reported GL version, for example
 `unity: OpenGL core, GL 4.5 report` or `godot 4: OpenGL renderer, GL 3.3 report`.
 Handler log of each start: `/tmp/fex-compat-tool-<pid>.log`; menu shows lines of last
 start under Games, "Rules used at last start".
+
+Renderer check: once title loads OpenGL or Vulkan library, handler logs which GPU device
+its processes use: `renderer: GPU (v3d renderD128), forwarding to host driver, process
+<name>`, or `drivers inside emulation` on Mali drivers route. Device counts as used once
+title holds GPU memory on it (CPU renderer opens device only to probe it). Title that uses
+no GPU device within 30 s draws on CPU, and log says `renderer: warning: GPU forwarding not
+active: rendering on CPU (llvmpipe)`, with reason: x86 Mesa inside emulation loaded
+(forwarding bypassed), or no GPU device in use. Hardware report lists
+renderer lines of five newest starts. Launch option `STEAM_ARM_RENDERER_CHECK=0 %command%`
+turns check off for one title.
+
+Other log lines: `goldsrc:` for GoldSrc titles (Half-Life engine), whose video options
+pick OpenGL or Software renderer (Software draws on CPU); `compat: warning:` when Steam's
+saved compatibility tool for title names Proton build but Linux build started. Handler
+only reads Steam's `config.vdf`; it never writes it.
 
 ### Windows titles
 
@@ -531,17 +561,26 @@ Title profiles, one Steam app id per line, later files override earlier ones:
 (system; `steam-arm-config` writes here) and `~/.config/steam-arm/titles.conf` in client
 home. Line: `<appid> key=value ...`.
 
-| Key        | Values                 | Effect                                           |
-|------------|------------------------|--------------------------------------------------|
-| `overlay`  | `x86`, `vulkan`, `off` | Steam overlay kind for title                     |
-| `mangohud` | `on`, `off`            | MangoHud for title                               |
-| `godot`    | `gl`, `vulkan`         | Godot 4 renderer                                 |
-| `unity`    | `vulkan`, `gl`         | Unity renderer                                   |
-| `env`      | `NAME=VALUE;...`       | Extra environment                                |
-| `args`     | `ARG;ARG`              | Extra arguments                                  |
-| `gl32`     | `off`                  | x86 Mesa in emulation, no GL forwarding (32-bit) |
-| `vk32`     | `keep`                 | 32-bit title keeps `-vulkan`                     |
-| `gfx`      | `a`, `b`               | Graphics route: forwarding or Mali drivers       |
+| Key          | Values                 | Effect                                           |
+|--------------|------------------------|--------------------------------------------------|
+| `overlay`    | `x86`, `vulkan`, `off` | Steam overlay kind for title                     |
+| `mangohud`   | `on`, `off`            | MangoHud for title                               |
+| `godot`      | `gl`, `vulkan`         | Godot 4 renderer                                 |
+| `unity`      | `vulkan`, `gl`         | Unity renderer                                   |
+| `env`        | `NAME=VALUE;...`       | Extra environment                                |
+| `args`       | `ARG;ARG`              | Extra arguments                                  |
+| `gl32`       | `off`                  | x86 Mesa in emulation, no GL forwarding (32-bit) |
+| `vk32`       | `keep`                 | 32-bit title keeps `-vulkan`                     |
+| `gfx`        | `a`, `b`               | Graphics route: forwarding or Mali drivers       |
+| `multiblock` | `on`, `off`            | FEX Multiblock for title                         |
+
+Without `multiblock`, title keeps Valve's per-title FEX default. Launch option
+`FEX_APP_CONFIG` with `Multiblock`, and Steam's own FEX setting (`STEAM_COMPAT_FEX_CONFIG`),
+win over profile; log then says `launch option kept` or `Steam setting kept`. Multiblock
+translates larger blocks of x86 code at once: more work at first run of each block, less
+afterwards. Test device, one 32-bit Unity title, three runs each way: 5 to 9 % higher frame
+rate, 9 to 12 % less CPU load, first frame 2 to 4 s later. Java 21 and newer titles fail
+with it on.
 
 Values hold no spaces and no `#`. Launch options `STEAM_ARM_OVERLAY=x86|vulkan|off` and
 `STEAM_ARM_PRELOAD_KEEP=a,b` override profiles; `STEAM_ARM_VK_SPOOF_DISABLE=1 %command%`
@@ -568,6 +607,23 @@ What works:
 - Graphics, Route per game: A (forwarding to host drivers) or B (Mali drivers inside
   emulation), for x86 Linux games.
 
+Game is slow (CPU-bound):
+
+- Games, then game, rules of last start, or Maintenance, Hardware report: line
+  `renderer:`. `GPU (...)` means GPU drawing. `GPU forwarding not active: rendering on CPU
+  (llvmpipe)` means CPU drawing; reason follows in same line.
+- GPU line, game still slow: lower its resolution. Frame rate goes up: GPU limit.
+  Unchanged: CPU limit (x86 code runs through emulation).
+- MangoHud shows per-core load: one core near 100% while frame rate stays low means CPU
+  limit.
+
+Proton version keeps changing back:
+
+- Choice in Steam (Properties, Compatibility) wins; this menu writes it only through
+  Graphics, Linux or Windows build. Steam saves it in `config.vdf` when it exits; close
+  Steam from its own menu once after change.
+- Log line `compat: warning: ...`: saved choice and started build differ.
+
 What to avoid:
 
 - `MANGOHUD=1` or `mangohud %command%` on Windows games (Proton ARM64): game crashes.
@@ -590,6 +646,8 @@ Reading "Rules used at last start" (Games, then game):
   reason in brackets.
 - "launch option kept: NAME=value (rule wanted ...)": launch option won over rule.
 - "title setting kept: gfx=...": route set for this game won over rules.
+- "renderer: GPU (...)" or "renderer: warning: GPU forwarding not active ...": drawing on
+  GPU or CPU.
 - No lines: game has not started since setup, or it is Windows game (Proton keeps its own
   logs).
 
@@ -677,8 +735,9 @@ rights and refuses while Steam ARM runs.
 - Proton/tool per game: written through `steam-arm-compatmap` helper, same checks. Valve
   tools (`proton_*`, `proton-stable-arm64`, `steamlinuxruntime*`) count as installed,
   since client fetches them; other tools need entry in `compatibilitytools.d`. Tools not
-  installed are left out and listed. Needs client settings of that account (sign in
-  once).
+  installed are left out and listed. Game that has other tool chosen here keeps it:
+  choice made now wins over backup (plan counts these as kept). Needs client settings of
+  that account (sign in once).
 - FEX and MangoHud files: changed files replace current ones, which stay as
   `<file>.bak-restore`.
 
@@ -969,7 +1028,54 @@ to repository.
 - `steam-arm` stops with "Steam client not installed": setup did not finish. Run it again with
   `sudo steam-arm-config`, Maintenance > Update / Repair. On Raspberry Pi 5, reboot first when
   setup switched to 4K page kernel.
+- Client ignores `steam -shutdown` or `steam://` links (command line forwarded, nothing
+  happens): client stops acting on forwarded command lines after second client started
+  under other home folder on same account (for example client binary run by hand without
+  launcher). Stop it with `steam-arm --shutdown` (SIGTERM after 20 s) or tray, Stop, then
+  start it again.
+- Display stays at other resolution or refresh rate after game: launcher puts back mode
+  from before game once game ends; log line `display mode put back after game` in
+  `steam-arm.log`. Mode stays changed only with `STEAM_ARM_MODE_RESTORE=0`, in Wayland
+  sessions, or when `xrandr` is missing (`sudo apt install x11-xserver-utils`).
 - Game does not start or draws wrong: see Fixing games.
+- Game is slow or CPU-bound: check `renderer:` line in game log (Games, then game, or
+  hardware report). `renderer: warning: GPU forwarding not active: rendering on CPU
+  (llvmpipe)` names reason; `renderer: GPU (...)` with low frame rate: steps in Fixing
+  games, "Game is slow". Raspberry Pi 5: `COMPATIBILITY.md`, Raspberry Pi 5 performance
+  tips.
+- Game starts slowly: first start of Windows title creates its Proton prefix and runs
+  install steps of its redistributables (Visual C++, DirectX) under emulation; PhysX step
+  is marked done or stopped after 60 s (`physx-skip`). Every start translates x86 code
+  again (FEX). Later starts skip prefix and install steps. x86 Proton builds (`proton_11`,
+  log line `compat: x86 Proton`) run Wine itself through emulation; ARM64 Proton builds do
+  not.
+- Proton choice falls back to default: Steam keeps choice in `config.vdf` and writes that
+  file when client exits; client that crashes or is stopped another way can lose last
+  change (likely cause, not reproduced). Pick tool again in Properties, Compatibility,
+  then exit Steam from its menu once. Steam
+  ARM writes that file only on request (Graphics, Linux or Windows build; settings
+  restore, which keeps tool chosen now for each game).
+- KDE Plasma (Wayland) asks "Remote control requested: input devices" when controller
+  connects or drives desktop: X11 programs, Steam among them, send controller input as
+  emulated keyboard and mouse, and KDE asks before allowing that. Optional component
+  `kde-input-prompt` pre-authorises it (turn on under Components in `steam-arm-config`).
+  Same as
+  `flatpak permission-set kde-authorized remote-desktop "" yes`: empty app id covers every
+  X11 program, so any of them may then send input without asking. Turning part off puts
+  back value from before. Setup prints one-line hint when KDE Plasma Wayland session runs.
+  Source: <https://discuss.kde.org/t/kde-linux-steam-controller-request-remote-access-dialog/30731>
+- MangoHud draws no HUD in Unity titles on Vulkan renderer (`mangohud=on` profile, three
+  titles); title itself runs. OpenGL titles draw it.
+- Custom OpenGL engine title with included `overlay=off` profile (app 248570) stops about
+  20 s in when MangoHud is loaded. Leave MangoHud off for it: no `mangohud=on` profile, no
+  `mangohud %command%` or `MANGOHUD=1` launch option.
+- `steam://rungameid/<appid>` link for title not in library opens install dialog that can
+  stay over games started later. Restart Steam (Exit from power menu or tray, then start it
+  again) to clear it.
+- Launch option `powerprofilesctl launch -p performance -- %command%`: profile hold works
+  only when Steam was started from desktop session (application menu or autostart). Steam
+  started from other context (SSH, `runuser`, service) gets hold refused, and title does not
+  start. Start Steam from desktop, or remove that launch option.
 - Hardware report for compatibility report: `steam-arm-config report`.
 
 ## What this does not do
