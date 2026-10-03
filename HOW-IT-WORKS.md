@@ -50,6 +50,7 @@ sudo bash steam-arm-install.sh [options]          (package: sudo steam-arm-setup
    |    /opt/fex-rootfs/Ubuntu_24_04-mali: hard links plus Mali Mesa, route B;
    |    published archive, or custom archive with STEAM_ARM_PROVIDER_SHA256),
    |    controller rules, menu entries, icons, tray,
+   |    kde-input-prompt (KDE Plasma; off by default),
    |    page-size (Pi 5 class, or Pi with page size other than 4K)
    +- 5 Steam client: Valve's ARM64 package, checksum checked, unpacked as user;
    |    marker .steam-arm-client written into client folder when folder was
@@ -64,12 +65,17 @@ steam-arm (launcher, desktop account only, refuses root)
 |    waits until tool files stay unchanged for 2 s, then edits them;
 |    sha of each edited file in <file>.steam-arm-sha, removed again by uninstall
 +- marks PhysX install step done in Proton prefixes; frees /dev/shm every minute
++- kde-input-prompt: sets or puts back KDE input permission in desktop session
 |
 +- Play: Windows title -> Proton ARM64 -> DXVK -> system Vulkan (PanVK)
 |                                         vk-spoof reports features DXVK needs
 +- Play: x86 Linux title -> Valve's FEX tool -> launch handler, per title:
      reads title profile, GFX_DEFAULT, GPU family
-     detects engine: Unity, Godot, Java (bundled runtime, LWJGL), 32-bit, Source 2
+     detects engine: Unity, Godot, Java (bundled runtime, LWJGL), 32-bit, Source 2,
+       GoldSrc (note only)
+     reads Steam's saved tool for title (config.vdf, never written): note when
+       Proton build saved but Linux build started
+     profile multiblock=on|off sets FEX Multiblock for title
      applies rules; launch options set by user win ("launch option kept" in log);
      log lines show values in effect (Unity GL, Godot renderer and GL)
      picks graphics route:
@@ -88,4 +94,6 @@ steam-arm (launcher, desktop account only, refuses root)
               is not user choice); thunk, provider and GLX launch options
               replaced ("overridden for Mali route" in log)
      -> Steam runtime container -> FEX -> title -> GPU
+     renderer check (background, up to 180 s): GPU device title holds, or
+       "GPU forwarding not active: rendering on CPU (llvmpipe)" in log
 ```

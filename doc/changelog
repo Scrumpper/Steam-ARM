@@ -1,3 +1,23 @@
+steam-arm-setup (2.1) stable; urgency=low
+
+  * Renderer check: handler logs whether title draws on GPU or on CPU
+    (llvmpipe); STEAM_ARM_RENDERER_CHECK=0 turns it off.
+  * Page size in settings menu title bar and in setup and removal banners.
+  * FEX build matches CPU: fex-emu-armv8.0, -armv8.2 or -armv8.4; setup
+    on ARMv8.0 CPUs (Cortex-A72) no longer stops.
+  * Display mode restore after titles and when Steam closes;
+    STEAM_ARM_MODE_RESTORE=0 turns it off.
+  * steam-arm --shutdown, with SIGTERM fallback; interface switch uses it.
+  * MangoHud in 64-bit x86 Linux titles: library copied from root
+    filesystem into client folder and preloaded from there.
+  * kde-input-prompt component, off by default; profile key multiblock.
+  * Compatibility tool and GoldSrc log lines; Information shows OpenGL
+    and CPU governor per cluster.
+  * Restore keeps Proton choice made now. Menu: restore summary button
+    Next; wizard Back no longer skips Vulkan screen.
+
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Fri, 02 Oct 2026 00:00:00 +0000
+
 steam-arm-setup (2.0) stable; urgency=low
 
   * Graphics route per title, automatic: Java and 32-bit Vulkan titles

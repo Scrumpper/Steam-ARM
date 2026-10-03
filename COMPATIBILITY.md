@@ -126,6 +126,7 @@ only there. On other families those titles lose `-vulkan` unless profile says
 | `desktop`                                                 | Generic       | Application menu entry and window rule; no hardware dependency.                                            |
 | `desktop-mode`, `icon-bigpicture`, `icon-desktop`, `tray` | Generic       | Menu entry, desktop icons and tray icon; no hardware dependency.                                           |
 | `page-size`                                               | Raspberry Pi  | Selects 4K page kernel in firmware `config.txt`; listed only on Pi 5 class or Pi without 4K pages.         |
+| `kde-input-prompt`                                        | KDE Plasma    | Off by default. Pre-authorises input from X11 programs on Plasma Wayland; any X11 program may send input.  |
 
 ## Known to work
 
@@ -324,13 +325,60 @@ Ubuntu PPA, so that step does not apply as written. Ubuntu for Raspberry Pi fits
 this installer uses; on Raspberry Pi OS emulation tool has to come from another source
 first.
 
-**Graphics.** Pi's Mesa Vulkan driver is conformant, and it is smaller GPU than
-parts this has been tested against. Titles built for Linux are reasonable expectation;
-Windows titles through Direct3D translation layer are heavier ask. Whether
-`vk-spoof` component helps there is unknown, since it was written against different driver;
-GPU family detection leaves it off on Raspberry Pi GPUs.
+**Graphics.** Mesa drives Pi GPU with V3D (OpenGL) and V3DV (Vulkan); V3DV is Vulkan 1.3
+conformant on Pi 4 and Pi 5 since Mesa 24.3
+<https://9to5linux.com/mesa-24-3-open-source-graphics-stack-adds-vulkan-1-3-conformance-for-v3dv>.
+OpenGL titles see version 3.1 at most: V3D caps GLSL at 1.40 for compatibility contexts
+(Mesa source, `src/gallium/drivers/v3d/v3d_screen.c`). `glxinfo -B` shows values on
+system; `steam-arm-config` Information shows them as `OpenGL` line. GPU family detection
+names Pi 5 GPU `broadcom-v3d71` and Pi 4 GPU `broadcom-v3d42`, and leaves Mali-only parts
+off. Whether `vk-spoof` helps on V3DV is unknown, since it was written against different
+driver. Titles built for Linux against OpenGL 3.1 or older are best fit; Windows titles
+through DXVK do not start (table in `GAMES.md`, Raspberry Pi 5 and Pi 4).
 
-Status: untested.
+Status: untested on test system; community reports in `GAMES.md`.
+
+### Raspberry Pi 5 performance tips
+
+Gains below are unmeasured on Raspberry Pi 5. Settings that cost heat or power are opt-in
+and stay off unless set by hand.
+
+1. **Renderer first.** Game log line `renderer:` (`steam-arm-config`, Games, then game; or
+   hardware report). `GPU forwarding not active: rendering on CPU (llvmpipe)`: fix that
+   first, since nothing below helps CPU drawing.
+2. **CPU or GPU limit.** MangoHud on x86 Linux title, launch option
+   `MANGOHUD_CONFIG=fps,frametime,frame_timing,cpu_stats,core_load mangohud %command%`.
+   One core near 100% while frame rate stays low: CPU limit. Lower in-game resolution:
+   frame rate rises with GPU limit, stays with CPU limit. `vcgencmd get_throttled` prints
+   `throttled=0x0` when board has not throttled; other values mean power or heat limit.
+3. **Vsync steps.** At 60 Hz with vsync and double buffering, frame times fall on 16.7 ms
+   or 33.3 ms. Frame time graph alternating between these two bands means title misses
+   some 60 Hz frames, and average such as 47 fps sits between 60 and 30. Graph spread
+   around one value means throughput limit.
+4. **Output resolution.** 1920x1080 output in place of 3840x2160: titles that render at
+   desktop resolution draw quarter as many pixels. Set it in Screen Configuration
+   (Raspberry Pi OS) or display settings of desktop.
+5. **Session.** Raspberry Pi OS desktop runs labwc (Wayland); client and x86 titles draw
+   through XWayland. X11 session (`raspi-config`, Advanced Options, Wayland, X11) is other
+   option; compare both on one title
+   <https://www.raspberrypi.com/news/a-new-release-of-raspberry-pi-os/>.
+6. **CPU governor (opt-in).** Raspberry Pi kernel default is `ondemand`
+   (`CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND=y` in `bcm2712_defconfig`,
+   <https://github.com/raspberrypi/linux>). `performance` keeps cores at top clock, with
+   more heat and power. Until next reboot:
+   `echo performance | sudo tee /sys/devices/system/cpu/cpufreq/policy0/scaling_governor`;
+   back with `ondemand` in same command. `steam-arm-config` Information shows governor in
+   use (`CPU governor` line).
+7. **FEX Multiblock per title (opt-in).** `steam-arm-config profile <appid> multiblock=on`;
+   `multiblock=` removes it. Valve sets this per title in its own data; profile replaces
+   that default for one title. Unmeasured on Pi 5; on RK3588 test device one 32-bit Unity
+   title ran 5 to 9 % faster with 9 to 12 % less CPU load, first frame 2 to 4 s later.
+   Java 21 and newer titles fail with it on.
+8. **Clocks (opt-in, warranty and heat).** Raspberry Pi documents `arm_freq`, `gpu_freq`,
+   `v3d_freq` (on Pi 5 V3D clock is independent of core clock) and `over_voltage_delta`
+   for `config.txt`; Steam ARM sets none of them and suggests no values. Active cooling
+   needed. Raspberry Pi documents that some combinations set permanent bit in SoC
+   <https://www.raspberrypi.com/documentation/computers/config_txt.html>.
 
 ## Not limited to single board computers
 
@@ -338,11 +386,11 @@ Installer hardcodes no GPU render node or card index; GPU family detection reads
 is ARM64 system, Debian or Ubuntu family distribution and Mesa graphics stack, which
 also describes ARM64 workstations, servers and laptops, not only single board computers.
 
-Three of thirteen components are help for specific driver rather than requirements:
+Three of sixteen components are help for specific driver rather than requirements:
 `vk-spoof` exists because Mali driver does not expose features Direct3D translation
 layer asks for, and is unnecessary on driver that exposes them; `gpu-in-emulation` carries
-Mali drivers only; `glx-lax` applies to Mesa. `page-size` applies to Raspberry Pi only.
-Other nine are generic. Detection turns `vk-spoof` and `gpu-in-emulation` off on GPUs they do not serve.
+Mali drivers only; `glx-lax` applies to Mesa. `page-size` applies to Raspberry Pi only,
+`kde-input-prompt` to KDE Plasma only. Other eleven are generic. Detection turns `vk-spoof` and `gpu-in-emulation` off on GPUs they do not serve.
 
 ## Disclaimer
 

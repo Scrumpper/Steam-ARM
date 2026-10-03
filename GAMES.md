@@ -4,7 +4,7 @@ What works for each kind of game on this package, by build and graphics API. Upd
 game types are run.
 
 **Last updated:** 2026-10-01
-**Run on:** RK3588 board (Mali-G610, PanVK and Panfrost, Mesa 26.1), KDE Plasma on X11, `steam-arm-install.sh` 2.0, Valve FEX tool FEX-2607 and FEX-2609 beta, Proton 11 ARM64 and Proton Experimental ARM64
+**Run on:** RK3588 board (Mali-G610, PanVK and Panfrost, Mesa 26.1), KDE Plasma on X11, `steam-arm-install.sh` 2.0 and 2.1, Valve FEX tool FEX-2607 and FEX-2609 beta, Proton 11 ARM64 and Proton Experimental ARM64
 
 Legend: ✅ works  ⚠️ works with conditions  ❌ does not work  ❓ not run yet
 
@@ -123,6 +123,23 @@ Title profiles in `/etc/steam-arm/titles.conf` change it per title, by Steam app
 Per title launch options override profiles: `STEAM_ARM_OVERLAY=x86|vulkan|off %command%`.
 
 Windows titles run through Valve's ARM64 Proton, where handler does not run. Launcher sets `PROTON_DXVK_D3D8=1` for them, so Direct3D 8 titles use DXVK, and skips PhysX install step for titles whose install script runs it.
+
+## Raspberry Pi 5 and Pi 4
+
+Not run on test system. Expectations come from driver source, title requirements and
+community reports (Raspberry Pi 5, marked as such). V3D offers OpenGL 3.1 at most; DXVK
+needs Vulkan features V3DV does not report. Details: `COMPATIBILITY.md`, Raspberry Pi.
+
+| Game type                                      | Expectation                     | Reason                                                                                                                                                                                                                                                                                                                         |
+|------------------------------------------------|---------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Linux, x86, OpenGL 3.1 or older                | starts on GPU                   | Within V3D's OpenGL 3.1. Community report: SteamWorld Dig on GPU, about 47 fps                                                                                                                                                                                                                                                 |
+| Linux, 32-bit x86, GoldSrc (Half-Life)         | starts on GPU, CPU limit likely | Linux build asks for OpenGL 2.1 (Steam store page), within V3D. 32-bit code runs through emulation and each old-style OpenGL call crosses forwarding on its own, so processor is likely limit (suspected, unmeasured). Video options must name OpenGL renderer; Software renderer draws on CPU. Community report: about 30 fps |
+| Linux, 64-bit x86, OpenGL 4.x (Feral ports)    | does not start                  | Tomb Raider (2013): Feral lists GL 4-class drivers (Mesa 11.2 on Radeon R7 260X, NVIDIA 364). Zink (OpenGL on Vulkan) reaches OpenGL 4.0 only with `tessellationShader` (Mesa Zink documentation), which V3DV lacks. Community report: Tomb Raider GOTY did not start                                                          |
+| Linux, 64-bit x86, Unity 5+ on OpenGL, Godot 4 | unknown                         | Handler reports GL 4.5 (Unity) or 3.3 (Godot), above V3D's 3.1                                                                                                                                                                                                                                                                 |
+| Linux, 64-bit x86, Vulkan                      | unknown                         | V3DV is Vulkan 1.3 conformant; features beyond that vary                                                                                                                                                                                                                                                                       |
+| Linux, 32-bit x86, Vulkan                      | CPU renderer                    | No 32-bit Vulkan forwarding; handler removes `-vulkan` and `-force-vulkan`                                                                                                                                                                                                                                                     |
+| Windows, Proton ARM64, DXVK (Direct3D 8 to 11) | does not start                  | DXVK 3.1.1 baseline for Direct3D 9 asks `textureCompressionBC`, `shaderCullDistance`, `nullDescriptor` and `robustBufferAccess2`; Direct3D 11 also asks `multiViewport` and transform feedback. Mesa 26.1 V3DV reports none of these (`v3dv_device.c`; DXVK `VP_DXVK_requirements.json`)                                       |
+| Windows, Proton ARM64, `PROTON_USE_WINED3D=1`  | unknown                         | WineD3D draws Direct3D through OpenGL, limited by V3D's 3.1                                                                                                                                                                                                                                                                    |
 
 ## Updating this document
 

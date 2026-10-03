@@ -4,6 +4,54 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.1] - 2026-10-02
+
+### Highlights
+
+- Renderer check: launch handler logs whether title draws on GPU or on CPU (`renderer: GPU (<driver> <node>), forwarding to host driver`, or `renderer: warning: GPU forwarding not active: rendering on CPU (llvmpipe)` with reason). Hardware report lists renderer lines of five newest starts.
+- Page size up front: settings menu title bar starts with page size state (`pages 4K ok`, `pages 16K: needs 4K` and others); setup and removal banners name page size and what `page-size` component does about it.
+- FEX build matches CPU: setup picks `fex-emu-armv8.0`, `fex-emu-armv8.2` or `fex-emu-armv8.4` from CPU features, so ARMv8.0 CPUs (Cortex-A72 and others) install.
+- Display mode restore: launcher saves mode of each output when title starts and puts it back once no title runs, and when Steam closes.
+- `steam-arm --shutdown`: stops running client, with SIGTERM fallback when client ignores its shutdown command.
+- MangoHud in x86 Linux titles: `mangohud %command%`, `MANGOHUD=1` and profile `mangohud=on` draw HUD in 64-bit titles.
+- `kde-input-prompt` component, off by default: no "Remote control requested" prompt on KDE Plasma (Wayland) when controller drives desktop.
+- Profile key `multiblock=on|off`: FEX Multiblock per title.
+
+### Added
+
+- Renderer check, on by default, log only: background thread watches title's processes for up to 180 s. GPU device counts once title allocates GPU memory on it; display controller and NPU device nodes are skipped; CPU verdict comes after 30 s with no GPU device in use, or with x86 Mesa inside emulation loaded. Mali drivers route reads `drivers inside emulation`. Game start not delayed. `STEAM_ARM_RENDERER_CHECK=0` turns it off per title.
+- Compatibility tool check, read only: `compat: warning` line when Steam's `config.vdf` names Proton build for title but Linux build starts; `compat: x86 Proton` line when x86 Proton runs through emulation. Handler never writes `config.vdf`.
+- GoldSrc titles (Half-Life engine): log line notes that video options pick OpenGL or Software renderer, and Software draws on CPU.
+- Profile key `multiblock=on|off`: FEX Multiblock per title through `FEX_APP_CONFIG`. Launch option `FEX_APP_CONFIG` with `Multiblock` and Steam's FEX setting win over profile (`launch option kept`, `Steam setting kept`); profile wins over Java 21 rule (`title setting kept`). `steam-arm-config profile <appid> multiblock=on`; `--clear` removes it.
+- `kde-input-prompt` component: pre-authorises input from X11 programs in KDE's permission store (`kde-authorized`, `remote-desktop`, empty app id) through `busctl`; value it replaces is saved and put back when component is turned off or on `--remove`. Listed only where KDE Plasma's Wayland compositor is installed or its setting is in place. Trade-off: every X11 program may then send input without asking. Setup, `--detect` and Information print one-line hint in KDE Plasma Wayland session.
+- Display mode restore (X11 session): saved per output (mode id and position), restored 2 s after last title ends; log line `display mode put back after game`. `STEAM_ARM_MODE_RESTORE=0` turns it off; skipped in Wayland sessions and without `xrandr`. Host packages now include `x11-xserver-utils`.
+- `steam-arm --shutdown`: `steam -shutdown`, SIGTERM after 20 s, never SIGKILL; exit status 1 when client still runs 30 s after SIGTERM.
+- Information: `OpenGL` line (host renderer, GL and core profile versions from `glxinfo -B`) and `CPU governor` line with governor and max clock per CPU cluster, `mixed` when clusters differ; note when host renderer is software (`llvmpipe`).
+- `Fixing a game` help page: "Game is slow (CPU-bound)" and "Proton version keeps changing back"; renderer line in "Reading rules".
+- `COMPATIBILITY.md`: Raspberry Pi graphics facts (V3D, V3DV) and Raspberry Pi 5 performance tips. `GAMES.md`: Raspberry Pi 5 and Pi 4 table with expectations and community reports.
+
+### Changed
+
+- `--desktop` and `--bigpicture` switch running client through `--shutdown` path (was: give up after 60 s).
+- Settings restore, Proton/tool per game: game with other tool chosen now keeps it; summary counts `kept (other tool chosen here)`.
+- Install / Setup reads hardware details once per run; built-in screens drop keys typed while screen was loading.
+- `FEATURES.md` corrected: FEX Multiblock is on in game user's own FEX configuration only; titles run through Valve's FEX tool use Valve's per-title value unless profile sets `multiblock`.
+
+### Fixed
+
+- Setup stopped on ARMv8.0 CPUs (Cortex-A72 and others): `fex-emu-armv8.2` has no install candidate there. Setup now picks build from CPU features, same rule as FEX's own installer, falls back to newest older build apt offers, never newer than CPU supports, and names chosen build in setup log. Removal lists all three builds.
+- MangoHud never loaded in x86 titles: preload named MangoHud shim that root filesystem's MangoHud lacks, and game container maps `/usr` libraries to host system. Handler now copies root filesystem's MangoHud library into client folder (`.local/lib/steam-arm`) and preloads it from there. 32-bit titles get no MangoHud (root filesystem has no 32-bit build).
+- Title that changed refresh rate (for example 1080p at 24 Hz) left it changed after exit.
+- Client that ignored forwarded command lines, after second client ran under other home folder on same account, kept running on `--desktop` and `--bigpicture`.
+- Settings restore summary: its only button read Back but led on to confirm screen; it now reads Next.
+- Install / Setup: Back from parts could skip Vulkan screen, as key pressed while Vulkan screen loaded acted on it.
+- Information showed governor and max clock of first CPU only (little core on boards with two clusters).
+
+### Known issues
+
+- One Java 17 title on Mali drivers route stopped with JVM crash after 21 s in one of three runs.
+- Items listed under 2.0 Known issues still apply.
+
 ## [2.0] - 2026-10-01
 
 ### Highlights
