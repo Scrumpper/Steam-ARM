@@ -1037,6 +1037,14 @@ to repository.
   from before game once game ends; log line `display mode put back after game` in
   `steam-arm.log`. Mode stays changed only with `STEAM_ARM_MODE_RESTORE=0`, in Wayland
   sessions, or when `xrandr` is missing (`sudo apt install x11-xserver-utils`).
+- Bluetooth adapter off after Steam starts: client sets adapter power from its own saved
+  setting (`System/Bluetooth/Enabled` in `config.vdf`; unset means off). Launcher writes
+  host state there before each start, and at exit powers adapter on again when it was on
+  before start and Steam's own Bluetooth switch is not off; log line `Bluetooth adapter
+  left off by client; powered on again` in `steam-arm.log`.
+- Title keeps running after SIGTERM or Alt+F4 (seen with 64-bit GameMaker title under
+  emulation; KWin then offers Terminate): quit from title's own menu, or run
+  `steam-arm --shutdown`, which stops client and title (6.5 s in test).
 - Game does not start or draws wrong: see Fixing games.
 - Game is slow or CPU-bound: check `renderer:` line in game log (Games, then game, or
   hardware report). `renderer: warning: GPU forwarding not active: rendering on CPU

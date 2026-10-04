@@ -34,11 +34,13 @@ if [ "$(id -u)" = 0 ]; then
 fi
 # Files in the game user's home are written by that user, so a link placed there never redirects a root write.
 # Account switch without a PAM session: pam_systemd writes OSC 3008 escapes straight to the terminal.
+# Runs from the account's home: a caller's folder (for example /root) may be closed to it.
 as_acct(){
   local u=$1 h s; shift
-  command -v setpriv >/dev/null 2>&1 || { runuser -u "$u" -- "$@"; return; }
   h=$(getent passwd "$u" | cut -d: -f6); s=$(getent passwd "$u" | cut -d: -f7)
-  setpriv --reuid="$u" --regid="$(id -g "$u")" --init-groups env HOME="$h" SHELL="${s:-/bin/sh}" USER="$u" LOGNAME="$u" "$@"
+  ( cd "${h:-/}" 2>/dev/null || cd /
+    command -v setpriv >/dev/null 2>&1 || exec runuser -u "$u" -- "$@"
+    exec setpriv --reuid="$u" --regid="$(id -g "$u")" --init-groups env HOME="$h" SHELL="${s:-/bin/sh}" USER="$u" LOGNAME="$u" "$@" )
 }
 as_user(){ as_acct "$GAMEUSER" env -u TMPDIR "$@"; }
 # Command line as the game user, login-style environment, from its home folder (as su - did).
@@ -2271,7 +2273,7 @@ comp_short(){ case "$1" in
   icon-bigpicture) echo "Desktop icon \"Steam ARM\"";;
   icon-desktop) echo "Desktop icon \"Steam ARM (Desktop mode)\"";;
   tray)       echo "Steam icon in the panel tray";;
-  kde-input-prompt) echo "KDE: no input prompt (X11 programs may send input)";;
+  kde-input-prompt) echo "KDE: no input prompt; X11 apps may send input";;
   page-size)  echo "Raspberry Pi 5: switch to 4K page kernel";;
   *)          echo "$1";;
 esac; }
@@ -3718,7 +3720,13 @@ menu_maintenance(){
       3 "Hardware report (for a compatibility report)" 4 "Free /dev/shm now" \
       5 "Back up settings" 6 "Restore settings"); do
     case "$c" in
-      1) if is_installed; then INST_ENV=(); run_installer "Update / Repair" --keep; else offer_install; fi;;
+      1) if is_installed; then
+           ui_yesno "Update / Repair" "Run setup again with the parts chosen at last setup?
+
+Setup reinstalls packages, launcher, helpers and rules for those
+parts. Games, saves and sign-in stay in the client folder." Run Back defaultno || continue
+           INST_ENV=(); run_installer "Update / Repair" --keep
+         else offer_install; fi;;
       2) maint_logs;;
       3) maint_report;;
       4) maint_shm;;
@@ -4703,6 +4711,7 @@ remove_all(){
   rmdir /usr/share/guestos 2>/dev/null
   [ "$other" = 0 ] && [ -d "$RFS" ] && rfs_unguard "$RFS" && restored="${restored:+$restored, }package tools in $RFS"
   ldconfig; udevadm control --reload 2>/dev/null
+  command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q /usr/share/applications 2>/dev/null
   if [ -n "$uh" ]; then
     as_user rm -f "$uh/Desktop/Steam ARM.desktop" "$uh/Desktop/Steam ARM (Desktop mode).desktop" \
           "$uh/.config/autostart/steam-arm-tray.desktop" \
@@ -7719,10 +7728,70 @@ mode_watch(){
     mode_restore; rm -f "$MODEF"
   fi
 }
+# Bluetooth: SteamOS mode sets adapter power from saved System/Bluetooth/Enabled (unset = off); host state is saved there first.
+BTPOW=; BTSEED=
+bt_powered(){ command -v bluetoothctl >/dev/null 2>&1 && timeout 5 bluetoothctl show 2>/dev/null | awk '$1 == "Powered:" { print $2; exit }'; }
+# $1 0/1: write value (Steam closed); no $1: print saved value.
+bt_saved(){ python3 - "$S/config/config.vdf" "${1:-}" <<'BTPY'
+import os, re, sys, tempfile
+p, want = sys.argv[1], sys.argv[2]
+try:
+    s = open(p, encoding="utf-8", errors="surrogateescape").read()
+except FileNotFoundError:
+    s = None
+
+
+def block(s, name, ind, lo, hi):
+    m = re.compile(r'\n%s"%s"\n%s\{\n' % (ind, name, ind)).search(s, lo, hi)
+    if not m:
+        return None
+    e = s.find("\n%s}" % ind, m.end() - 1, hi)
+    return (m.end(), e + 1) if e >= 0 else None
+
+
+sysb = block(s, "System", "\t", 0, len(s)) if s else None
+btb = block(s, "Bluetooth", "\t\t", sysb[0] - 1, sysb[1]) if sysb else None
+en = re.compile(r'^\t\t\t"Enabled"\t\t"([^"]*)"\n', re.M).search(s, btb[0], btb[1]) if btb else None
+if not want:
+    print(en.group(1) if en else "")
+    sys.exit(0)
+line = '\t\t\t"Enabled"\t\t"%s"\n' % want
+if s is None:
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    s = '"InstallConfigStore"\n{\n\t"System"\n\t{\n\t\t"Bluetooth"\n\t\t{\n%s\t\t}\n\t}\n}\n' % line
+elif en:
+    if en.group(1) == want:
+        sys.exit(0)
+    s = s[:en.start()] + line + s[en.end():]
+elif btb:
+    s = s[:btb[0]] + line + s[btb[0]:]
+elif sysb:
+    s = s[:sysb[0]] + '\t\t"Bluetooth"\n\t\t{\n%s\t\t}\n' % line + s[sysb[0]:]
+else:
+    i = s.rstrip().rfind("}")
+    if not s.startswith('"InstallConfigStore"') or i < 0:
+        sys.exit("config.vdf: InstallConfigStore block not found")
+    s = s[:i] + '\t"System"\n\t{\n\t\t"Bluetooth"\n\t\t{\n%s\t\t}\n\t}\n' % line + s[i:]
+mode = os.stat(p).st_mode & 0o7777 if os.path.exists(p) else 0o644
+fd, t = tempfile.mkstemp(prefix=".steam-arm-", dir=os.path.dirname(p))
+with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
+    f.write(s)
+os.chmod(t, mode)
+os.replace(t, p)
+BTPY
+}
+# Exit: adapter powered before start and off now, not switched off in Steam's settings: power it on again.
+bt_restore(){
+  [ "$BTSEED" = 1 ] && [ "$BTPOW" = yes ] && ! client_running || return 0
+  [ "$(bt_powered)" = no ] || return 0
+  [ "$(bt_saved 2>/dev/null)" = 0 ] && return 0
+  if timeout 10 bluetoothctl power on >/dev/null 2>&1; then lwarn "Bluetooth adapter left off by client; powered on again"
+  else lwarn "Bluetooth adapter left off by client and could not be powered on; turn it on in system settings"; fi
+}
 FEXWATCH=; PHYSXWATCH=
-# Single exit path: stop the watchers, put back a display mode a title left, then restore the pad service.
+# Single exit path: stop the watchers, put back a display mode a title left, restore the pad service and Bluetooth power.
 on_exit(){ [ -n "$FEXWATCH" ] && kill "$FEXWATCH" 2>/dev/null; [ -n "$PHYSXWATCH" ] && kill "$PHYSXWATCH" 2>/dev/null
-  mode_ok && ! game_up && { mode_restore; rm -f "$MODEF"; }; restore_pad; }
+  mode_ok && ! game_up && { mode_restore; rm -f "$MODEF"; }; restore_pad; bt_restore; }
 trap on_exit EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 if pgrep -f 'ubuntu12_32/steam ' >/dev/null 2>&1; then
@@ -7950,6 +8019,15 @@ fi
 
 # gameoverlayui crashes without the client dir on LD_LIBRARY_PATH; the client doesn't add it, so the launcher does.
 export LD_LIBRARY_PATH="$D${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# Client keeps host Bluetooth power as found (client rewrites config.vdf on exit, so only while closed).
+if ! client_running; then
+  BTPOW=$(bt_powered)
+  case "$BTPOW" in
+    yes|no) if bt_saved "$([ "$BTPOW" = yes ] && echo 1 || echo 0)" 2>>"$LOG"; then BTSEED=1
+            else lwarn "Bluetooth setting could not be saved for client; client may switch adapter off"; fi;;
+  esac
+fi
 
 cd "$D" || exit 1
 # First start must verify files (downloads the rest of the package, SDK dir appears) then exits; start again skipping verification.
@@ -8462,10 +8540,11 @@ Type=Application
 Name=Steam ARM
 GenericName=Steam client, native ARM64
 Comment=Native ARM64 Steam client; x86 games run through the client's emulation tool
-Exec=/usr/local/bin/steam-arm
+Exec=/usr/local/bin/steam-arm %U
 Icon=steam-arm
 Terminal=false
 Categories=Game;
+MimeType=x-scheme-handler/steam;
 Keywords=steam;arm;native;big picture;
 StartupNotify=false
 Actions=desktop;bigpicture;
@@ -8528,6 +8607,8 @@ fi
 # Desktop mode entry restarts a Big-Picture-running client into the desktop interface.
 if opt desktop-mode; then dm_entry > /usr/share/applications/steam-arm-desktop.desktop
 else rm -f /usr/share/applications/steam-arm-desktop.desktop; fi
+# steam:// links (MimeType in menu entry) reach launcher once handler cache is rebuilt
+command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q /usr/share/applications 2>/dev/null
 
 # desktop icons, each on its own
 if opt icon-bigpicture; then desk_icon bp_entry "$BP_ICON"; else as_user rm -f "$BP_ICON"; fi

@@ -30,6 +30,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Information: `OpenGL` line (host renderer, GL and core profile versions from `glxinfo -B`) and `CPU governor` line with governor and max clock per CPU cluster, `mixed` when clusters differ; note when host renderer is software (`llvmpipe`).
 - `Fixing a game` help page: "Game is slow (CPU-bound)" and "Proton version keeps changing back"; renderer line in "Reading rules".
 - `COMPATIBILITY.md`: Raspberry Pi graphics facts (V3D, V3DV) and Raspberry Pi 5 performance tips. `GAMES.md`: Raspberry Pi 5 and Pi 4 table with expectations and community reports.
+- `steam://` links open in Steam ARM: menu entry `steam-arm.desktop` declares `x-scheme-handler/steam` (`Exec=/usr/local/bin/steam-arm %U`); setup runs `update-desktop-database` after writing menu entries and on `--remove`. No `xdg-mime default` is set, so user's own `mimeapps.list` stays as it was.
+- `README.md` Troubleshooting: Bluetooth adapter off after Steam starts, and title that keeps running after SIGTERM or Alt+F4 (quit from title's own menu, or run `steam-arm --shutdown`).
 
 ### Changed
 
@@ -37,6 +39,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Settings restore, Proton/tool per game: game with other tool chosen now keeps it; summary counts `kept (other tool chosen here)`.
 - Install / Setup reads hardware details once per run; built-in screens drop keys typed while screen was loading.
 - `FEATURES.md` corrected: FEX Multiblock is on in game user's own FEX configuration only; titles run through Valve's FEX tool use Valve's per-title value unless profile sets `multiblock`.
+- Maintenance > Update / Repair asks before running setup (`Run` / `Back`, Back by default).
 
 ### Fixed
 
@@ -49,6 +52,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Information showed governor and max clock of first CPU only (little core on boards with two clusters).
 - `steam-arm --help` passed `--help` to client, which started second client session.
 - Included profile `248570 overlay=off` (custom OpenGL engine title that stops when Steam overlay attaches), absent since 1.2, restored.
+- Client in SteamOS mode switched host Bluetooth adapter off at every start: it sets adapter power from its own saved setting `System/Bluetooth/Enabled` in `config.vdf`, and unset means off. Launcher now writes host adapter state there before start (only while no client runs), and at exit powers adapter on again when it was on before start, client left it off and Steam's own Bluetooth switch is not off; log line `Bluetooth adapter left off by client; powered on again`.
+- Components checklist cut off `kde-input-prompt` label; label now reads `KDE: no input prompt; X11 apps may send input` and fits.
+- Setup started from folder game user cannot enter (for example `/root`) stopped with "client program missing after unpacking": steps that run as game user now start in that user's home folder.
 
 ### Known issues
 

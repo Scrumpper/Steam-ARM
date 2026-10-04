@@ -15,6 +15,13 @@ steam-arm-setup (2.1) stable; urgency=low
     and CPU governor per cluster.
   * Restore keeps Proton choice made now. Menu: restore summary button
     Next; wizard Back no longer skips Vulkan screen.
+  * Launcher keeps host Bluetooth adapter on: writes adapter state to
+    System/Bluetooth/Enabled in config.vdf, powers it on at exit when
+    client left it off.
+  * steam:// links open in Steam ARM (x-scheme-handler/steam). Update /
+    Repair asks Run / Back first; kde-input-prompt label fits checklist.
+  * Setup started from folder game user cannot enter (/root) no longer
+    stops with "client program missing after unpacking".
 
  -- Scrumpper <Scrumpper@users.noreply.github.com>  Fri, 02 Oct 2026 00:00:00 +0000
 
