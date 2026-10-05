@@ -3148,7 +3148,8 @@ maint_logs(){
       2) f=$(fexlogs | head -1);;
       3) f=$(setuplogs | head -1);;
     esac
-    if [ -n "$f" ] && [ -r "$f" ]; then ui_textstr "Log: $(basename "$f")" "$(tail -300 "$f" | strip_ansi | tilde)"
+    if [ -n "$f" ] && [ -s "$f" ] && [ -r "$f" ]; then ui_textstr "Log: $(basename "$f")" "$(tail -300 "$f" | strip_ansi | tilde)"
+    elif [ -n "$f" ] && [ -e "$f" ]; then ui_msg "View logs" "$(basename "$f") is empty (launcher writes warnings only)."
     else ui_msg "View logs" "No log found yet."; fi
   done
 }

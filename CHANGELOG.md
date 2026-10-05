@@ -62,6 +62,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Components checklist cut off `kde-input-prompt` label; label now reads `KDE: no input prompt; X11 apps may send input` and fits.
 - Information and hardware report showed FEX package string (or "not installed" when FEX came from another source) with FEX-2608 and newer: version came from `FEXInterpreter --version`, which those releases no longer include, and FEX-2609.1's `FEX` has no `--version`. Version now read from `FEXGetConfig --version` (for example `FEX-2609.1`), then `FEX --version`, then `FEXInterpreter --version`, then package.
 - Setup started from folder game user cannot enter (for example `/root`) stopped with "client program missing after unpacking": steps that run as game user now start in that user's home folder.
+- Maintenance > View logs: empty launcher log showed blank page; menu now says log is empty (launcher writes warnings only).
 
 ### Known issues
 
