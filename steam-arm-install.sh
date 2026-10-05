@@ -136,6 +136,9 @@ PROVIDER_MESA_PKGS="libgl1-mesa-dri libglx-mesa0 libegl-mesa0 libgbm1 mesa-vulka
 # Marks the copy of Valve's controller rules this installer wrote (removed only when it matches).
 VALVE_MARK='MIT licence; installed by steam-arm-setup'
 GLX_HOOK=/etc/apt/apt.conf.d/80steam-arm-glx-lax
+# Host `mangohud` command for launch option `mangohud %command%` when host has none; marker line identifies it.
+MH_SHIM=/usr/local/bin/mangohud
+MH_MARK='# steam-arm-setup mangohud shim'
 # zz- sorts after 99-sysctl.conf (else its vm.max_map_count would win at boot); drop-in saves the prior value as a comment.
 MC=/etc/sysctl.d/zz-steam-arm.conf
 MC_PRIOR='# steam-arm-setup map-count; value before setup: '
@@ -4663,6 +4666,28 @@ kde_input(){
   as_user env XDG_RUNTIME_DIR="/run/user/$u" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$u/bus" \
     /usr/local/lib/steam-arm-kde-input "$1"
 }
+# Real mangohud (no shim marker) in PATH or /usr/bin, /bin.
+mh_real(){
+  local d; local IFS=:
+  for d in $PATH /usr/bin /bin; do
+    [ -x "$d/mangohud" ] && ! grep -qsF "$MH_MARK" "$d/mangohud" && return 0
+  done
+  return 1
+}
+# Shim written only where no real mangohud exists; own shim refreshed, or removed once a real one is installed.
+mh_shim(){
+  if mh_real; then
+    grep -qsF "$MH_MARK" "$MH_SHIM" && rm -f "$MH_SHIM"
+    return 0
+  fi
+  { [ -e "$MH_SHIM" ] || [ -L "$MH_SHIM" ]; } && ! grep -qsF "$MH_MARK" "$MH_SHIM" && return 0
+  mkdir -p "$(dirname "$MH_SHIM")" && cat > "$MH_SHIM" <<MHSHIM && chmod 755 "$MH_SHIM"
+#!/bin/sh
+$MH_MARK: MANGOHUD=1 for the launch handler, which loads MangoHud of the x86 RootFS.
+[ -x /usr/bin/mangohud ] && exec /usr/bin/mangohud "\$@"
+MANGOHUD=1 exec "\$@"
+MHSHIM
+}
 # --- uninstall (--remove): everything this installer added; client folder only on typed request ---
 remove_all(){
   local uh="" armhome="" del=0 a gone_client=0 gone_rfs=0 gone_mali=0 restored="" pkgs p binfmt=0 other=0 gp_rm=0 fc_rm=0 kept="" ft
@@ -4738,6 +4763,7 @@ remove_all(){
         /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png
   grep -qs "$VALVE_MARK" /etc/udev/rules.d/60-steam-input.rules && rm -f /etc/udev/rules.d/60-steam-input.rules
   grep -qs steam-arm /usr/local/bin/steamos-session-select && rm -f /usr/local/bin/steamos-session-select
+  grep -qsF "$MH_MARK" "$MH_SHIM" && rm -f "$MH_SHIM"
   rm -rf /usr/local/share/steam-arm /etc/steam-arm
   if [ -d "$PSTATE" ]; then
     legacy_mesa_restore && { restored="${restored:+$restored, }distro Mesa in $RFS"; [ "$other" = 0 ] && gp_rm=1; }
@@ -6874,6 +6900,7 @@ else:
     log("LD_PRELOAD: none")
 HANDLERPY
 chmod 644 /usr/local/lib/steam-arm-handler.py
+mh_shim || warn "$MH_SHIM could not be written; use MANGOHUD=1 %command% instead of mangohud %command%"
 mkdir -p /usr/local/share/steam-arm
 cat > /usr/local/share/steam-arm/titles.conf <<'TITLES'
 # Included title profiles; local overrides belong in /etc/steam-arm/titles.conf or ~/.config/steam-arm/titles.conf.

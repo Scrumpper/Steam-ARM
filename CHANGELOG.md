@@ -50,6 +50,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Setup stopped on ARMv8.0 CPUs (Cortex-A72 and others): `fex-emu-armv8.2` has no install candidate there. Setup now picks build from CPU features, same rule as FEX's own installer, falls back to newest older build apt offers, never newer than CPU supports, and names chosen build in setup log. Removal lists all three builds.
 - MangoHud never loaded in x86 titles: preload named MangoHud shim that root filesystem's MangoHud lacks, and game container maps `/usr` libraries to host system. Handler now copies root filesystem's MangoHud library into client folder (`.local/lib/steam-arm`) and preloads it from there. 32-bit titles get no MangoHud (root filesystem has no 32-bit build).
+- Launch option `mangohud %command%` failed: host has no `mangohud` command. Setup adds small host shim `/usr/local/bin/mangohud` that sets `MANGOHUD=1`, written only where no `mangohud` of MangoHud package exists; removal deletes only that shim.
 - Title that changed refresh rate (for example 1080p at 24 Hz) left it changed after exit.
 - Client that ignored forwarded command lines, after second client ran under other home folder on same account, kept running on `--desktop` and `--bigpicture`.
 - Settings restore summary: its only button read Back but led on to confirm screen; it now reads Next.

@@ -461,7 +461,9 @@ launch options:
 - MangoHud: `mangohud %command%`, `MANGOHUD=1 %command%` or profile `mangohud=on`,
   OpenGL and Vulkan, 64-bit titles. Handler loads root filesystem's MangoHud from copy in
   client folder (`.local/lib/steam-arm`). 32-bit titles: no MangoHud (root filesystem
-  carries 64-bit build only).
+  carries 64-bit build only). Host without MangoHud: setup adds shim
+  `/usr/local/bin/mangohud` that sets `MANGOHUD=1`, so `mangohud %command%` reaches handler;
+  `mangohud` of MangoHud package is never replaced, and removal deletes only shim.
 - Display mode: title that changes display mode (fullscreen at other resolution or refresh
   rate) and quits, crashes or is stopped without changing it back: launcher puts back mode
   from before title started, once no title runs, and when Steam closes (X11 sessions;
