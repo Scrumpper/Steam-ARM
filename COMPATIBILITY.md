@@ -14,6 +14,9 @@ Installer has no hardcoded GPU render node and no hardcoded card index. GPU fami
 
 Vulkan driver is needed for Windows titles; GPUs without one run native OpenGL titles.
 
+Client itself needs Armv8.1 or newer CPU with LSE atomics; Armv8.0 cores (Cortex-A53, A57,
+A72) are not supported by current client builds. See `README.md`, Requirements.
+
 ## Before you install
 
 `bash steam-arm-install.sh --detect` prints GPU family, kernel driver, Vulkan driver, page
@@ -92,7 +95,7 @@ GPU detection.
 | `adreno-a702`                                         | Adreno 702                      | off        | off                | on        | untested | Vulkan too limited for most Windows titles                                                      |
 | `adreno-legacy`                                       | Adreno 5xx and older            | off        | off                | on        | untested | no Vulkan driver; native OpenGL titles only                                                     |
 | `apple-agx`                                           | Apple GPU (Asahi)               | off        | off                | on        | untested | runs inside `muvm` on 16K page hosts                                                            |
-| `broadcom-v3d71`, `broadcom-v3d42`                    | Raspberry Pi 5, 4               | off        | off                | on        | untested | Vulkan too limited for most Windows titles                                                      |
+| `broadcom-v3d71`, `broadcom-v3d42`                    | Raspberry Pi 5, 4               | off        | off                | on        | untested | Vulkan too limited for most Windows titles; Pi 4: client does not start (no LSE)                |
 | `broadcom-vc4`                                        | Raspberry Pi 0 to 3             | off        | off                | on        | untested | not supported                                                                                   |
 | `vivante`                                             | Vivante (etnaviv)               | off        | off                | on        | untested | no Vulkan driver; most titles do not run                                                        |
 | `img-powervr`                                         | PowerVR                         | off        | off                | off       | untested | Vulkan driver in development; OpenGL through Zink                                               |
@@ -238,6 +241,7 @@ pages, so emulation half has to run inside guest that provides 4K pages.
 parts.** These carry Mali-G52 or G31. Panfrost gives them OpenGL, which is what title built
 for Linux needs. Open Vulkan driver is not usable on this generation, so Direct3D
 translation layer has nothing to reach and Windows titles are not reasonable expectation.
+Odroid N2, N2+ and Allwinner parts with Cortex-A53 cores lack LSE atomics: see Out of scope.
 
 ### Plausible, not tested
 
@@ -271,6 +275,10 @@ system service manager, which several components require.
 
 **Hardware with no 64-bit ARM support**, which is excluded by architecture itself.
 
+**Armv8.0 CPUs without LSE atomics** (Cortex-A53, A57, A72): Raspberry Pi 4 and 3, Odroid
+N2 and N2+, Allwinner parts with Cortex-A53 cores. Current client builds stop at start;
+see `README.md`, Requirements.
+
 ## What decides it, in practice
 
 **Which Mali driver OS image includes.** On Rockchip boards two stacks exist: open one,
@@ -302,9 +310,10 @@ computers, is excluded by architecture rather than by any of above.
 
 ## Raspberry Pi
 
-Raspberry Pi 5 or 64-bit Raspberry Pi 4 meets both requirements in principle: it is ARM64,
-and Mesa provides Vulkan driver for its GPU. Three things need attention before
-emulation half runs.
+Raspberry Pi 5 meets both requirements in principle: it is ARM64, and Mesa provides
+Vulkan driver for its GPU. Three things need attention before emulation half runs.
+Raspberry Pi 4 (Cortex-A72, Armv8.0 without LSE atomics) is not supported: current client
+builds stop at start (see `README.md`, Requirements).
 
 **Page size.** Pi 5 firmware loads `kernel_2712.img` by default, which uses 16K pages.
 Code built for x86 assumes 4K, and emulators refuse to start on 16K kernel. Adding
@@ -334,7 +343,7 @@ system; `steam-arm-config` Information shows them as `OpenGL` line. GPU family d
 names Pi 5 GPU `broadcom-v3d71` and Pi 4 GPU `broadcom-v3d42`, and leaves Mali-only parts
 off. Whether `vk-spoof` helps on V3DV is unknown, since it was written against different
 driver. Titles built for Linux against OpenGL 3.1 or older are best fit; Windows titles
-through DXVK do not start (table in `GAMES.md`, Raspberry Pi 5 and Pi 4).
+through DXVK do not start (table in `GAMES.md`, Raspberry Pi 5).
 
 Status: untested on test system; community reports in `GAMES.md`.
 

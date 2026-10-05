@@ -18,6 +18,12 @@ steam-arm-setup (2.1) stable; urgency=low
   * Launcher keeps host Bluetooth adapter on: writes adapter state to
     System/Bluetooth/Enabled in config.vdf, powers it on at exit when
     client left it off.
+  * Armv8.1 check: setup and launcher stop on CPUs without LSE atomics
+    (steam-for-linux #13288); STEAM_ARM_ALLOW_ARMV80=1 skips it.
+  * First start: desktop notification reports client download; menu
+    icons show plain disc until client's own icon file arrives.
+  * FEX version read from FEXGetConfig --version (FEX-2608 and newer
+    have no FEXInterpreter).
   * steam:// links open in Steam ARM (x-scheme-handler/steam). Update /
     Repair asks Run / Back first; kde-input-prompt label fits checklist.
   * Setup started from folder game user cannot enter (/root) no longer

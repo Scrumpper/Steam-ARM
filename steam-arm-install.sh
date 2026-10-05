@@ -18,6 +18,13 @@ steam_banner() {
 say(){ printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 warn(){ printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
 die(){ printf '\033[1;31m[fail]\033[0m %s\n' "$*"; [ -n "${DIE_NOTE:-}" ] && printf '       %s\n' "$DIE_NOTE"; exit 1; }
+# First CPU's Features line (FEX build pick, Armv8.1 check).
+cpu_features(){ grep -m1 '^Features' /proc/cpuinfo 2>/dev/null | cut -d: -f2; }
+LSE_TEXT="CPU has no Armv8.1 atomics (LSE): \"atomics\" is missing from Features line of /proc/cpuinfo.
+       Steam client needs Armv8.1 or newer; builds newer than 15 April 2026 stop at start
+       with SIGILL on Armv8.0 cores (Cortex-A53, A57, A72: Raspberry Pi 4 and 3).
+       Client issue: https://github.com/ValveSoftware/steam-for-linux/issues/13288
+       STEAM_ARM_ALLOW_ARMV80=1 skips this check."
 # curl progress bar only on a terminal; logs and the menu's screens get errors only.
 CURL_SHOW=(-sS); [ -t 2 ] && CURL_SHOW=(--progress-bar)
 # Temporary files and folders of this run, removed on any exit; UCLEANUP ones (in the game user's home) by that user.
@@ -1032,12 +1039,29 @@ mesa_ver(){
   [ -z "${v:-}" ] && v=$(pkg_ver libgl1-mesa-dri mesa-libgallium libglx-mesa0)
   echo "${v:-unknown}"
 }
+# FEX-2608 dropped FEXInterpreter and FEX 2609.1 has no --version: FEXGetConfig, FEX, FEXInterpreter, then package.
 fex_ver(){
-  local v
-  have FEXInterpreter && v=$(FEXInterpreter --version 2>/dev/null | head -1)
+  local v='' c
+  for c in FEXGetConfig FEX FEXInterpreter; do
+    have "$c" && v=$("$c" --version 2>/dev/null | grep -m1 '[0-9]') && [ -n "$v" ] && break
+    v=
+  done
+  case "$v" in [0-9]*) v="FEX-$v";; esac
   [ -z "${v:-}" ] && v=$(dpkg-query -W -f='${Package} ${Version}\n' 'fex-emu*' 2>/dev/null | grep -v ' $' | head -1)
   echo "${v:-not installed}"
 }
+# Client needs Armv8.1 atomics (LSE); status 1 only when first CPU's Features line lacks them.
+cpu_lse_ok(){
+  local f; f=$(grep -m1 '^Features' "/proc/cpuinfo" 2>/dev/null)
+  [ -z "$f" ] || [ "${STEAM_ARM_ALLOW_ARMV80:-0}" = 1 ] && return 0
+  case " ${f#*:} " in *" atomics "*) return 0;; esac; return 1
+}
+LSE_MSG="This CPU has no Armv8.1 atomics (LSE): \"atomics\" is missing from
+Features line of /proc/cpuinfo. Steam client needs Armv8.1 or newer;
+builds newer than 15 April 2026 stop at start with SIGILL on Armv8.0
+cores (Cortex-A53, A57, A72: Raspberry Pi 4 and 3).
+Client issue: https://github.com/ValveSoftware/steam-for-linux/issues/13288
+STEAM_ARM_ALLOW_ARMV80=1 skips this check."
 disk_free(){ df -h --output=avail,target "$1" 2>/dev/null | tail -1 | awk '{print $1 " free on " $2}'; }
 
 # Hardware entries of the install flow: id|label|GPU family ("?" = asks which GPU).
@@ -2186,7 +2210,7 @@ run_installer(){
          && SA_SETUP_LOG=$(mktemp --suffix=.log "$SA_CACHE/setup-$(date +%Y%m%d-%H%M%S)-XXXXXX"); }; then
     ui_msg "$title" "Could not create a log file in $SA_CACHE. Free some space, then try again."; return 1
   fi
-  ui_run "$title" "$SA_SETUP_LOG" as_root env "${INST_ENV[@]}" "${cmd[@]}" "$@"; rc=$?
+  ui_run "$title" "$SA_SETUP_LOG" as_root env "${INST_ENV[@]}" ${STEAM_ARM_ALLOW_ARMV80:+"STEAM_ARM_ALLOW_ARMV80=$STEAM_ARM_ALLOW_ARMV80"} "${cmd[@]}" "$@"; rc=$?
   status_line
   if [ "$rc" = 0 ]; then
     ui_textstr "$title: done" "$({ echo "Finished."; echo; log_summary "$SA_SETUP_LOG"; echo
@@ -2251,7 +2275,7 @@ run_installer_tty(){
   [ "${#cmd[@]}" -gt 0 ] || { ui_msg "Steam ARM" "Setup script not found."; return 1; }
   need_root || return 1
   clear
-  as_root "${cmd[@]}" "$@"; local rc=$?
+  as_root env ${STEAM_ARM_ALLOW_ARMV80:+"STEAM_ARM_ALLOW_ARMV80=$STEAM_ARM_ALLOW_ARMV80"} "${cmd[@]}" "$@"; local rc=$?
   ui_pause; status_line; return "$rc"
 }
 
@@ -2698,6 +2722,7 @@ passwd $IN_USER"
 }
 menu_setup(){
   local step=1
+  cpu_lse_ok || { ui_msg "Install / Setup" "$LSE_MSG"; return; }
   if is_installed; then
     ui_yesno "Install / Setup" "Steam ARM is already installed. Run setup again with new choices?
 
@@ -3953,6 +3978,8 @@ Environment
                             else $SA_SHARE_INSTALLER,
                             else steam-arm-install.sh beside this app);
                             the installer sets it when it opens this menu
+  STEAM_ARM_ALLOW_ARMV80=1  skip Armv8.1 (LSE atomics) CPU check of
+                            Install / Setup; passed on to setup
 
 Files
   $SA_CONF      settings (GFX_DEFAULT=auto|a|b;
@@ -4222,6 +4249,9 @@ Environment
   ARMHOME_DIR=path             client folder relative to home of that account, first
                                install only (default .local/share/steam-arm)
   STEAM_ARM_IGNORE_PAGESIZE=1  skip the 4K page size check
+  STEAM_ARM_ALLOW_ARMV80=1     skip the Armv8.1 (LSE atomics) CPU check; client builds
+                               newer than 15 April 2026 stop at start on Armv8.0
+                               (steam-for-linux issue 13288); launcher honours it too
   GPU_FAMILY=id                GPU family in place of detection, kept for later runs
                                (GPU_FAMILY=auto detects again); wrong id lists valid ones
   STEAM_ARM_PROVIDER_TARBALL=file
@@ -4342,6 +4372,14 @@ fi
 GPU_VK=""
 [ "$MODE" = remove ] || { gpu_vulkan; gpu_line; }
 [ "$MODE" = detect ] && { gpu_report; exit 0; }
+# Client needs Armv8.1 atomics (LSE): stop before any package change.
+if [ "$MODE" != remove ]; then
+  case " $(cpu_features) " in
+    "  "|*" atomics "*) ;;
+    *) [ "${STEAM_ARM_ALLOW_ARMV80:-0}" = 1 ] || die "$LSE_TEXT"
+       warn "CPU has no Armv8.1 atomics (LSE); continuing because STEAM_ARM_ALLOW_ARMV80=1.";;
+  esac
+fi
 if [ "$MODE" != remove ]; then
   echo "  $GPU_LINE"
   [ "$GPU_SRC" = user ] && echo "  GPU family: $GPU_FAMILY (set by user)"
@@ -4912,7 +4950,7 @@ want_icons && BUILDPKGS="$BUILDPKGS python3-pil"                                
 opt tray && BUILDPKGS="$BUILDPKGS gir1.2-ayatanaappindicator3-0.1"                   # tray helper binding
 # FEX build for this CPU, same rule as FEX's InstallFEX.py (first CPU's Features line).
 fex_arch(){
-  local f; f=" $(grep -m1 '^Features' /proc/cpuinfo 2>/dev/null | cut -d: -f2) "
+  local f; f=" $(cpu_features) "
   fex_has(){ local x; for x; do case "$f" in *" $x "*) ;; *) return 1;; esac; done; }
   if fex_has atomics asimdrdm crc32 dcpop fcma jscvt lrcpc paca pacg asimddp flagm ilrcpc uscat; then echo 8.4
   elif fex_has atomics asimdrdm crc32 dcpop; then echo 8.2
@@ -7657,6 +7695,14 @@ stop_client(){
 case "${1:-}" in
   --shutdown) stop_client; exit $?;;
 esac
+# Client needs Armv8.1 atomics (LSE); STEAM_ARM_ALLOW_ARMV80=1 skips the check.
+CPUF=$(grep -m1 '^Features' /proc/cpuinfo 2>/dev/null)
+if [ -n "$CPUF" ] && [ "${STEAM_ARM_ALLOW_ARMV80:-0}" != 1 ]; then
+  case " ${CPUF#*:} " in *" atomics "*) ;; *)
+    LSE="This CPU has no Armv8.1 atomics (LSE). Steam client needs Armv8.1 or newer; builds newer than 15 April 2026 stop at start with SIGILL on Armv8.0 cores (Cortex-A53, A57, A72: Raspberry Pi 4 and 3). Client issue: https://github.com/ValveSoftware/steam-for-linux/issues/13288. STEAM_ARM_ALLOW_ARMV80=1 skips this check."
+    lwarn "$LSE" 2>/dev/null; stop "$LSE";;
+  esac
+fi
 # Component chosen at install (COMPONENTS_ON in the settings file; all count as chosen when the file has no list).
 comp_on(){ [ -z "${COMPONENTS_ON+x}" ] && return 0; case ",$COMPONENTS_ON," in *",$1,"*) return 0;; esac; return 1; }
 # Graphics route is picked per title by the launch handler; here only a note when its second tree is gone.
@@ -7788,9 +7834,10 @@ bt_restore(){
   if timeout 10 bluetoothctl power on >/dev/null 2>&1; then lwarn "Bluetooth adapter left off by client; powered on again"
   else lwarn "Bluetooth adapter left off by client and could not be powered on; turn it on in system settings"; fi
 }
-FEXWATCH=; PHYSXWATCH=
+FEXWATCH=; PHYSXWATCH=; NOTEWATCH=
 # Single exit path: stop the watchers, put back a display mode a title left, restore the pad service and Bluetooth power.
 on_exit(){ [ -n "$FEXWATCH" ] && kill "$FEXWATCH" 2>/dev/null; [ -n "$PHYSXWATCH" ] && kill "$PHYSXWATCH" 2>/dev/null
+  [ -n "$NOTEWATCH" ] && kill "$NOTEWATCH" 2>/dev/null
   mode_ok && ! game_up && { mode_restore; rm -f "$MODEF"; }; restore_pad; bt_restore; }
 trap on_exit EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
@@ -7964,11 +8011,13 @@ if [ -n "$SWITCH" ] && client_running; then
   stop_client || exit 1
 fi
 
-# Menu icon comes from the client's own icon file, absent until its first start. Wait for it in
-# the background (poll every 5 s, up to 15 min) so start is never delayed; flock keyed by uid
-# stops a second concurrent start from waiting twice.
-if command -v steam-arm-icon >/dev/null 2>&1 && [ ! -f /usr/share/icons/hicolor/256x256/apps/steam-arm.png ] \
-   && [ ! -f "$REALHOME/.local/share/icons/hicolor/256x256/apps/steam-arm.png" ]; then
+# Menu icon comes from the client's own icon file, absent until its first start (setup draws a plain
+# disc meanwhile). Wait for it in the background (poll every 5 s, up to 15 min) so start is never
+# delayed; flock keyed by uid stops a second concurrent start from waiting twice.
+UICON="$REALHOME/.local/share/icons/hicolor"
+if command -v steam-arm-icon >/dev/null 2>&1 \
+   && { [ ! -f "$UICON/256x256/apps/steam-arm.png" ] || [ -e "$UICON/.steam-arm-placeholder" ]; } \
+   && { [ ! -f /usr/share/icons/hicolor/256x256/apps/steam-arm.png ] || [ -e /usr/local/share/steam-arm/icon-placeholder ]; }; then
   ICONLOCK="${XDG_RUNTIME_DIR:-/tmp}/steam-arm-icon-wait-$(id -u).lock"
   ( flock -n 9 || exit 0
     STEP=5; n=0
@@ -7976,7 +8025,7 @@ if command -v steam-arm-icon >/dev/null 2>&1 && [ ! -f /usr/share/icons/hicolor/
       n=$((n + STEP)); [ "$n" -ge 900 ] && exit 0
       sleep "$STEP"
     done
-    steam-arm-icon "$S" "$REALHOME/.local/share/icons/hicolor" || exit 0
+    steam-arm-icon "$S" "$UICON" || exit 0
     if command -v kbuildsycoca6 >/dev/null 2>&1; then HOME="$REALHOME" kbuildsycoca6
     elif command -v kbuildsycoca5 >/dev/null 2>&1; then HOME="$REALHOME" kbuildsycoca5
     fi
@@ -8030,15 +8079,60 @@ if ! client_running; then
 fi
 
 cd "$D" || exit 1
+BOOTLOG="$S/logs/bootstrap_log.txt"
+# First start: the client's bootstrap downloads its files (about 650 MB) with no window; a desktop
+# notification, updated in place from the bootstrap log, reports it. Never on later starts.
+# notice ID SUMMARY BODY TIMEOUT_MS: send (ID 0) or replace a desktop notification; prints its id.
+notice(){
+  if command -v gdbus >/dev/null 2>&1; then
+    gdbus call --session --timeout 5 --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+      --method org.freedesktop.Notifications.Notify "Steam ARM" "$1" steam-arm "$2" "$3" '[]' '{}' "$4" 2>/dev/null \
+      | sed -n 's/.*uint32 \([0-9]*\).*/\1/p'
+  elif command -v notify-send >/dev/null 2>&1; then
+    # no -p (libnotify before 0.7.9): one notice without updates
+    notify-send -p -r "$1" -a "Steam ARM" -i steam-arm -t "$4" "$2" "$3" 2>/dev/null \
+      || { [ "$1" = 0 ] && notify-send -a "Steam ARM" -i steam-arm -t 15000 "$2" "$3" 2>/dev/null; }
+  fi
+}
+notice_close(){ command -v gdbus >/dev/null 2>&1 && gdbus call --session --timeout 5 --dest org.freedesktop.Notifications \
+  --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.CloseNotification "$1" >/dev/null 2>&1; }
+# Last bootstrap phase after byte $1 of the log: download (10 % steps), unpack, install, "done", or empty.
+boot_phase(){
+  tail -c +"$(($1 + 1))" "$BOOTLOG" 2>/dev/null | awk '
+    /\] Downloading update \(/ { s = $0; sub(/.*\(/, "", s); sub(/ KB\).*/, "", s); gsub(/,/, "", s); split(s, a, " of ")
+      if (a[2] > 0) m = sprintf("Downloading client files: %d%% of %d MB", int(a[1] * 10 / a[2]) * 10, a[2] / 1024) }
+    /\] Extracting package/ { m = "Unpacking client files" }
+    /\] Installing update/ { m = "Installing client files" }
+    /\] Update complete/ { m = "done" }
+    END { print m }'
+}
+# Runs beside the bootstrap: a notice at once, phases as they change, "done" or a vanished client ends it.
+first_start_notice(){
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  off=$(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)
+  id=$(notice 0 "Steam ARM: first start" "Downloading client files, this takes a few minutes. Steam opens when done." 0)
+  case "$id" in ''|0) return 0;; esac
+  trap 'notice_close "$id"; exit 143' TERM
+  last=; n=0
+  while [ "$n" -lt 1800 ]; do
+    sleep 5; n=$((n + 5))
+    m=$(boot_phase "$off")
+    if [ "$m" = done ]; then notice "$id" "Steam ARM" "Client files installed. Steam opens now." 10000 >/dev/null; return 0; fi
+    [ "$n" -ge 10 ] && ! client_running && break
+    [ -n "$m" ] && [ "$m" != "$last" ] && { notice "$id" "Steam ARM: first start" "$m" 0 >/dev/null; last=$m; }
+  done
+  notice_close "$id"
+}
 # First start must verify files (downloads the rest of the package, SDK dir appears) then exits; start again skipping verification.
 if [ ! -f "$S/linuxarm64/steamclient.so" ]; then
+  first_start_notice </dev/null >/dev/null 2>&1 &
+  NOTEWATCH=$!
   ./steam -deckard -steamos3 ${GPUI:+"$GPUI"} "$@"
   [ -f "$S/linuxarm64/steamclient.so" ] || exit 1
   ln -sfn "$S/linuxarm64" "$ARMHOME/.steam/sdkarm64"
 fi
 # Client exit after applying its own update: status 42 (restart request), or bootstrap log whose last
 # start ends in "Update complete, launching" with no client left running. Started again, at most twice.
-BOOTLOG="$S/logs/bootstrap_log.txt"
 # Status 0 when the log, from byte $1 on, ends with an applied update and no new start after it.
 updated_exit(){
   sz=$(stat -c %s "$BOOTLOG" 2>/dev/null) || return 1
@@ -8441,7 +8535,9 @@ colour, generated from fixed seeds so every install draws the same icons. The lo
 entries apart: chartreuse for Big Picture (steam-arm), bone for desktop mode
 (steam-arm-desktop). The logo shape comes from the client's own steam_tray.ico, where it is
 white with graded transparency over a blue disc; whiteness picks the logo, and the disc is
-made opaque. Nothing is bundled with the package."""
+made opaque. Before the client's first start there is no logo source: disc alone is drawn and
+HICOLORDIR/.steam-arm-placeholder marks it, so the launcher redraws it once the client is in.
+Nothing is bundled with the package."""
 import math, os, subprocess, sys
 from PIL import Image
 steam, dest = sys.argv[1], sys.argv[2]
@@ -8450,12 +8546,13 @@ for c in (os.path.join(steam, "public/steam_tray.ico"),
           "/opt/fex-rootfs/Ubuntu_24_04/usr/share/icons/hicolor/256x256/apps/steam.png"):
     if os.path.isfile(c):
         src = c; break
-if not src:
-    sys.exit(1)
-im = Image.open(src)
-if src.endswith(".ico"):
-    im.size = max(im.info.get("sizes", {im.size}))
-im = im.convert("RGBA").resize((256, 256), Image.LANCZOS)
+if src:
+    im = Image.open(src)
+    if src.endswith(".ico"):
+        im.size = max(im.info.get("sizes", {im.size}))
+    im = im.convert("RGBA").resize((256, 256), Image.LANCZOS)
+else:
+    im = Image.new("RGBA", (256, 256))
 p = im.load(); W, H = im.size; CX = CY = 127.5; R = 126.5
 
 def h(x, y, seed):
@@ -8502,18 +8599,27 @@ for name, img in (("steam-arm", draw((156, 200, 101), 11)), ("steam-arm-desktop"
     for sz in (16, 32, 48, 64, 128, 256):
         d = os.path.join(dest, "%dx%d" % (sz, sz), "apps"); os.makedirs(d, exist_ok=True)
         img.resize((sz, sz), Image.LANCZOS).save(os.path.join(d, name + ".png"))
+mark = os.path.join(dest, ".steam-arm-placeholder")
+if src:
+    if os.path.lexists(mark):
+        os.remove(mark)
+else:
+    open(mark, "w").close()
 if os.path.isfile(os.path.join(dest, "index.theme")):
     subprocess.run(["gtk-update-icon-cache", "-q", "-f", "-t", dest], stderr=subprocess.DEVNULL)
 ICONPY
   chmod 755 /usr/local/bin/steam-arm-icon
   rm -f /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png
-  if icon_system; then
-    say "     menu icons made from client's own icon"
+  if ! icon_system; then
+    say "     menu icons could not be made; launcher makes them at first start"
+  elif [ -e "$ICON_MARK" ]; then
+    say "     menu icons: plain disc until first start, then redrawn from client's own icon"
   else
-    say "     menu icons: made at first start, once client has downloaded its files"
+    say "     menu icons made from client's own icon"
   fi
 }
 # Game user draws the icons into a root-made folder; root locks it, then copies plain files only.
+ICON_MARK=/usr/local/share/steam-arm/icon-placeholder
 icon_system(){
   local t sz n f ok=1
   t=$(mktemp -d /var/tmp/steam-arm-icon.XXXXXX) || return 1
@@ -8529,6 +8635,8 @@ icon_system(){
     install -D -m 644 -o root -g root "$f" "/usr/share/icons/hicolor/${sz}x$sz/apps/$n.png" || ok=0
   done; done
   [ $ok = 1 ] || rm -f /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png
+  rm -f "$ICON_MARK"
+  if [ $ok = 1 ] && [ -f "$t/.steam-arm-placeholder" ]; then mkdir -p "${ICON_MARK%/*}" && : > "$ICON_MARK"; fi
   [ -f /usr/share/icons/hicolor/index.theme ] && gtk-update-icon-cache -q -f -t /usr/share/icons/hicolor 2>/dev/null
   [ $ok = 1 ]
 }
@@ -8580,7 +8688,7 @@ if want_icons; then
   steam_arm_icon
 else
   rm -f /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png \
-        /usr/local/bin/steam-arm-icon
+        /usr/local/bin/steam-arm-icon "$ICON_MARK"
   for n in steam-arm steam-arm-desktop; do as_user rm -f "$UHOME"/.local/share/icons/hicolor/*/apps/"$n".png; done
 fi
 

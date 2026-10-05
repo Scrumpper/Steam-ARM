@@ -124,7 +124,10 @@ Per title launch options override profiles: `STEAM_ARM_OVERLAY=x86|vulkan|off %c
 
 Windows titles run through Valve's ARM64 Proton, where handler does not run. Launcher sets `PROTON_DXVK_D3D8=1` for them, so Direct3D 8 titles use DXVK, and skips PhysX install step for titles whose install script runs it.
 
-## Raspberry Pi 5 and Pi 4
+## Raspberry Pi 5
+
+Raspberry Pi 4: current client builds do not start (Cortex-A72, Armv8.0 without LSE
+atomics; `README.md`, Requirements).
 
 Not run on test system. Expectations come from driver source, title requirements and
 community reports (Raspberry Pi 5, marked as such). V3D offers OpenGL 3.1 at most; DXVK

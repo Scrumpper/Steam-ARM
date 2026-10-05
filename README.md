@@ -62,7 +62,8 @@ jump to details.
 3. When installer ends with notice that account gained groups, log out and log back in
    (or restart) before first start.
 4. Start "Steam ARM" from application menu, or run `steam-arm`. First start downloads
-   client package and restarts client once; this takes several minutes.
+   client package and restarts client once; this takes several minutes. Desktop
+   notification reports download, unpack and install phases meanwhile.
 5. Sign in from Big Picture, or from "Steam ARM (Desktop mode)" menu entry.
 6. Install game, press Play.
 
@@ -85,6 +86,14 @@ replaced, and only when it is missing or damaged.
 
 - ARM64 system. GPU family detection sets defaults per GPU; Windows titles need Vulkan
   driver, native OpenGL titles run without one. See GPU detection.
+- Armv8.1 or newer CPU with LSE atomics (`atomics` in `Features` line of
+  `/proc/cpuinfo`). Client builds newer than 15 April 2026 (client 1776387948) stop at
+  start with SIGILL on Armv8.0 cores without LSE: Cortex-A53, A57 and A72, so Raspberry
+  Pi 4, Pi 3 and many older boards. Raspberry Pi 5 (Cortex-A76) and RK3588 (Cortex-A76
+  and A55) meet it. Client issue:
+  <https://github.com/ValveSoftware/steam-for-linux/issues/13288>. Setup (before any
+  package change) and launcher read `atomics` and stop on Armv8.0 CPUs, naming this
+  issue; `STEAM_ARM_ALLOW_ARMV80=1` skips check.
 - Debian or Ubuntu family distribution, since installer uses `apt`. FEX, emulation tool
   for x86 game code, installs from Ubuntu PPA `ppa:fex-emu/fex`; other systems need FEX
   from another source.
@@ -223,7 +232,7 @@ and `glx-lax`; every other component keeps its own default.
 | `adreno-legacy`   | Adreno 5xx and older            | `glx-lax`                     |
 | `apple-agx`       | Apple GPU (Asahi)               | `glx-lax`                     |
 | `broadcom-v3d71`  | Raspberry Pi 5                  | `glx-lax`                     |
-| `broadcom-v3d42`  | Raspberry Pi 4                  | `glx-lax`                     |
+| `broadcom-v3d42`  | Raspberry Pi 4 (CPU: no LSE)    | `glx-lax`                     |
 | `broadcom-vc4`    | Raspberry Pi 0 to 3             | `glx-lax`                     |
 | `vivante`         | Vivante (etnaviv)               | `glx-lax`                     |
 | `img-powervr`     | PowerVR                         | none                          |
@@ -247,6 +256,7 @@ Notes installer prints per family:
 - Adreno 6xx to 8xx: Windows titles through DXVK expected to work; x86 Adreno drivers for
   32-bit titles not included. `adreno-a702`, Raspberry Pi 4 and 5: Vulkan too limited for
   most Windows titles. `adreno-legacy`: no Vulkan driver, native OpenGL titles only.
+  Raspberry Pi 4: current client builds do not start (Armv8.0 CPU, see Requirements).
 - `apple-agx`: runs inside `muvm` on 16K page hosts. `broadcom-vc4`: not supported.
   `vivante`: no Vulkan driver, most titles do not run.
 - `img-powervr`: Vulkan driver in development, OpenGL through Zink. `nvidia-prop`:
@@ -280,6 +290,11 @@ restarts itself; this takes several minutes. Sign in from Big Picture, or from
 "Steam ARM (Desktop mode)". `steam-arm` refuses to run as root; start it from desktop
 account that plays games.
 
+Client shows no window while it downloads. Desktop notification (via `gdbus`, else
+`notify-send`) appears at once and updates in place: download in 10 % steps with total
+size, unpack, install, then "Client files installed. Steam opens now." Closed when client
+exits early; never shown on later starts.
+
 When client exits after applying its own update (exit status 42, or bootstrap log ending
 in "Update complete, launching" with no client left running), launcher starts it again, at
 most twice per start.
@@ -291,8 +306,9 @@ own ARM update channel, and client updates itself from there.
 Client starts in Big Picture. Power menu's Switch to Desktop, and desktop mode entry,
 restart it in desktop interface; Big Picture entry switches back.
 
-Menu and desktop icons appear during first start, once client has downloaded its own icon
-file. Icons are Steam's round icon on dark, grainy green disc with small squares of vivid
+Until first start, menu and desktop entries show plain disc: client's own icon file does
+not exist yet. During first start, once client has downloaded that file, launcher redraws
+icons with logo. Icons are Steam's round icon on dark, grainy green disc with small squares of vivid
 colour: chartreuse logo for Big Picture, bone logo for desktop mode.
 
 ## Component selection
@@ -840,6 +856,8 @@ Environment for installer:
   characters, and not shared folder such as `.local` or `Documents`.
 - `GPU_FAMILY=id|auto`: GPU family by hand, kept for later runs; `auto` detects again.
 - `STEAM_ARM_IGNORE_PAGESIZE=1`: skips 4K page size check.
+- `STEAM_ARM_ALLOW_ARMV80=1`: skips Armv8.1 (LSE atomics) CPU check of setup, settings
+  menu and launcher; current client builds stop at start on Armv8.0 CPUs (Requirements).
 - `STEAM_ARM_PROVIDER_TARBALL=file`: `gpu-in-emulation` takes driver archive from local
   file in place of its download; checksum is still checked. Other steps still need
   network.

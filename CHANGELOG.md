@@ -10,12 +10,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Renderer check: launch handler logs whether title draws on GPU or on CPU (`renderer: GPU (<driver> <node>), forwarding to host driver`, or `renderer: warning: GPU forwarding not active: rendering on CPU (llvmpipe)` with reason). Hardware report lists renderer lines of five newest starts.
 - Page size up front: settings menu title bar starts with page size state (`pages 4K ok`, `pages 16K: needs 4K` and others); setup and removal banners name page size and what `page-size` component does about it.
-- FEX build matches CPU: setup picks `fex-emu-armv8.0`, `fex-emu-armv8.2` or `fex-emu-armv8.4` from CPU features, so ARMv8.0 CPUs (Cortex-A72 and others) install.
+- FEX build matches CPU: setup picks `fex-emu-armv8.0`, `fex-emu-armv8.2` or `fex-emu-armv8.4` from CPU features, so setup completes on ARMv8.0 CPUs (Cortex-A72 and others); current client builds need Armv8.1 (Known issues).
 - Display mode restore: launcher saves mode of each output when title starts and puts it back once no title runs, and when Steam closes.
 - `steam-arm --shutdown`: stops running client, with SIGTERM fallback when client ignores its shutdown command.
 - MangoHud in x86 Linux titles: `mangohud %command%`, `MANGOHUD=1` and profile `mangohud=on` draw HUD in 64-bit titles.
 - `kde-input-prompt` component, off by default: no "Remote control requested" prompt on KDE Plasma (Wayland) when controller drives desktop.
 - Profile key `multiblock=on|off`: FEX Multiblock per title.
+- Armv8.1 check: setup, Install / Setup screen and launcher stop on CPUs without LSE atomics, naming client issue, before any package change.
+- First start: desktop notification reports client download, unpack and install; menu icons show plain disc until client's own icon file arrives.
 
 ### Added
 
@@ -29,8 +31,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `steam-arm --help` (also `-h`, `help`): prints launcher usage and exits; client not started.
 - Information: `OpenGL` line (host renderer, GL and core profile versions from `glxinfo -B`) and `CPU governor` line with governor and max clock per CPU cluster, `mixed` when clusters differ; note when host renderer is software (`llvmpipe`).
 - `Fixing a game` help page: "Game is slow (CPU-bound)" and "Proton version keeps changing back"; renderer line in "Reading rules".
-- `COMPATIBILITY.md`: Raspberry Pi graphics facts (V3D, V3DV) and Raspberry Pi 5 performance tips. `GAMES.md`: Raspberry Pi 5 and Pi 4 table with expectations and community reports.
+- `COMPATIBILITY.md`: Raspberry Pi graphics facts (V3D, V3DV) and Raspberry Pi 5 performance tips. `GAMES.md`: Raspberry Pi 5 table with expectations and community reports.
 - `steam://` links open in Steam ARM: menu entry `steam-arm.desktop` declares `x-scheme-handler/steam` (`Exec=/usr/local/bin/steam-arm %U`); setup runs `update-desktop-database` after writing menu entries and on `--remove`. No `xdg-mime default` is set, so user's own `mimeapps.list` stays as it was.
+- Armv8.1 check: first CPU's `Features` line without `atomics` stops setup before any package source or package change, stops Install / Setup screen at start, and stops launcher (log line plus dialog when started from menu); message names [steam-for-linux #13288](https://github.com/ValveSoftware/steam-for-linux/issues/13288). `STEAM_ARM_ALLOW_ARMV80=1` skips check (setup prints warning); settings menu passes it on to setup. `--remove`, `--detect` and `--help` run without check.
+- First-start notification: client's first start downloads its files with no window; launcher sends desktop notification at once (`gdbus`, else `notify-send`) and updates it in place from client's bootstrap log: download in 10 % steps with total size, unpack, install, then "Client files installed. Steam opens now." Closed when client exits early, after 30 min, or when launcher ends; never on later starts. No new dependency.
+- Placeholder icons: before client's first start, `steam-arm-icon` draws disc without logo and marks it (`.steam-arm-placeholder` in icon folder, `/usr/local/share/steam-arm/icon-placeholder` for system icons); setup line `menu icons: plain disc until first start, then redrawn from client's own icon`. Launcher redraws icons with logo once client has `steam_tray.ico`. Earlier, menu and desktop entries had no icon until first start.
 - `README.md` Troubleshooting: Bluetooth adapter off after Steam starts, and title that keeps running after SIGTERM or Alt+F4 (quit from title's own menu, or run `steam-arm --shutdown`).
 
 ### Changed
@@ -54,10 +59,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Included profile `248570 overlay=off` (custom OpenGL engine title that stops when Steam overlay attaches), absent since 1.2, restored.
 - Client in SteamOS mode switched host Bluetooth adapter off at every start: it sets adapter power from its own saved setting `System/Bluetooth/Enabled` in `config.vdf`, and unset means off. Launcher now writes host adapter state there before start (only while no client runs), and at exit powers adapter on again when it was on before start, client left it off and Steam's own Bluetooth switch is not off; log line `Bluetooth adapter left off by client; powered on again`.
 - Components checklist cut off `kde-input-prompt` label; label now reads `KDE: no input prompt; X11 apps may send input` and fits.
+- Information and hardware report showed FEX package string (or "not installed" when FEX came from another source) with FEX-2608 and newer: version came from `FEXInterpreter --version`, which those releases no longer include, and FEX-2609.1's `FEX` has no `--version`. Version now read from `FEXGetConfig --version` (for example `FEX-2609.1`), then `FEX --version`, then `FEXInterpreter --version`, then package.
 - Setup started from folder game user cannot enter (for example `/root`) stopped with "client program missing after unpacking": steps that run as game user now start in that user's home folder.
 
 ### Known issues
 
+- Client builds newer than 15 April 2026 stop at start with SIGILL on Armv8.0 CPUs without LSE atomics (Cortex-A53, A57, A72: Raspberry Pi 4, Pi 3); client needs Armv8.1 or newer ([steam-for-linux #13288](https://github.com/ValveSoftware/steam-for-linux/issues/13288)). `README.md` Requirements, `COMPATIBILITY.md` and `GAMES.md` updated; setup and launcher stop on such CPUs (Added).
 - One Java 17 title on Mali drivers route stopped with JVM crash after 21 s in one of three runs.
 - MangoHud draws no HUD in Unity titles on Vulkan renderer.
 - Custom OpenGL engine title with included `overlay=off` profile (app 248570) stops about 20 s in when MangoHud is loaded; leave MangoHud off for it.
