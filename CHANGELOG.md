@@ -4,6 +4,62 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.2] - 2026-10-06
+
+### Fixed
+
+- Ubuntu 24.04 and Debian 12: setup added FEX package source, then failed at host packages (no SDL3 packages there). Setup now checks host packages with `apt-cache policy` before any package or package source change and stops naming missing packages and minimum releases (Ubuntu 25.10, Debian 13); README Requirements names them.
+- FEX from another source: setup skipped FEX package source but still installed FEX packages, so systems with FEX built from source stopped at host packages. With `FEX` command not owned by `fex-emu` package and its x86 binfmt entries registered, setup installs no FEX packages; missing binfmt entries stop setup before any change.
+- FEX thunk folders in game user's FEX configuration were fixed to `/usr`; setup now reads them from FEX's own prefix, `/usr` or `/usr/local`, and turns GL and Vulkan thunks off with warning when none is complete. x86 Remote Play stand-in runs `FEX` found on `PATH`, same FEX whose thunk folders setup reads, and launcher replaces stand-in left by earlier release whenever its content differs.
+- `--remove` summary: package list names `libgtk2.0-0` as well as `libgtk2.0-0t64`; PPA removal hint on Ubuntu only when FEX package is installed.
+- Mali family table: Mali-G615/G715 (arch v11) get own family `mali-csf-v11` (`gpu-in-emulation` and `glx-lax` on, untested); Mali-G1 (arch v14) gets `mali-csf-g1` (Mali components off, needs Mesa 26.2); both were `mali-csf` with note that Mesa does not support model. 32-bit Vulkan titles on Mali 5th gen stay on forwarding and `vk-spoof` is off there by default, since PanVK loads there only with `PAN_I_WANT_A_BROKEN_VULKAN_DRIVER=1`; `steam-arm-setup --help` names Mali-G610 class only. Install wizard (MediaTek) lists both new families.
+- Debian 13 and Raspberry Pi OS: setup stopped at FEX package source (`software-properties-common` missing on Debian 13; `add-apt-repository` fails for PPAs on Debian 12). Outside Ubuntu family, setup now writes FEX's PPA as apt source `/etc/apt/sources.list.d/steam-arm-fex.sources` with Ubuntu series matching Debian release (Debian 13: noble, Debian 12: jammy) and signing key `/etc/apt/keyrings/steam-arm-fex.gpg`, checked against pinned fingerprint. Debian 11 and older stop at host package check (no SDL3 packages); message from FEX package source step names Debian 13. Earlier FEX source naming Debian release is renamed to `.disabled`. `--remove` deletes both files once no FEX build is installed. Ubuntu path unchanged.
+- Apple GPU notes (setup, setup wizard page size screen, Information, README, COMPATIBILITY, COMPARISON) said client runs inside `muvm` or on 4K page kernel; no code sets up `muvm`, and setup stops there. Notes now say 16K page kernel is not supported; Apple Silicon page size message no longer offers `STEAM_ARM_IGNORE_PAGESIZE=1`. That variable skips check on non-4K host kernel; docs name it only for x86 side inside separate 4K page guest that check cannot see.
+- Remote Play cause in README and FEATURES: native ARM64 streaming client hardware path (V4L2) fails with green screen on Qualcomm Iris (steam-for-linux #13428) and has no V4L2 decoder on Rockchip, so launcher runs x86-64 client under FEX, which reaches no host video decoder.
+- RESEARCH: F5 (Metal Gear Rising: Revengeance) marked fixed upstream (FEX #5024); Thief 2014 dropped from known not-fixes (Android-only, FEX #5791), later items renumbered; F2 widened to PlayStation PC SDK titles that continue with full x87 precision, God of War Ragnarök listed as still crashing (FEX #4556); M3 no longer says Zink over PanVK reaches GL 4.x (needs `geometryShader` and `tessellationShader`).
+- Host package check and FEX package choice read `apt-cache policy` in C locale; under translated locale every package counted as missing and setup stopped on supported releases.
+- First start: client that exited before its files were complete made launcher exit with no message. Launcher now stops with message (dialog with `zenity` when started from menu) to start Steam ARM again to finish download, and starts client once more when bootstrap exited after updating itself.
+- Launcher warnings that need action (Mali drivers inside emulation missing, private GLX copy missing or broken, display mode not put back, Bluetooth adapter left off) went to terminal and `steam-arm.log` only, so menu starts never showed them. Menu starts now also show desktop notification, once per text per login session.
+- Settings menu and tray counted Steam client of any account as running; they now count only game account's client (tray: own account's).
+- `steam-arm --help` did not list `--bigpicture` and `--desktop` and refused to run as root; it lists both and works as root.
+- Setup run from settings menu: closing summary no longer shows command line hints (re-run options, settings menu command, uninstall command).
+- Tray Stop sent SIGTERM to `steam` and `steamwebhelper` itself; it now runs `steam-arm --shutdown` (client's own exit, SIGTERM after 20 s) and is greyed while game runs, as settings menu Close Steam refuses then.
+- Tray kept generic icon after client's first start until next login; it now switches to client's own icon once client has unpacked it.
+- Tray autostart entry named KDE, GNOME and XFCE only, so labwc (Raspberry Pi OS) and other desktops never started tray at login; entry no longer limits desktops. Setup line said tray appears when client starts; it now says next login and each start.
+- KDE window rule needed `kwriteconfig6`, so Plasma 5 got no rule and no message; setup now writes and removes rule with `kwriteconfig5` there, and prints skip line when KDE Plasma is installed and neither tool exists.
+- Settings menu Games and Graphics showed hand-installed `GE-Proton*` tools as `Linux build`; tool names containing `proton` now count as Windows build; names not starting with `proton` show as `Windows build (<first 20 characters of tool name>)`.
+- View logs said `launcher writes warnings only` for empty game and setup logs too; those now say `is empty`, and log not readable by account running menu says so. Last setup run said `No log found yet.` in menu run by desktop account, since setup logs of `sudo steam-arm-config` runs are kept in administrator's folder; menu now names that folder and `sudo steam-arm-config`.
+- Godot 3 titles stopped at start (`GLXBadFBConfig` on forwarding, "Unable to initialize video driver" on Mali drivers route) unless profile set GL 3.3 report. Launch handler now sets `MESA_GL_VERSION_OVERRIDE=3.3` and `MESA_GLSL_VERSION_OVERRIDE=330` for them (log `godot 3: GL 3.3 report`); profile `godot=vulkan` leaves them as is. Not run on device yet without profile.
+- Settings menu header on ARM systems without device tree (ACPI boards) printed `/proc/device-tree/model: No such file or directory` above menu; that error text is gone.
+- Godot titles exported with PCK embedded in executable got no Godot rule; launch handler now also reads engine version from PCK appended to title's binary (or binary its start script names).
+- Setup run from settings menu showed no download progress: client package (about 110 MB) and Mali driver archive (about 75 MB) printed one line while gauge stood still. Built-in progress screen now shows curl progress bar; setup log keeps final bar line only.
+- Dialog texts (replace other variant, `pad-xbox`, hardware report, Free /dev/shm, Restore settings, Update / Repair, Uninstall) had line breaks inside sentences, leaving one-word lines on built-in screens; those sentences now wrap to screen width.
+- `.deb` package removal said Steam client "it installed" stays, also when client came from script install; message now says Steam ARM client and its files stay.
+- Godot version lookup missed `.pck` beside binary that start script names in subfolder (`bin/game.x86_64` + `bin/game.pck`) and `.pck` in install folder whose name holds `[`, `]`, `?` or `*`. Handler now reads packs in Godot's own order: PCK embedded in executable, `<name>.pck` beside it, then other `.pck` files in executable's folder, working folder or folder of last file argument.
+
+### Changed
+
+- README links `COMPARISON.md` near top.
+- Godot rules (Godot 4 `--rendering-driver opengl3` and GL 3.3 report, Godot 3 GL 3.3 report) apply to Linux builds only; Windows Godot titles under x86 Proton, which got Godot 4 rule when `.pck` lay beside `.exe`, keep Godot defaults (log `godot 4: Windows build under x86 Proton, left as is`). Not measured on device with and without rule.
+- Launcher checks page size at each start: 16K or 64K page kernel stops start with fix (Raspberry Pi 5 `page-size` component, 4K page kernel); `STEAM_ARM_IGNORE_PAGESIZE=1` skips check. Setup run with that variable on non-4K kernel keeps it in `/etc/steam-arm/steam-arm.conf`, so menu starts and later setup runs honour it.
+- Launcher warns when no GPU render node is readable and writable by account (games draw on CPU), naming group to join; with Arm's closed `kbase` driver (`/dev/mali0`, no render node) it names kernel with Mesa's `panfrost` or `panthor` driver.
+- `steam-arm.log` capped: over 1 MiB at start, it moves to `steam-arm.log.1` (one old copy kept).
+- Settings menu: screens that need Steam closed (Install / Setup, Components, Controllers, Update / Repair, Uninstall, forced build in Graphics, Remote Play apply, Restore settings) offer `Close Steam` (runs `steam-arm --shutdown` as game account, in Install / Setup as account picked there; refused while game runs; question wraps to screen width) in place of "close it first" messages; setup and `steam-arm-config` command line stop messages name `steam-arm --shutdown`.
+- Tray menu adds Open in Big Picture, Settings (settings menu in terminal emulator) and View log (`steam-arm.log` at its end in `less` in terminal emulator, else desktop's default program; greyed while log is empty or missing). Open in Big Picture and Open in desktop mode restart client, so they are greyed while game runs, as Stop is.
+- Application menu entry "Steam ARM Settings" opens settings menu in terminal; written with launcher, removed by uninstaller.
+- `.deb` package adds application menu entry "Steam ARM Setup"; `steam-arm-setup` without options in terminal opens setup menu, which asks for `sudo` itself.
+- `.deb` package install over client set up earlier (by package, zip or script): package names Steam ARM version on system and command that applies new one (`sudo steam-arm-setup --keep`); package install never runs setup.
+- `.deb` package carries `md5sums`, `Homepage` and `Installed-Size`; `build-deb.sh` gives byte-identical package from same sources with same `dpkg-deb` version (file times from top `doc/changelog` entry, or `SOURCE_DATE_EPOCH`; stops when that entry has no date).
+- Maintenance, Check for new version, and `steam-arm-config update-check`: newest GitHub release compared with installed version, by hand only; nothing downloads.
+- Hardware report adds last launcher log lines, start, update and error lines of client's bootstrap log, closing block of newest setup log, and game account groups next to groups of its running processes.
+
+### Known issues
+
+- Java (LWJGL 2) titles on Valve FEX tool FEX-2607: about half of first-start map loads fail (Java runtime crash in compiled code, server thread stall or deadlock). Cause lies in FEX; Multiblock off, TSO options, full SMC checks and other garbage collector do not lower rate. FEX-2609.1 beta: 2 of 10 failed.
+- 32-bit Source engine titles, native Linux build: loading screen draws, then title hangs. Windows build through Proton reaches menu and plays; set it from Graphics > Route per game > windows.
+- Client builds newer than 15 April 2026 stop at start on Armv8.0 CPUs without LSE atomics (Cortex-A53, A57, A72: Raspberry Pi 4, Pi 3) ([steam-for-linux #13288](https://github.com/ValveSoftware/steam-for-linux/issues/13288)); setup and launcher stop on such CPUs, as in 2.1.
+- Items listed under 2.1 and 2.0 Known issues and not fixed above still apply.
+
 ## [2.1] - 2026-10-02
 
 ### Highlights

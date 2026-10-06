@@ -6,6 +6,8 @@ titles through ARM64 Proton · one installer script · settings menu `steam-arm-
 This README is instruction booklet. Section 1 covers install and first game; use index to
 jump to details.
 
+Other routes to Steam on ARM64, and where each one runs: `COMPARISON.md`.
+
 ---
 
 ## Contents
@@ -94,9 +96,35 @@ replaced, and only when it is missing or damaged.
   <https://github.com/ValveSoftware/steam-for-linux/issues/13288>. Setup (before any
   package change) and launcher read `atomics` and stop on Armv8.0 CPUs, naming this
   issue; `STEAM_ARM_ALLOW_ARMV80=1` skips check.
+- Ubuntu 25.10 or newer, Debian 13 or newer, or distribution built on them. Client needs
+  SDL3 packages (`libsdl3-0`, `libsdl3-image0`, `libsdl3-ttf0`), which Ubuntu 24.04 and
+  Debian 12 lack. Before any package or package source change, setup reads
+  `apt-cache policy` for each distribution package it installs and stops with names of
+  missing ones; FEX packages are checked once FEX package source is in place.
 - Debian or Ubuntu family distribution, since installer uses `apt`. FEX, emulation tool
-  for x86 game code, installs from Ubuntu PPA `ppa:fex-emu/fex`; other systems need FEX
-  from another source.
+  for x86 game code, installs from FEX's Ubuntu PPA `ppa:fex-emu/fex`:
+  - Ubuntu family: added with `add-apt-repository`.
+  - Debian 13 (trixie) and Raspberry Pi OS built on it: setup writes same PPA as apt
+    source `/etc/apt/sources.list.d/steam-arm-fex.sources` with Ubuntu 24.04 (noble)
+    build, which fits Debian 13's C library (glibc 2.41) and Qt 5 packages. Signing key
+    comes from `keyserver.ubuntu.com`; setup compares its fingerprint with pinned
+    `EDB98BFE8A2310DC9C4A376E76DBFEBEA206F5AC` (Launchpad's key for this PPA) before
+    writing `/etc/apt/keyrings/steam-arm-fex.gpg`. Earlier FEX source naming Debian
+    release (from `add-apt-repository` on Debian) is renamed to `.disabled`.
+  - Debian 12 (bookworm): host package check stops setup before any change, since
+    Debian 12 has no SDL3 packages and no `libgtk2.0-0t64`. Upgrade to Debian 13.
+  - Debian 11 and older: host package check stops setup before any change (no SDL3
+    packages). Upgrade to Debian 13.
+  - FEX from `fex-emu` package already installed: setup adds no package source.
+  - FEX from another source (`FEX` command not owned by `fex-emu` package, for example
+    build installed under `/usr/local`): setup adds no package source and installs no FEX
+    packages. FEX's x86 binfmt entries (`FEX-x86`, `FEX-x86_64` in
+    `/proc/sys/fs/binfmt_misc`) must be registered, else setup stops before any change.
+    Thunk folders (`HostThunks`, `GuestThunks`, `ThunksDB.json`) come from FEX's own
+    prefix, then `/usr`, then `/usr/local`; with no complete set, game user's FEX
+    configuration gets GL and Vulkan thunks off and setup prints warning.
+  `--remove` deletes setup's Debian source file and key once no FEX build is installed;
+  while FEX stays, removal summary names command for both files.
 - Mesa graphics stack for `glx-lax`. `vk-spoof` and `gpu-in-emulation` are written for
   Mali (Panfrost and PanVK) and are on by default on Mali GPUs only. Tested with Mesa
   26.1.
@@ -132,11 +160,18 @@ before first start. Options: `--help`.
 
 `.deb` package built from GitHub source installs command `steam-arm-setup` with same
 options. `steam-arm-setup --detect`, `--list` and `--help` run without root.
+`steam-arm-setup` without options in terminal opens setup menu, which asks for
+administrator rights through `sudo` when needed. Package also adds application menu entry
+"Steam ARM Setup", which opens that menu in terminal. Package install or upgrade replaces
+setup script only: launcher, launch handler and settings menu on system stay at earlier
+version until setup runs again. When client set up earlier (by package, zip or script) is
+from other version, package says so, naming `sudo steam-arm-setup --keep`.
 
 ## Setup menu (steam-arm-config)
 
 `steam-arm-config` is menu app for settings after install, installed as
-`/usr/local/bin/steam-arm-config`. Front end: built-in full-screen screens (Python
+`/usr/local/bin/steam-arm-config`. Application menu entry "Steam ARM Settings" (added with
+launcher) and tray item Settings open it in terminal emulator. Front end: built-in full-screen screens (Python
 `curses`) with textured background and light dialog box, when `python3` with `curses` is
 present and terminal can place cursor; else `dialog` when installed, else `whiptail`, else
 plain prompts. `STEAM_ARM_DIALOG=builtin|dialog|whiptail|read` picks one. `NO_COLOR` turns
@@ -178,9 +213,20 @@ Sections:
 7. Remote Play: settings state, how pairing works, apply settings now.
 8. Maintenance: Update / Repair (setup again with same parts), view logs, hardware
    report, free `/dev/shm` now, back up settings, restore settings (see Settings backup
-   and restore).
+   and restore), check for new version (see Updating). Hardware report holds system,
+   status, notes, detection, profiles, renderer lines, last game start, last 20 launcher
+   log lines, start, update and error lines of client's bootstrap log, closing block of
+   newest setup log, and groups of game account next to groups of its running processes
+   (`Not active yet` names groups that need new login).
 9. Uninstall: remove Steam ARM and keep games, or remove it with all games.
 10. Help / About: `Fixing a game` page (see Fixing games) and About.
+
+Screens that need Steam closed (Install / Setup, Components, Controllers, Update /
+Repair, Uninstall, forced build in Graphics, Remote Play apply, Restore settings) offer
+`Close Steam` while game account's client runs (Install / Setup: client of account picked
+there): menu runs `steam-arm --shutdown` as that account (client's own exit, SIGTERM after
+20 s, never SIGKILL) and goes on once client has stopped. While game runs, menu asks to quit
+game first; client of another account blocks Uninstall with message.
 
 Command line, same settings from scripts:
 
@@ -195,6 +241,7 @@ Command line, same settings from scripts:
 | `components a,b,...`                   | Install exactly these parts (runs setup)                |
 | `backup [DIR] [options]`               | Settings backup file in DIR (default: home)             |
 | `restore FILE [options]`               | Restore parts of backup file                            |
+| `update-check`                         | Newest GitHub release compared with this version        |
 | `help fixing`                          | Prints `Fixing a game` page                             |
 | `--help`                               | Usage                                                   |
 
@@ -216,8 +263,10 @@ and `glx-lax`; every other component keeps its own default.
 | Family            | GPU                             | On by default                 |
 |-------------------|---------------------------------|-------------------------------|
 | `mali-csf-v10`    | Mali-G610, G310 (Panthor)       | all three                     |
-| `mali-csf-5thgen` | Mali-G720, G725 class (Panthor) | all three                     |
-| `mali-csf`        | other Panthor Malis, Mali-G1    | `glx-lax`                     |
+| `mali-csf-v11`    | Mali-G615, G715 (Panthor)       | `gpu-in-emulation`, `glx-lax` |
+| `mali-csf-5thgen` | Mali-G720, G725 class (Panthor) | `gpu-in-emulation`, `glx-lax` |
+| `mali-csf-g1`     | Mali-G1 (Panthor)               | `glx-lax`                     |
+| `mali-csf`        | other Panthor Malis             | `glx-lax`                     |
 | `mali-valhall-jm` | Mali-G57, G77, G78 (Panfrost)   | `gpu-in-emulation`, `glx-lax` |
 | `mali-bifrost`    | Mali-G31, G52, G76 (Panfrost)   | `gpu-in-emulation`, `glx-lax` |
 | `mali-midgard`    | Mali-T600 to T880 (Panfrost)    | `gpu-in-emulation`, `glx-lax` |
@@ -247,8 +296,15 @@ and `glx-lax`; every other component keeps its own default.
 
 Notes installer prints per family:
 
-- `mali-csf-v10`: test device's family (RK3588). `mali-csf-5thgen`: untested.
-- `mali-csf`: Mesa does not support this Mali model yet; titles run through forwarding.
+- `mali-csf-v10`: test device's family (RK3588).
+- `mali-csf-v11`, `mali-csf-5thgen`: untested. PanVK (Mesa's Vulkan driver) loads on
+  these GPUs only with `PAN_I_WANT_A_BROKEN_VULKAN_DRIVER=1`
+  <https://docs.mesa3d.org/drivers/panfrost.html>, so 32-bit Vulkan titles stay on
+  forwarding there and `vk-spoof` is off by default.
+- `mali-csf-g1`: needs Mesa 26.2 or newer <https://docs.mesa3d.org/relnotes/26.2.0.html>.
+  Published driver archive (Mesa 26.1.8) does not cover it, so Mali drivers route there
+  needs custom driver archive. Untested.
+- `mali-csf`: Mali model not in this table; titles run through forwarding.
 - Panfrost families: no default Vulkan driver; native OpenGL titles, Windows titles
   unlikely. Mali drivers in emulation serve Java titles there.
 - `mali-utgard`: not suitable for Steam games. `mali-kbase`: warning; install needs
@@ -257,7 +313,8 @@ Notes installer prints per family:
   32-bit titles not included. `adreno-a702`, Raspberry Pi 4 and 5: Vulkan too limited for
   most Windows titles. `adreno-legacy`: no Vulkan driver, native OpenGL titles only.
   Raspberry Pi 4: current client builds do not start (Armv8.0 CPU, see Requirements).
-- `apple-agx`: runs inside `muvm` on 16K page hosts. `broadcom-vc4`: not supported.
+- `apple-agx`: not supported on 16K page kernel; setup stops and does not set up `muvm`
+  (4K page virtual machine). `broadcom-vc4`: not supported.
   `vivante`: no Vulkan driver, most titles do not run.
 - `img-powervr`: Vulkan driver in development, OpenGL through Zink. `nvidia-prop`:
   `glx-lax` not applicable.
@@ -276,8 +333,8 @@ it for later runs (`GPU_FAMILY_SET=user` in settings file). `GPU_FAMILY=auto` de
 again. Id not in table above stops install with list of valid ids; with `--detect` it
 prints warning and valid ids, shows detected family and exits with status 0. Launch
 handler reads
-same family: Mali drivers route applies to Mali families only, and 32-bit Vulkan titles
-switch to it on `mali-csf-v10` and `mali-csf-5thgen` only.
+same family: Mali drivers route applies to Mali families only (not `mali-csf-g1`), and
+32-bit Vulkan titles switch to it on `mali-csf-v10` only.
 
 ```
 sudo env GPU_FAMILY=mali-bifrost bash steam-arm-install.sh --defaults
@@ -287,8 +344,8 @@ sudo env GPU_FAMILY=mali-bifrost bash steam-arm-install.sh --defaults
 
 Start "Steam ARM" from menu, or run `steam-arm`. First start downloads client package and
 restarts itself; this takes several minutes. Sign in from Big Picture, or from
-"Steam ARM (Desktop mode)". `steam-arm` refuses to run as root; start it from desktop
-account that plays games.
+"Steam ARM (Desktop mode)". `steam-arm` refuses to run as root (except `--help`); start it
+from desktop account that plays games.
 
 Client shows no window while it downloads. Desktop notification (via `gdbus`, else
 `notify-send`) appears at once and updates in place: download in 10 % steps with total
@@ -297,7 +354,12 @@ exits early; never shown on later starts.
 
 When client exits after applying its own update (exit status 42, or bootstrap log ending
 in "Update complete, launching" with no client left running), launcher starts it again, at
-most twice per start.
+most twice per start; during first start, once.
+
+First start that ends before client files are complete (download stopped, client closed,
+network gone) stops launcher with message, also as dialog (with `zenity`) when started from
+menu: start Steam ARM again to finish download. Bootstrap log:
+`.local/share/Steam/logs/bootstrap_log.txt` in client home.
 
 Installer downloads client from Valve's stable ARM64 channel and checks it against
 checksum in Valve's manifest. On first start client's Steam Frame mode moves it to its
@@ -337,12 +399,11 @@ upgrade from 1.2, which saved no family record, only turns such parts off.
   system Mesa. (scope: Mesa specific)
 - `vk-spoof`: Installs Vulkan layer that reports device features Direct3D translation
   layer requires and Mali driver does not expose, then removes them again from device
-  creation. (scope: written for PanVK on Mali; on by default on Mali-G610 class and Mali
-  5th gen)
+  creation. (scope: written for PanVK on Mali; on by default on Mali-G610 class only)
 - `gpu-in-emulation`: Installs Mali drivers inside x86 emulation, in second copy of root
   filesystem; launch handler picks them for titles that fail on forwarding. See Graphics
-  route per title. (scope: Mali; on by default on Mali GPUs with open drivers Mesa
-  supports)
+  route per title. (scope: Mali; on by default on Mali GPUs with open drivers, except
+  Mali-G1)
 - `shader-cache`: Off by default on every GPU family. Turns on Steam's shader pre-caching,
   so Windows titles play in-game videos; downloads several GB and processes for long time
   on first start. See Shader pre-caching. (scope: Generic)
@@ -361,15 +422,22 @@ upgrade from 1.2, which saved no family record, only turns such parts off.
   of that maker get access. (scope: Generic)
 - `pad-xbox`: Off by default. Presents XInput pads from other makers as Xbox 360 pads.
   (scope: Generic)
-- `desktop`: Adds application menu entry "Steam ARM", and window rule that gives client's
-  desktop interface windows title bar. (scope: Generic)
+- `desktop`: Adds application menu entry "Steam ARM", and KDE window rule that gives
+  client's desktop interface windows title bar. Rule needs `kwriteconfig6` (Plasma 6) or
+  `kwriteconfig5` (Plasma 5); without either on KDE Plasma, setup prints skip line. (scope:
+  Generic)
 - `desktop-mode`: Adds menu entry "Steam ARM (Desktop mode)", which opens client in its
   desktop interface, for signing in and store pages. Found by searching "desktop" or "sign
   in". (scope: Generic)
 - `icon-bigpicture`: Places "Steam ARM" icon on desktop. (scope: Generic)
 - `icon-desktop`: Places "Steam ARM (Desktop mode)" icon on desktop. (scope: Generic)
-- `tray`: Steam icon in panel tray with Open, Open in desktop mode and Stop; client build
-  shows none of its own. (scope: Generic)
+- `tray`: Steam icon in panel tray with Open Steam, Open in Big Picture, Open in desktop
+  mode, Stop Steam (`steam-arm --shutdown`; greyed while game runs), Settings
+  (`steam-arm-config` in terminal emulator), View log (launcher log in `less`; greyed while empty) and Quit tray; client
+  build shows none of its own.
+  Starts at login through autostart entry for any desktop that reads autostart entries,
+  and with each start of Steam ARM. Generic icon until client's first start, then client's
+  own tray icon. (scope: Generic)
 - `kde-input-prompt`: Off by default. On KDE Plasma (Wayland), pre-authorises input from
   X11 programs in KDE's permission store, so controller that drives desktop raises no
   "Remote control requested" prompt. Trade-off: every X11 program may then send input
@@ -396,9 +464,9 @@ start, with no launch options:
   - Java titles: bundled Java runtime detected in game folder. LWJGL 2 titles also get
     `-DLWJGL_DISABLE_XRANDR=true`; Java 21 and newer get FEX Multiblock off, unless
     `FEX_APP_CONFIG` launch option sets Multiblock.
-  - 32-bit titles started with `-vulkan` or `-force-vulkan`, on `mali-csf-v10` and
-    `mali-csf-5thgen`: option kept, title renders on GPU in place of CPU renderer. On
-    other families handler removes option (profile key `vk32=keep` keeps it).
+  - 32-bit titles started with `-vulkan` or `-force-vulkan`, on `mali-csf-v10`: option
+    kept, title renders on GPU in place of CPU renderer. On other families handler
+    removes option (profile key `vk32=keep` keeps it).
 
 Game log line `steam-arm: graphics:` names route and reason. Override per title with
 profile key `gfx=a` (forwarding) or `gfx=b` (Mali drivers in emulation), or with
@@ -447,8 +515,16 @@ Results per game type and frame rates on both routes: `GAMES.md`.
 
 Setup checks page size before it installs anything. Emulation needs 4K pages; on 16K or
 64K kernel it stops and names fix for that system, and on Raspberry Pi `page-size`
-component applies that fix. `STEAM_ARM_IGNORE_PAGESIZE=1` skips check, for system that
-runs x86 side inside its own 4K environment.
+component applies that fix. Setup does not set up 4K page virtual machine such as `muvm`.
+`STEAM_ARM_IGNORE_PAGESIZE=1` skips check on non-4K host kernel; use it only when x86 side
+runs inside separate 4K page guest that check cannot see. On 16K host without such guest,
+emulation fails.
+
+Launcher checks page size at each start too: on 16K or 64K kernel (for example after
+booting other kernel) it stops before client starts and names same fix.
+`STEAM_ARM_IGNORE_PAGESIZE=1` in launcher environment or as line in
+`/etc/steam-arm/steam-arm.conf` skips that check. Setup run with it on non-4K kernel writes
+that line, so menu starts and later setup runs honour it; setup on 4K kernel removes it.
 
 ## Playing games
 
@@ -469,8 +545,10 @@ launch options:
   from before title started, once no title runs, and when Steam closes (X11 sessions;
   `steam-arm.log` line `display mode put back after game`). `STEAM_ARM_MODE_RESTORE=0` in
   `/etc/steam-arm/steam-arm.conf` turns it off.
-- Unity and Godot 4 titles get renderer settings Mali driver can run, found from game
-  files.
+- Unity and Godot titles get renderer settings Mali driver can run, found from game
+  files: Godot 4 OpenGL renderer and GL 3.3 report, Godot 3 GL 3.3 report. Godot version
+  comes from PCK embedded in executable, else `.pck` beside executable (same order as
+  Godot), also behind start script; Windows builds under x86 Proton keep Godot defaults.
 - Graphics route: forwarding, or Mali drivers in emulation for Java titles and 32-bit
   Vulkan titles; see Graphics route per title.
 
@@ -489,7 +567,8 @@ user choice. GL or Vulkan thunk, graphics provider and GLX vendor set in launch 
 are replaced, since that route needs its own (`overridden for Mali route`). Profile
 `gl32=off` sets GLX vendor `mesa` same way. Unity and Godot log lines name values in
 effect, launch options included: renderer and reported GL version, for example
-`unity: OpenGL core, GL 4.5 report` or `godot 4: OpenGL renderer, GL 3.3 report`.
+`unity: OpenGL core, GL 4.5 report`, `godot 4: OpenGL renderer, GL 3.3 report` or
+`godot 3: GL 3.3 report`.
 Handler log of each start: `/tmp/fex-compat-tool-<pid>.log`; menu shows lines of last
 start under Games, "Rules used at last start".
 
@@ -583,7 +662,7 @@ home. Line: `<appid> key=value ...`.
 |--------------|------------------------|--------------------------------------------------|
 | `overlay`    | `x86`, `vulkan`, `off` | Steam overlay kind for title                     |
 | `mangohud`   | `on`, `off`            | MangoHud for title                               |
-| `godot`      | `gl`, `vulkan`         | Godot 4 renderer                                 |
+| `godot`      | `gl`, `vulkan`         | Godot renderer and GL report (`vulkan`: as is)   |
 | `unity`      | `vulkan`, `gl`         | Unity renderer                                   |
 | `env`        | `NAME=VALUE;...`       | Extra environment                                |
 | `args`       | `ARG;ARG`              | Extra arguments                                  |
@@ -666,14 +745,16 @@ Reading "Rules used at last start" (Games, then game):
 - "title setting kept: gfx=...": route set for this game won over rules.
 - "renderer: GPU (...)" or "renderer: warning: GPU forwarding not active ...": drawing on
   GPU or CPU.
-- No lines: game has not started since setup, or it is Windows game (Proton keeps its own
-  logs).
+- No lines: game has not started since setup. Windows games under x86 Proton show only
+  compat and Godot note lines (Proton keeps its own logs).
 
 ## Remote Play
 
-Remote Play streaming client decodes through Vulkan Video, which Mali driver does not
-provide. Installer has `steam-arm-remoteplay`, which pins hardware decoding and HEVC off
-in client's stored configuration, so host keeps to H.264 and software decoder. Launcher
+Native ARM64 streaming client hardware path (V4L2) fails with green screen on Qualcomm
+Iris (steam-for-linux #13428) and has no V4L2 decoder to use on Rockchip, so launcher runs
+x86-64 streaming client under FEX in its place. x86 client under FEX reaches no host video
+decoder, and with hardware decoding advertised session can sit on launch screen. Installer has `steam-arm-remoteplay`, which pins hardware decoding and HEVC
+off in client's stored configuration, so host keeps to H.264 and software decoder. Launcher
 applies this setting before every client start once account has signed in, so first
 stream already runs with it. `steam-arm-remoteplay --check` reports without changing
 anything; menu section Remote Play shows same state.
@@ -687,8 +768,16 @@ Run newer `steam-arm-install.sh`, or Maintenance, Update / Repair in `steam-arm-
 Client, library, sign-in, component choices and GPU family set by hand are kept. To
 remove one component, re-run with that component deselected.
 
+Maintenance, Check for new version (or `steam-arm-config update-check`) asks GitHub API
+(`releases/latest`, which lists no drafts and no pre-releases) for newest release and
+compares its version with installed one. Newer release: menu shows its page and
+installer command; nothing downloads, and nothing checks on its own. No network, request
+limit (HTTP 403) and unreadable answers each give their own message. Update / Repair
+runs installed copy of installer, so newer version needs newer `steam-arm-install.sh`.
+
 Install, Update / Repair and component changes refuse to run while Steam ARM runs for
-game account (message `Steam is running for '<user>'`); close client first. Second setup
+game account (message `Steam is running for '<user>'`); close client first (menu offers
+`Close Steam`; from terminal: `steam-arm --shutdown` as game account). Second setup
 run started while another one, install or removal, is in progress stops with notice.
 
 Custom driver archive chosen with `STEAM_ARM_PROVIDER_SHA256` stays in use on every later
@@ -696,8 +785,8 @@ run, Update / Repair included; `--provider-default` switches back to published a
 Custom settings are cleared only once published tree is built; when that fails, custom
 settings and tree stay and setup says so.
 
-Downloads show curl's progress bar on terminal only; setup logs and menu screens get
-error lines only.
+Downloads show curl's progress bar on terminal and on settings menu's built-in progress
+screen; setup logs keep final bar line, other menu screens get error lines only.
 
 Other variant of this installer present: setup stops and names it. `--replace-other`
 retires it first and writes two archives: its system files go into
@@ -857,7 +946,9 @@ Environment for installer:
   (default `.local/share/steam-arm`). Plain relative path: no `..`, spaces or special
   characters, and not shared folder such as `.local` or `Documents`.
 - `GPU_FAMILY=id|auto`: GPU family by hand, kept for later runs; `auto` detects again.
-- `STEAM_ARM_IGNORE_PAGESIZE=1`: skips 4K page size check.
+- `STEAM_ARM_IGNORE_PAGESIZE=1`: skips 4K page size check of setup and launcher on non-4K
+  host kernel; only when x86 side runs inside separate 4K page guest that check cannot see
+  (Page size). Kept in `/etc/steam-arm/steam-arm.conf` for launcher and later runs.
 - `STEAM_ARM_ALLOW_ARMV80=1`: skips Armv8.1 (LSE atomics) CPU check of setup, settings
   menu and launcher; current client builds stop at start on Armv8.0 CPUs (Requirements).
 - `STEAM_ARM_PROVIDER_TARBALL=file`: `gpu-in-emulation` takes driver archive from local
@@ -918,7 +1009,7 @@ Environment for launcher (`steam-arm`) and its helpers:
 - `STEAM_ARM_VK_SPOOF_DEBUG=1`: troubleshooting; `vk-spoof` layer prints its decisions
   to game's output.
 - `steam-arm --desktop` and `steam-arm --bigpicture` start client in that interface, or
-  restart running client in it.
+  restart running client in it. `steam-arm --help` lists launcher options, also as root.
 
 Per-title launch options (`STEAM_ARM_OVERLAY`, `STEAM_ARM_PRELOAD_KEEP`,
 `STEAM_ARM_VK_SPOOF_DISABLE`, `PROTON_DXVK_D3D8`): see Playing games.
@@ -1045,6 +1136,19 @@ to repository.
 - `steam-arm` stops with "Steam ARM is set up for account NAME": client lives in home of
   account chosen at setup. Log in as that account, or run `sudo steam-arm-config`, Install / Setup,
   and pick current account.
+- `steam-arm` stops with "Steam client did not finish its first start": client files
+  incomplete (download stopped or client closed during first start). Start Steam ARM again;
+  download continues.
+- Desktop notification "Steam ARM: warning": launcher found problem it cannot fix itself
+  (Mali drivers inside emulation missing, private GLX copy missing or broken, display mode
+  not put back, Bluetooth adapter left off, no usable GPU render node); text names fix. Shown
+  when Steam ARM starts from menu, once per text per login session; every warning is in
+  `steam-arm.log` in client home (over 1 MiB at start: moved to `steam-arm.log.1`, one old
+  copy kept).
+- No GPU render node readable and writable by account (warning at start): games draw on CPU.
+  Add account to group of `/dev/dri/renderD*` (warning names it, usually `render`), then log
+  out and back in. No render node and `/dev/mali0` present: Arm's closed `kbase` driver;
+  warning names fix (kernel with Mesa's `panfrost` or `panthor` driver).
 - `steam-arm` stops with "Steam client not installed": setup did not finish. Run it again with
   `sudo steam-arm-config`, Maintenance > Update / Repair. On Raspberry Pi 5, reboot first when
   setup switched to 4K page kernel.

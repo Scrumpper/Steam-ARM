@@ -1,7 +1,7 @@
 #!/bin/bash
 # steam-arm-setup: installs Valve's native ARM64 Steam client (host packages, RootFS, launcher, optional components); run as root, then launch via steam-arm. See --help.
 set -u
-SA_VERSION=2.1
+SA_VERSION=2.2
 # Banner: self-contained (no board helper needed); TTY-gated, honours NO_COLOR.
 steam_banner() {
     [ -t 1 ] || return 0
@@ -25,8 +25,10 @@ LSE_TEXT="CPU has no Armv8.1 atomics (LSE): \"atomics\" is missing from Features
        with SIGILL on Armv8.0 cores (Cortex-A53, A57, A72: Raspberry Pi 4 and 3).
        Client issue: https://github.com/ValveSoftware/steam-for-linux/issues/13288
        STEAM_ARM_ALLOW_ARMV80=1 skips this check."
-# curl progress bar only on a terminal; logs and the menu's screens get errors only.
-CURL_SHOW=(-sS); [ -t 2 ] && CURL_SHOW=(--progress-bar)
+# curl progress bar on a terminal or the menu's progress screen (STEAM_ARM_PROGRESS=1, 60 columns); errors only elsewhere.
+CURL_SHOW=(-sS); CURL_ENV=()
+if [ -t 2 ]; then CURL_SHOW=(--progress-bar)
+elif [ "${STEAM_ARM_PROGRESS:-0}" = 1 ]; then CURL_SHOW=(--progress-bar); CURL_ENV=(COLUMNS=60); fi
 # Temporary files and folders of this run, removed on any exit; UCLEANUP ones (in the game user's home) by that user.
 CLEANUP=(); UCLEANUP=()
 trap 'rm -rf "${CLEANUP[@]}"; [ ${#UCLEANUP[@]} -gt 0 ] && as_user rm -rf "${UCLEANUP[@]}"' EXIT
@@ -116,6 +118,86 @@ GAMEUSER="${GAMEUSER:-$(getent passwd 1000 2>/dev/null | cut -d: -f1)}"
 if [ -z "$GAMEUSER" ]; then GAMEUSER=steamarm; GAMEUSER_MAY_CREATE=1; fi
 RFS=/opt/fex-rootfs/Ubuntu_24_04
 FEXPPA="ppa:fex-emu/fex"
+# Debian: same PPA as plain apt source; key pinned to Launchpad's signing_key_fingerprint for the PPA.
+FEXPPA_URI=https://ppa.launchpadcontent.net/fex-emu/fex/ubuntu
+FEXPPA_FPR=EDB98BFE8A2310DC9C4A376E76DBFEBEA206F5AC
+FEXSRC=/etc/apt/sources.list.d/steam-arm-fex.sources
+FEXKEY=/etc/apt/keyrings/steam-arm-fex.gpg
+# Ubuntu family: add-apt-repository maps the PPA to its own series; elsewhere it maps to the Debian codename, which the PPA lacks.
+os_ubuntu(){ ( . /etc/os-release 2>/dev/null; case " ${ID:-} ${ID_LIKE:-} " in *" ubuntu "*) exit 0;; esac; exit 1 ); }
+# Debian major release: VERSION_ID on Debian (and Raspberry Pi OS), else /etc/debian_version; empty on testing/sid.
+debian_major(){
+  ( . /etc/os-release 2>/dev/null; v=; [ "${ID:-}" = debian ] && v=${VERSION_ID:-}
+    [ -n "$v" ] || v=$(cut -d. -f1 /etc/debian_version 2>/dev/null)
+    case "$v" in [0-9]*) echo "${v%%.*}";; esac )
+}
+glibc_ver(){ getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}'; }
+# PPA series for this Debian release; its FEX build needs libc6 at or below host glibc and Debian's Qt 5 package names
+# (jammy: libc6 2.34, libqt5core5a = Debian 12; noble: libc6 2.38, libqt5core5t64 = Debian 13 and newer).
+fex_series(){
+  local m g need s; m=$(debian_major); g=$(glibc_ver)
+  case "$m" in
+    12) s=jammy need=2.34;;
+    1[3-9]|[2-9][0-9]) s=noble need=2.38;;
+    "") s=noble need=2.38;;   # testing/sid: newer than 13
+    *) return 1;;
+  esac
+  [ -n "$g" ] && [ "$(printf '%s\n%s\n' "$need" "$g" | sort -V | head -1)" = "$need" ] || return 1
+  echo "$s"
+}
+# Debian: PPA written as deb822 source with its signing key, fingerprint checked before apt sees it.
+fex_source_debian(){
+  local s f t k have=0 cn
+  cn=$( . /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-}")
+  # fex source named after Debian codename (add-apt-repository on Debian, or by hand) fails apt-get update: disabled
+  for f in /etc/apt/sources.list.d/*; do
+    [ -f "$f" ] && [ "$f" != "$FEXSRC" ] && grep -qs "fex-emu/fex" "$f" || continue
+    case "$f" in *.list|*.sources) ;; *) continue;; esac
+    if [ -n "$cn" ] && grep -qsw -- "$cn" "$f"; then
+      mv -f "$f" "$f.disabled" && warn "FEX package source $f names $cn, which FEX's PPA does not publish; renamed to $f.disabled"
+    else have=1; fi
+  done
+  grep -qs "fex-emu/fex" /etc/apt/sources.list && have=1
+  [ -f "$FEXSRC" ] && have=1
+  [ "$have" = 1 ] && return 0
+  s=$(fex_series) || die "FEX's package source has no build for this system ($(sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null | tr -d '"'), glibc $(glibc_ver)); Steam ARM needs Debian 13 or newer
+       (README, Requirements)."
+  { command -v curl >/dev/null && command -v gpg >/dev/null; } || apt-get install -y curl gpg ca-certificates \
+    || die "curl and gpg did not install (needed to add FEX package source). $NETHINT"
+  t=$(mktemp -d) || die "could not create a temporary folder"; CLEANUP+=("$t")
+  curl -fsSL --proto =https "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$FEXPPA_FPR" -o "$t/key.asc" \
+    || die "FEX package signing key download failed (keyserver.ubuntu.com). $NETHINT"
+  # exactly one primary key, with pinned fingerprint
+  k=$(GNUPGHOME=$t gpg --batch --show-keys --with-colons "$t/key.asc" 2>/dev/null | awk -F: '$1=="pub"{p=1;next} $1=="fpr"&&p{print $10;p=0}')
+  [ "$k" = "$FEXPPA_FPR" ] || die "FEX package signing key has wrong fingerprint (${k:-none}, expected $FEXPPA_FPR); nothing written."
+  GNUPGHOME=$t gpg --batch --yes --dearmor -o "$t/key.gpg" "$t/key.asc" || die "could not convert FEX package signing key"
+  mkdir -p -m 0755 /etc/apt/keyrings && install -m 0644 "$t/key.gpg" "$FEXKEY" || die "could not write $FEXKEY"
+  printf '# steam-arm-setup: FEX PPA, Ubuntu %s build, for this Debian system\nTypes: deb\nURIs: %s\nSuites: %s\nComponents: main\nArchitectures: arm64\nSigned-By: %s\n' \
+    "$s" "$FEXPPA_URI" "$s" "$FEXKEY" > "$FEXSRC" && chmod 0644 "$FEXSRC" || die "could not write $FEXSRC"
+  say "     FEX package source: $FEXPPA_URI $s (Ubuntu build matching this Debian release)"
+}
+# Packages among $@ that apt offers no version of (read-only; C locale for apt's labels).
+pkg_missing(){
+  LC_ALL=C apt-cache policy "$@" 2>/dev/null | awk -v want="$*" '
+    /^[^ ].*:$/ { p = $0; sub(/:$/, "", p); sub(/:.*/, "", p) }
+    /^  Candidate: [0-9]/ { ok[p] = 1 }
+    END { n = split(want, w, " "); for (i = 1; i <= n; i++) if (!(w[i] in ok)) printf "%s ", w[i] }'
+}
+# FEX command installed by a fex-emu package.
+fex_packaged(){ local p; p=$(readlink -f "$(command -v FEX 2>/dev/null)" 2>/dev/null) && [ -n "$p" ] && dpkg -S "$p" 2>/dev/null | grep -q '^fex-emu'; }
+fex_binfmt(){ [ -e /proc/sys/fs/binfmt_misc/FEX-x86_64 ] && [ -e /proc/sys/fs/binfmt_misc/FEX-x86 ]; }
+# Thunk folders of FEX in use: its own prefix first, then /usr, /usr/local; prints "host guest db", status 1 when none is complete.
+fex_thunk_paths(){
+  local p d h
+  p=$(readlink -f "$(command -v FEX 2>/dev/null)" 2>/dev/null); p=${p%/bin/FEX}
+  for d in $p /usr /usr/local; do
+    [ -f "$d/share/fex-emu/ThunksDB.json" ] && [ -d "$d/share/fex-emu/GuestThunks" ] || continue
+    for h in "$d/lib/aarch64-linux-gnu/fex-emu/HostThunks" "$d/lib/fex-emu/HostThunks" "$d/lib64/fex-emu/HostThunks"; do
+      [ -d "$h" ] && { echo "$h/ $d/share/fex-emu/GuestThunks/ $d/share/fex-emu/ThunksDB.json"; return 0; }
+    done
+  done
+  return 1
+}
 # Stable arm64 manifest for the first download; -deckard moves the client to its own ARM channel on first start.
 MANIFEST=https://client-update.steamstatic.com/steam_client_linuxarm64
 CDN=https://client-update.steamstatic.com
@@ -174,18 +256,26 @@ kwin_reload(){
   local u; u=$(id -u "$GAMEUSER" 2>/dev/null) || return 0
   login_sh "XDG_RUNTIME_DIR=/run/user/$u DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$u/bus dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure" >/dev/null 2>&1 || true
 }
+# KDE config tools of Plasma 6, else Plasma 5: prints 6 or 5, status 1 when neither pair is installed.
+kcfg_ver(){
+  local v
+  for v in 6 5; do
+    command -v "kwriteconfig$v" >/dev/null 2>&1 && command -v "kreadconfig$v" >/dev/null 2>&1 && { echo "$v"; return 0; }
+  done
+  return 1
+}
 # Take a window rule group (default steam-arm-frame) out of the game user's KWin rules: list entry and every key setup writes.
 kwin_rule_remove(){
-  local rid=${1:-steam-arm-frame} cur new n k cmd=""
-  command -v kwriteconfig6 >/dev/null 2>&1 || return 0
-  cur=$(login_sh "kreadconfig6 --file kwinrulesrc --group General --key rules" 2>/dev/null)
+  local rid=${1:-steam-arm-frame} cur new n k kv cmd=""
+  kv=$(kcfg_ver) || return 0
+  cur=$(login_sh "kreadconfig$kv --file kwinrulesrc --group General --key rules" 2>/dev/null)
   case ",$cur," in *",$rid,"*)
     new=$(printf '%s' "$cur" | tr ',' '\n' | grep -vx "$rid" | paste -sd, -)
     n=$(printf '%s' "$new" | awk -F, '{print NF}'); n=${n:-0}
-    cmd="kwriteconfig6 --file kwinrulesrc --group General --key rules '$new'; kwriteconfig6 --file kwinrulesrc --group General --key count $n; ";;
+    cmd="kwriteconfig$kv --file kwinrulesrc --group General --key rules '$new'; kwriteconfig$kv --file kwinrulesrc --group General --key count $n; ";;
   esac
   for k in Description wmclass wmclassmatch wmclasscomplete types noborder noborderrule; do
-    cmd="${cmd}kwriteconfig6 --file kwinrulesrc --group $rid --key $k --delete; "
+    cmd="${cmd}kwriteconfig$kv --file kwinrulesrc --group $rid --key $k --delete; "
   done
   login_sh "$cmd" 2>/dev/null
   kwin_reload
@@ -251,7 +341,7 @@ paths_inside(){
 }
 # Status 0 while a Steam client of the game user runs.
 steam_up(){ id "$GAMEUSER" >/dev/null 2>&1 && pgrep -u "$GAMEUSER" -x steam >/dev/null 2>&1; }
-steam_up_die(){ die "Steam is running for '$GAMEUSER'. Close it first (exit from its menu, or Stop Steam in the tray), then run this again."; }
+steam_up_die(){ die "Steam is running for '$GAMEUSER'. Close it first (exit from its menu, Stop Steam in the tray, or steam-arm --shutdown as $GAMEUSER), then run this again."; }
 # Driver archive in use: PSRC_KIND published (download, or STEAM_ARM_PROVIDER_TARBALL) or custom (file and sha256 given, saved for later runs).
 provider_source(){
   PSRC_KIND=published; PSRC_SHA=$PROVIDER_SHA256; PSRC_FILE=${STEAM_ARM_PROVIDER_TARBALL:-}; PSRC_SAVED=0
@@ -276,7 +366,7 @@ provider_download(){
   # --provider-default with saved custom keys: the rerun needs the flag too, or the custom archive comes back
   [ "$PROVIDER_DEFAULT" = 1 ] && grep -qs '^PROVIDER_CUSTOM_' "$CONF" && pd=" --provider-default"
   for u in "$PROVIDER_URL" "$PROVIDER_FALLBACK"; do
-    code=$(curl -fL --proto =https --proto-redir =https "${CURL_SHOW[@]}" -w '%{http_code}' -o "$1" "$u") && return 0
+    code=$(env "${CURL_ENV[@]}" curl -fL --proto =https --proto-redir =https "${CURL_SHOW[@]}" -w '%{http_code}' -o "$1" "$u") && return 0
     [ "$code" = 404 ] && n404=$((n404 + 1))
     echo "  no download from $u (HTTP ${code:-000})"
   done
@@ -468,7 +558,7 @@ desc_of(){ case "$1" in
   desktop-mode) echo "Menu entry \"Steam ARM (Desktop mode)\": desktop interface, for signing in";;
   icon-bigpicture) echo "Desktop icon \"Steam ARM\"";;
   icon-desktop) echo "Desktop icon \"Steam ARM (Desktop mode)\"";;
-  tray)       echo "Steam icon in the panel tray, with Open, desktop mode and Stop";;
+  tray)       echo "Steam icon in the panel tray: open, Big Picture, desktop mode, Stop, Settings, log";;
   kde-input-prompt) echo "KDE Plasma (Wayland): no \"Remote control requested\" prompt; any X11 program may then send input";;
   page-size)  echo "Raspberry Pi 5: boot firmware's 4K page kernel (no effect elsewhere)";;
 esac; }
@@ -479,7 +569,7 @@ for c in ${DEFAULT_OFF:-}; do eval "$(var_of "$c")=0"; done
 ps_relevant || eval "$(var_of page-size)=0"
 kde_relevant || eval "$(var_of kde-input-prompt)=0"
 # GPU family: sets default states of vk-spoof, gpu-in-emulation and glx-lax. GPU_FAMILY=<id> (env) picks one by hand, GPU_FAMILY=auto detects.
-GPU_FAMILIES="mali-csf-v10 mali-csf-5thgen mali-csf mali-valhall-jm mali-bifrost mali-midgard mali-panfrost mali-utgard mali-kbase
+GPU_FAMILIES="mali-csf-v10 mali-csf-v11 mali-csf-5thgen mali-csf-g1 mali-csf mali-valhall-jm mali-bifrost mali-midgard mali-panfrost mali-utgard mali-kbase
   adreno-a8xx adreno-a7xx adreno-a6xx adreno-a702 adreno-legacy adreno apple-agx broadcom-v3d71 broadcom-v3d42 broadcom-vc4
   vivante img-powervr amd-radv amd-radeon nvidia-nouveau nvidia-prop intel virtio-gpu none unknown"
 # Kernel driver name and Mali GPU id per render node (DRM_IOCTL_VERSION, panthor DEV_QUERY, panfrost GET_PARAM); lines "node driver id".
@@ -533,11 +623,13 @@ gpu_family_of(){
   local a=0 p=0 n f
   case "$1" in
     panthor|tyr)
-      # arch major and product major from gpu_id; Mesa knows G610 (10.7) and G310 (10.4) of arch 10
+      # arch major and product major from gpu_id: G610 (10.7), G310 (10.4); v11 G615/G715; 5th gen v12/v13; G1 v14
       case "$3" in ''|-) ;; *) a=$(( 16#$3 >> 28 )); p=$(( 16#$3 >> 16 & 0xf ));; esac
       case "$a.$p/$2" in
         10.[47]/*|0*/*rk3588-mali*) echo mali-csf-v10 60;;
+        11.*/*) echo mali-csf-v11 59;;
         1[23].*/*|0*/*mt8196-mali*) echo mali-csf-5thgen 58;;
+        14.*/*) echo mali-csf-g1 57;;
         *) echo mali-csf 55;;
       esac;;
     panfrost)
@@ -676,8 +768,10 @@ gpu_defaults(){
   GPU_NOTE=""; GPU_WARN=""
   case "$1" in
     mali-csf-v10) GPU_DEF="1 1 1";;
-    mali-csf-5thgen) GPU_DEF="1 1 1"; GPU_NOTE="Mali 5th gen: untested";;
-    mali-csf) GPU_DEF="0 0 1"; GPU_NOTE="Mesa does not support this Mali model yet; titles run through forwarding";;
+    mali-csf-v11) GPU_DEF="0 1 1"; GPU_NOTE="Mali-G615/G715 (arch v11): untested; PanVK (Mesa Vulkan) loads here only with PAN_I_WANT_A_BROKEN_VULKAN_DRIVER=1";;
+    mali-csf-5thgen) GPU_DEF="0 1 1"; GPU_NOTE="Mali 5th gen: untested; PanVK (Mesa Vulkan) loads here only with PAN_I_WANT_A_BROKEN_VULKAN_DRIVER=1";;
+    mali-csf-g1) GPU_DEF="0 0 1"; GPU_NOTE="Mali-G1 (arch v14): needs Mesa 26.2 or newer; vk-spoof and gpu-in-emulation off by default, untested";;
+    mali-csf) GPU_DEF="0 0 1"; GPU_NOTE="Mali model not in this setup's table; titles run through forwarding";;
     mali-valhall-jm|mali-bifrost|mali-midgard|mali-panfrost)
       GPU_DEF="0 1 1"; GPU_NOTE="no default Vulkan driver for this Mali: native OpenGL titles; Windows titles unlikely";;
     mali-utgard) GPU_DEF="0 0 1"; GPU_NOTE="Mali-400/450: not suitable for Steam games";;
@@ -686,7 +780,7 @@ gpu_defaults(){
       GPU_DEF="0 0 1"; GPU_NOTE="Adreno: Windows titles through DXVK expected to work; x86 Adreno drivers for 32-bit titles not included yet";;
     adreno-a702) GPU_DEF="0 0 1"; GPU_NOTE="Adreno 702: entry-level GPU, Vulkan too limited for most Windows titles";;
     adreno-legacy) GPU_DEF="0 0 1"; GPU_NOTE="Adreno 5xx or older: no Vulkan driver; native OpenGL titles only";;
-    apple-agx) GPU_DEF="0 0 1"; GPU_NOTE="Apple GPU: runs inside muvm on 16K-page hosts";;
+    apple-agx) GPU_DEF="0 0 1"; GPU_NOTE="Apple GPU: 16K-page kernel not supported; setup does not set up 4K VM (muvm)";;
     broadcom-v3d71|broadcom-v3d42) GPU_DEF="0 0 1"; GPU_NOTE="Raspberry Pi GPU: Vulkan too limited for most Windows titles";;
     broadcom-vc4) GPU_DEF="0 0 1"; GPU_NOTE="VideoCore IV (Raspberry Pi 0-3): not supported";;
     vivante) GPU_DEF="0 0 1"; GPU_NOTE="Vivante GPU: no Vulkan driver, OpenGL ES class; most titles do not run";;
@@ -763,7 +857,7 @@ menu_app(){ cat <<'STEAMARMCONFIG'
 # steam-arm-config: menu-driven settings for Steam ARM (built-in screens, dialog, whiptail or plain prompts). See --help.
 set -u
 
-SA_VERSION=2.1
+SA_VERSION=2.2
 SA_DOCS=https://github.com/Scrumpper/Steam-ARM
 SA_CONF=/etc/steam-arm/steam-arm.conf
 SA_TITLES_SHARE=/usr/local/share/steam-arm/titles.conf
@@ -850,6 +944,8 @@ conf_set(){
 is_installed(){ [ -x "$SA_LAUNCHER" ] && [ -f "$SA_CONF" ]; }
 
 game_user(){
+  # GU_OVERRIDE: account picked in Install / Setup, while its client is checked
+  [ -n "${GU_OVERRIDE:-}" ] && { echo "$GU_OVERRIDE"; return; }
   local u; u=$(conf_get GAMEUSER)
   [ -n "$u" ] && getent passwd "$u" >/dev/null 2>&1 && { echo "$u"; return; }
   [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != root ] && { echo "$SUDO_USER"; return; }
@@ -870,7 +966,16 @@ titles_files(){ printf '%s\n' "$SA_TITLES_SHARE" "$SA_TITLES_ETC" "$(titles_user
 # Shorten home paths for display.
 tilde(){ local h; h=$(game_home); if [ -n "$h" ]; then sed "s#${h}#~#g"; else cat; fi; }
 
-steam_running(){ pgrep -x steam >/dev/null 2>&1; }
+# Game account's client only (another account's Steam reads and writes its own files).
+steam_running(){
+  local u; u=$(game_user)
+  if [ -n "$u" ] && id "$u" >/dev/null 2>&1; then pgrep -u "$u" -x steam >/dev/null 2>&1; else pgrep -x steam >/dev/null 2>&1; fi
+}
+# Game of the game account running (Steam starts every title under its reaper).
+game_running(){
+  local u; u=$(game_user)
+  [ -n "$u" ] && pgrep -u "$u" -f 'reaper SteamLaunch' >/dev/null 2>&1
+}
 
 # Installer: explicit env, packaged command, embedded copy, file beside this app.
 find_installer(){
@@ -934,7 +1039,7 @@ detect_components(){
 
 hw_model(){
   local m
-  m=$(tr -d '\0' < "/proc/device-tree/model" 2>/dev/null)
+  m=$( { tr -d '\0' < "/proc/device-tree/model"; } 2>/dev/null)
   [ -z "$m" ] && m=$(cat "/sys/class/dmi/id/sys_vendor" "/sys/class/dmi/id/product_name" 2>/dev/null | tr '\n' ' ' | trim)
   echo "${m:-unknown}"
 }
@@ -1148,7 +1253,7 @@ mali_tree(){
 mali_ready(){ [ -f "$SA_MALI/.steam-arm-mali" ] && [ -f "$SA_MALI/graphics_provider.json" ]; }
 mali_custom(){ case "$(head -1 "$SA_MALI/.steam-arm-mali" 2>/dev/null)" in custom\ *) return 0;; esac; return 1; }
 # GPU families the Mali tree covers (MALI_FAMILIES of the launch handler); family as the handler reads it.
-SA_MALI_FAMILIES="mali-csf-v10 mali-csf-5thgen mali-csf mali-valhall-jm mali-bifrost mali-midgard mali-panfrost"
+SA_MALI_FAMILIES="mali-csf-v10 mali-csf-v11 mali-csf-5thgen mali-csf mali-valhall-jm mali-bifrost mali-midgard mali-panfrost"
 route_family(){ local f; f=$(conf_get GPU_FAMILY); echo "${f:-$(gpu_family)}"; }
 mali_family(){ case " $SA_MALI_FAMILIES " in *" $(route_family) "*) return 0;; esac; return 1; }
 # Route B offered on a Mali GPU, or with a custom driver tree in place (handler applies it there too).
@@ -1831,6 +1936,9 @@ def progress(scr, title, feed):
                 chunk = dec.decode(b) if b else ""
             part += chunk
             *done, part = part.split("\n")
+            # progress bar redraws: keep the open line from its last full segment on
+            if len(part) > 4096 and "\r" in part[:-1]:
+                part = part[part.rindex("\r", 0, len(part) - 1):]
             if eof and part:
                 done.append(part)
                 part = ""
@@ -2129,7 +2237,11 @@ ui_run(){
   rcf=$(tmpf) || { ui_msg "$title" "$TMP_FAIL"; return 1; }
   ui_size
   case "$DIALOG" in
-    builtin)  { ui_feed | "$@" 2>&1; echo "${PIPESTATUS[1]}" > "$rcf"; } | tee -a "$log" | tui progress "$title";;
+    builtin)  local fd lp
+              if ! { fd=$(tmpf -d) && mkfifo -m 600 "$fd/log"; }; then rm -rf "$fd" "$rcf"; ui_msg "$title" "$TMP_FAIL"; return 1; fi
+              cr_last < "$fd/log" >> "$log" & lp=$!
+              { ui_feed | "$@" 2>&1; echo "${PIPESTATUS[1]}" > "$rcf"; } | tee "$fd/log" | tui progress "$title"
+              wait "$lp"; rm -rf "$fd";;
     whiptail) { ui_feed | "$@" 2>&1; echo "${PIPESTATUS[1]}" > "$rcf"; } | tee -a "$log" | progress_feed \
                 | whiptail --backtitle "$BT" --title "$title" --gauge "Starting..." 8 "$UW" 0;;
     dialog)   { ui_feed | "$@" 2>&1; echo "${PIPESTATUS[1]}" > "$rcf"; } | tee -a "$log" | ansi_lines \
@@ -2139,6 +2251,8 @@ ui_run(){
   local rc; rc=$(cat "$rcf" 2>/dev/null); rm -f "$rcf"
   return "${rc:-1}"
 }
+# Log copy: last carriage-return segment of each line, so a progress bar logs as one line.
+cr_last(){ sed -u 's/.*\r\(.\)/\1/'; }
 # Colour codes removed line by line (no pipe buffering, so progress shows live).
 ansi_lines(){
   local l
@@ -2200,11 +2314,54 @@ cli_root(){
   echo "steam-arm-config: this change needs administrator rights; running it with sudo" >&2
   exec sudo env STEAM_ARM_INSTALLER="${STEAM_ARM_INSTALLER:-}" bash "$(self_path)" "$@"
 }
-# Run installer with args as root, with progress; env GPU_FAMILY/GAMEUSER from INST_ENV.
+# Launcher's graceful stop as game account (client -shutdown, SIGTERM after 20 s, never SIGKILL). Without display
+# variables: a launcher stop dialog would wait unseen behind this menu. Account other than the settings file's: its own folder.
+steam_shutdown(){
+  local -a e=(env -u DISPLAY -u WAYLAND_DISPLAY ${GU_OVERRIDE:+"STEAM_ARM_HOME=$(arm_home)"})
+  if [ "$(id -un)" = "$(game_user)" ]; then "${e[@]}" "$SA_LAUNCHER" --shutdown </dev/null 2>&1; return; fi
+  as_root runuser -u "$(game_user)" -- "${e[@]}" HOME="$(game_home)" "$SA_LAUNCHER" --shutdown </dev/null 2>&1
+}
+# Steam closed before $1 (screen title), $2 says why: offers "Close Steam"; status 0 once game account's client is gone.
+close_steam(){
+  local title=$1 why=$2 out
+  steam_running || return 0
+  if game_running; then
+    ui_msg "$title" "A game is running in Steam ARM. $why
+
+Quit the game, then try again."; return 1
+  fi
+  if ! grep -q -- '--shutdown' "$SA_LAUNCHER" 2>/dev/null; then
+    ui_msg "$title" "Steam ARM is running. $why
+
+Close Steam ARM completely (Exit from its menu or tray), then try again."; return 1
+  fi
+  ui_yesno "$title" "Steam ARM is running. $why
+
+Close Steam now? Steam ARM asks the client to exit, as Exit in its menu does; this can take up to a minute." "Close Steam" Back || return 1
+  [ "$(id -un)" = "$(game_user)" ] || need_root || return 1
+  ui_info "$title" "Closing Steam..."
+  out=$(steam_shutdown | tail -3)
+  steam_running || return 0
+  ui_msg "$title" "Steam did not close.${out:+
+
+$out}
+
+Close Steam ARM completely (Exit from its menu or tray), then try again."
+  return 1
+}
+# Run installer with args as root, with progress (download bars on the built-in screen); env GPU_FAMILY/GAMEUSER from INST_ENV.
 run_installer(){
   local title=$1 rc; shift
   local -a cmd; mapfile -t cmd < <(installer_cmd) || true
   [ "${#cmd[@]}" -gt 0 ] || { ui_msg "$title" "Setup script not found. Get it from $SA_DOCS and run it once."; return 1; }
+  local e gu=""
+  for e in "${INST_ENV[@]}"; do case $e in GAMEUSER=?*) gu=${e#GAMEUSER=};; esac; done
+  # setup checks the client of the account it installs for; an account not created yet runs none
+  if [ -n "$gu" ] && [ "$gu" != "$(conf_get GAMEUSER)" ]; then
+    if getent passwd "$gu" >/dev/null 2>&1; then GU_OVERRIDE=$gu close_steam "$title" "Setup stops while it runs." || return 1; fi
+  else
+    close_steam "$title" "Setup stops while it runs." || return 1
+  fi
   need_root || return 1
   if [ -L "$SA_CACHE" ]; then
     ui_msg "$title" "$SA_CACHE is a link. Delete the link (rm \"$SA_CACHE\"), then try again."; return 1
@@ -2213,7 +2370,7 @@ run_installer(){
          && SA_SETUP_LOG=$(mktemp --suffix=.log "$SA_CACHE/setup-$(date +%Y%m%d-%H%M%S)-XXXXXX"); }; then
     ui_msg "$title" "Could not create a log file in $SA_CACHE. Free some space, then try again."; return 1
   fi
-  ui_run "$title" "$SA_SETUP_LOG" as_root env "${INST_ENV[@]}" ${STEAM_ARM_ALLOW_ARMV80:+"STEAM_ARM_ALLOW_ARMV80=$STEAM_ARM_ALLOW_ARMV80"} "${cmd[@]}" "$@"; rc=$?
+  ui_run "$title" "$SA_SETUP_LOG" as_root env "${INST_ENV[@]}" ${STEAM_ARM_ALLOW_ARMV80:+"STEAM_ARM_ALLOW_ARMV80=$STEAM_ARM_ALLOW_ARMV80"} STEAM_ARM_FROM_MENU=1 STEAM_ARM_PROGRESS="$([ "$DIALOG" = builtin ] && echo 1)" "${cmd[@]}" "$@"; rc=$?
   status_line
   if [ "$rc" = 0 ]; then
     ui_textstr "$title: done" "$({ echo "Finished."; echo; log_summary "$SA_SETUP_LOG"; echo
@@ -2272,10 +2429,15 @@ pre_fold(){
   END { if (have) flush() }'
 }
 INST_ENV=()
+GU_OVERRIDE=   # never taken from the environment
 # Run installer in the plain terminal (it asks its own questions there).
 run_installer_tty(){
   local -a cmd; mapfile -t cmd < <(installer_cmd) || true
   [ "${#cmd[@]}" -gt 0 ] || { ui_msg "Steam ARM" "Setup script not found."; return 1; }
+  close_steam "Uninstall" "Removal stops while it runs." || return 1
+  if pgrep -x steam >/dev/null 2>&1; then
+    ui_msg "Uninstall" "A Steam client of another account is running. Close it first (exit from its menu), then try again."; return 1
+  fi
   need_root || return 1
   clear
   as_root env ${STEAM_ARM_ALLOW_ARMV80:+"STEAM_ARM_ALLOW_ARMV80=$STEAM_ARM_ALLOW_ARMV80"} "${cmd[@]}" "$@"; local rc=$?
@@ -2431,7 +2593,7 @@ info_notes_builtin(){
     mali-*)     echo "- Mali GPU on open drivers: Mali-only parts can be used.";;
     adreno*)    echo "- Adreno GPU: Windows games through DXVK expected to work. Mali-only parts stay off.";;
     broadcom-*) echo "- Raspberry Pi GPU: OpenGL games fit best; Vulkan is too limited for most Windows games.";;
-    apple-agx)  echo "- Apple GPU: runs inside a 4K-page VM (muvm) on 16K-page systems.";;
+    apple-agx)  echo "- Apple GPU: 16K-page kernel not supported; setup does not set up a 4K-page VM (muvm).";;
     amd-*|nvidia-*|intel) echo "- PC graphics card: forwarding covers it. Mali-only parts stay off.";;
     virtio-gpu) echo "- Virtual machine: expect software drawing unless the VM passes the GPU through.";;
     *)          echo "- No GPU driver found: games would draw on the CPU.";;
@@ -2493,7 +2655,9 @@ setup_gpu_model(){
       c=$(ui_menu "Install: MediaTek GPU" "Which Mali GPU?" \
           mali-valhall-jm "Mali-G57 / G77 (MT8192, MT8195, Kompanio 1200/1380)" \
           mali-bifrost "Mali-G52 / G72 (MT8183, MT8186, Helio)" \
+          mali-csf-v11 "Mali-G615 / G715 (Dimensity 8300, 9200)" \
           mali-csf-5thgen "Mali-G720 / G925 (MT8196, Dimensity 9300+)" \
+          mali-csf-g1 "Mali-G1 (Dimensity 9500)" \
           mali-panfrost "Other Mali / not sure") || return 1
       case "$c" in mali-csf*) IN_DRV=panthor;; *) IN_DRV=panfrost;; esac;;
     snapdragon)
@@ -2534,8 +2698,10 @@ setup_pagesize(){
 Raspberry Pi 5: keep the \"page-size\" part on. Setup switches the
 boot firmware to the 4K kernel; reboot, then run setup again.
 
-Apple Silicon and other boards: boot a kernel built with 4K pages,
-or install inside a virtual machine that uses 4K pages.
+Apple Silicon: a 16K page kernel is not supported, and setup does
+not set up a 4K page virtual machine (muvm).
+
+Other boards: boot a kernel built with 4K pages.
 
 Setup stops with this advice until the page size is 4K."
   fi
@@ -2696,8 +2862,7 @@ setup_other(){
   other_present || return 0
   ui_yesno "Install: other variant" "Another Steam ARM install (other variant) is present. Replace it?
 
-Games, sign-in and client folder are kept; its files are archived
-in /var/backups." Replace Back || return 1
+Games, sign-in and client folder are kept; its files are archived in /var/backups." Replace Back || return 1
   IN_REPLACE=1
 }
 setup_run(){
@@ -2847,11 +3012,7 @@ Note: the client home file sets this game; it wins over this menu."
 graphics_compat(){
   local id=$1 how=$2 name=$3 out
   [ -x "$SA_COMPATMAP" ] || { ui_msg "Graphics" "Helper steam-arm-compatmap is missing. Run Maintenance > Update / Repair."; return; }
-  while steam_running; do
-    ui_yesno "Close Steam" "Steam ARM is running. It rewrites this setting when it exits.
-
-Close Steam ARM completely (Exit from its menu or tray), then choose Retry." Retry Back || return
-  done
+  close_steam "Graphics" "It rewrites this setting when it exits." || return
   need_root || return
   out=$(as_root bash "$(self_path)" compat "$id" "$how" 2>&1)
   ui_msg "Graphics" "${name}: $(case "$how" in linux) echo "Linux build";; windows) echo "Windows build with Proton";; *) echo "Automatic, forced build removed";; esac).
@@ -2890,7 +3051,7 @@ game_set(){ self_root profile "$1" "$2=$3"; }
 game_kind(){
   local id=$1 t lib
   t=$(compat_tool "$id")
-  case "$t" in [Pp]roton*) echo windows; return;; ?*) echo linux; return;; esac
+  case "$t" in *[Pp]roton*) echo windows; return;; ?*) echo linux; return;; esac
   while IFS= read -r lib; do
     grep -qsiE '^[[:space:]]*"platform_override_source"[[:space:]]+"windows"' "$lib/steamapps/appmanifest_$id.acf" \
       && { echo windows; return; }
@@ -3001,8 +3162,7 @@ controllers_padxbox(){
 Turn it off? Setup runs again (a few minutes)." "Turn off" Back || return
     new=$(comps_effective | tr ' ' '\n' | grep -vx pad-xbox | tr '\n' ' ')
   else
-    ui_yesno "pad-xbox" "pad-xbox is off. Turn it on when a non-Microsoft XInput pad is
-not recognised in games. The Steam client usually handles pads by itself.
+    ui_yesno "pad-xbox" "pad-xbox is off. Turn it on when a non-Microsoft XInput pad is not recognised in games. The Steam client usually handles pads by itself.
 
 Turn it on? Setup runs again (a few minutes)." "Turn on" Back || return
     new="$(comps_effective) pad-xbox"
@@ -3062,8 +3222,8 @@ menu_remoteplay(){
     case "$c" in
       1) rp_ready && ui_textstr "Remote Play" "$(rp_status)";;
       2) ui_textstr "Remote Play: pairing" "$(rp_help)";;
-      3) if steam_running; then ui_msg "Remote Play" "Close Steam ARM first; it rewrites these settings when it exits."
-         elif rp_ready; then ui_textstr "Remote Play" "$(rp_show)"; fi;;
+      3) close_steam "Remote Play" "It rewrites these settings when it exits." && rp_ready \
+           && ui_textstr "Remote Play" "$(rp_show)";;
     esac
   done
 }
@@ -3108,6 +3268,38 @@ report_text(){
   renderer_lines | grep . || echo "(no renderer line yet: start game once)"
   f=$(fexlogs | head -1)
   if [ -n "$f" ] && [ -r "$f" ]; then echo; echo "== Last game start"; grep -a 'steam-arm:' "$f" | tail -15; fi
+  echo
+  echo "== Launcher log (last 20 lines)"
+  f="$(arm_home)/steam-arm.log"
+  if [ -r "$f" ]; then tail -20 "$f" | grep . || echo "(empty: launcher writes warnings only)"; else echo "(none, or not readable by this account)"; fi
+  echo
+  echo "== Client bootstrap log (start, update and error lines)"
+  f="$(steam_dir)/logs/bootstrap_log.txt"
+  if [ -r "$f" ]; then grep -aE 'Startup - |Update complete|[Ee]rror|[Ff]ail' "$f" | tail -15 | grep . || echo "(no such lines)"
+  else echo "(none, or not readable by this account)"; fi
+  echo
+  echo "== Last setup run"
+  f=$(setuplogs | head -1)
+  if [ -n "$f" ] && [ -r "$f" ]; then echo "$(basename "$f"):"; log_summary "$f"; else echo "(no setup log of this account)"; fi
+  echo
+  echo "== Groups of game account"; report_groups
+}
+# Groups of game account, those its running processes hold (set at login), and the ones no process has yet (new login adds them).
+report_groups(){
+  local u pid pids g n ids="" live="" miss=""
+  u=$(game_user)
+  if [ -z "$u" ] || ! id "$u" >/dev/null 2>&1; then echo "(no game account)"; return; fi
+  echo "Account        $(id -nG "$u" 2>/dev/null)"
+  pids=$(pgrep -u "$u" 2>/dev/null)
+  [ -n "$pids" ] || { echo "Running        (no process of this account)"; return; }
+  for pid in $pids; do ids="$ids $(awk '/^Gid:/ { print $2 } /^Groups:/ { $1 = ""; print }' "/proc/$pid/status" 2>/dev/null)"; done
+  for g in $ids; do
+    n=$(getent group "$g" | cut -d: -f1); n=${n:-$g}
+    case " $live " in *" $n "*) ;; *) live="$live $n";; esac
+  done
+  echo "Running       $live"
+  for g in $(id -nG "$u" 2>/dev/null); do case " $live " in *" $g "*) ;; *) miss="$miss $g";; esac; done
+  [ -z "$miss" ] || echo "Not active yet:$miss (log out and back in)"
 }
 # "app <id>: <renderer line>" of the five newest game logs.
 renderer_lines(){
@@ -3135,8 +3327,7 @@ maint_report(){
   ui_text "Hardware report" "$SA_REPORT"
   ui_msg "Hardware report" "Saved to $SA_REPORT (your home folder).
 
-Home folders, account names, host name and local addresses are
-removed. Attach the file to a compatibility report at:
+Home folders, account names, host name and local addresses are removed. Attach the file to a compatibility report at:
 $SA_DOCS/issues"
 }
 maint_logs(){
@@ -3148,10 +3339,62 @@ maint_logs(){
       2) f=$(fexlogs | head -1);;
       3) f=$(setuplogs | head -1);;
     esac
-    if [ -n "$f" ] && [ -s "$f" ] && [ -r "$f" ]; then ui_textstr "Log: $(basename "$f")" "$(tail -300 "$f" | strip_ansi | tilde)"
-    elif [ -n "$f" ] && [ -e "$f" ]; then ui_msg "View logs" "$(basename "$f") is empty (launcher writes warnings only)."
-    else ui_msg "View logs" "No log found yet."; fi
+    if { [ -z "$f" ] || [ ! -e "$f" ]; } && [ "$c" = 3 ] && [ "$(id -u)" != 0 ]; then
+      ui_msg "View logs" "No setup log of this account. Setup runs from sudo steam-arm-config are logged in the administrator's folder ($(r=$(getent passwd 0 | cut -d: -f6); echo "${r:-/root}")/.cache/steam-arm). Run sudo steam-arm-config to view them."
+    elif [ -z "$f" ] || [ ! -e "$f" ]; then ui_msg "View logs" "No log found yet."
+    elif [ ! -r "$f" ]; then ui_msg "View logs" "$(basename "$f") is not readable by this account. Run sudo steam-arm-config to read it."
+    elif [ -s "$f" ]; then ui_textstr "Log: $(basename "$f")" "$(tail -300 "$f" | strip_ansi | tilde)"
+    elif [ "$c" = 1 ]; then ui_msg "View logs" "$(basename "$f") is empty (launcher writes warnings only)."
+    else ui_msg "View logs" "$(basename "$f") is empty."; fi
   done
+}
+SA_RELEASE_API=https://api.github.com/repos/Scrumpper/Steam-ARM/releases/latest
+# Newest published release vs this version (asked by hand only; nothing downloads); status 0 newer, 1 not newer, 2 failed.
+update_check(){
+  local f code tag url v cur
+  cur=$(installed_version); case "$cur" in [0-9]*) ;; *) cur=$SA_VERSION;; esac
+  have curl || { echo "curl is not installed. Releases: $SA_DOCS/releases"; return 2; }
+  have python3 || { echo "python3 is not installed. Releases: $SA_DOCS/releases"; return 2; }
+  f=$(tmpf) || { echo "$TMP_FAIL"; return 2; }
+  code=$(curl -sS --max-time 20 -o "$f" -w '%{http_code}' -H 'Accept: application/vnd.github+json' "$SA_RELEASE_API" 2>/dev/null)
+  case "$code" in
+    200) ;;
+    403|429) rm -f "$f"; echo "GitHub refused the request (request limit for this address). Try again in an hour, or see $SA_DOCS/releases"; return 2;;
+    404) rm -f "$f"; echo "No published release found at $SA_DOCS/releases"; return 2;;
+    000|'') rm -f "$f"; echo "GitHub could not be reached (offline, or address blocked). Releases: $SA_DOCS/releases"; return 2;;
+    *) rm -f "$f"; echo "GitHub answered with HTTP $code. Releases: $SA_DOCS/releases"; return 2;;
+  esac
+  read -r tag url < <(python3 -c 'import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+t = str(d.get("tag_name") or "-").split() or ["-"]
+print(t[0], (str(d.get("html_url") or "").split() or ["-"])[0])' "$f" 2>/dev/null)
+  rm -f "$f"
+  v=${tag#steam-arm-}; v=${v#v}
+  # 2.3-hotfix style tags: number part compared, full tag shown
+  [[ "${v%%-*}" =~ ^[0-9]+(\.[0-9]+)*$ ]] && [[ "$v" =~ ^[0-9.]+(-[A-Za-z0-9.]+)?$ ]] \
+    || { echo "Release answer not understood (tag ${tag:-none}). Releases: $SA_DOCS/releases"; return 2; }
+  case "$url" in https://github.com/*) ;; *) url="$SA_DOCS/releases";; esac
+  # 2.2.0 and 2.2 are the same version
+  local a=${v%%-*} b=$cur
+  while [[ "$a" == *.0 ]]; do a=${a%.0}; done
+  while [[ "$b" == *.0 ]]; do b=${b%.0}; done
+  if [ "$a" = "$b" ] && [ "$v" = "${v%%-*}" ]; then
+    echo "Steam ARM $cur is the newest release."; return 1
+  fi
+  if [ "$a" != "$b" ] && [ "$(printf '%s\n%s\n' "$b" "$a" | sort -V | tail -1)" = "$b" ]; then
+    echo "Steam ARM $cur is newer than the newest release ($v)."; return 1
+  fi
+  echo "Newer release: Steam ARM $v (installed: $cur)."
+  echo "$url"
+  echo
+  echo "Download that release, unpack it and run its installer:"
+  echo "  sudo bash steam-arm-install.sh --keep"
+  echo "(Update / Repair here runs the installed copy, version $cur.)"
+  return 0
+}
+maint_update_check(){
+  ui_info "Check for new version" "Asking GitHub for the newest release..."
+  ui_msg "Check for new version" "$(update_check)"
 }
 maint_shm(){
   local before
@@ -3163,8 +3406,7 @@ After:  $(df -h --output=used /dev/shm 2>/dev/null | tail -1 | trim) in use."
   else
     ui_msg "Free /dev/shm" "In use now: $before.
 
-This version frees unused shared memory by itself: when Steam ARM
-starts and every minute while it runs. Nothing to do here."
+This version frees unused shared memory by itself: when Steam ARM starts and every minute while it runs. Nothing to do here."
   fi
 }
 # --- Settings backup and restore ---------------------------------------------
@@ -3245,7 +3487,7 @@ PY
 # CompatToolMapping of the client as "appid tool" lines; forced build of one game; its label.
 compat_map(){ { python3 -c "$(compat_py)" < "$(steam_dir)/config/config.vdf"; } 2>/dev/null; }
 compat_tool(){ compat_map | awk -v id="$1" '$1 == id { print $2; exit }'; }
-compat_label(){ case "$1" in [Pp]roton*) echo "Windows build (Proton)";; ?*) echo "Linux build";; esac; }
+compat_label(){ case "$1" in [Pp]roton*) echo "Windows build (Proton)";; *[Pp]roton*) echo "Windows build (${1:0:20})";; ?*) echo "Linux build";; esac; }
 json_ok(){ python3 -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' "$1" >/dev/null 2>&1; }
 text_ok(){ [ "$(tr -d '\000' < "$1" | wc -c)" = "$(wc -c < "$1")" ]; }
 # Valve tools (the client fetches them); other tools need a compatibilitytools.d entry.
@@ -3706,8 +3948,7 @@ $(basename "$f")?" Restore Back defaultno; then rs_close; return 1; fi
   bk_last_set "$(dirname "$f")"
   self_root "${args[@]}" || return 0
   if [ "$comp" = 1 ]; then
-    ui_yesno "Restore settings" "Settings restored. Part lists changed: run setup --keep now so the
-installed parts match? It takes a few minutes." "Run setup" Later || return 0
+    ui_yesno "Restore settings" "Settings restored. Part lists changed: run setup --keep now so the installed parts match? It takes a few minutes." "Run setup" Later || return 0
     INST_ENV=(); run_installer "Restore settings" --keep
   else
     ui_msg "Restore settings" "Settings restored."
@@ -3718,7 +3959,7 @@ maint_restore(){
   local d f c h seen=" " n=0
   local -a files=() items=()
   is_installed || { offer_install; return; }
-  if steam_running; then ui_msg "Restore settings" "Close Steam ARM first; it reads these settings while it runs."; return; fi
+  close_steam "Restore settings" "It reads these settings while it runs." || return
   h=$(owner_home)
   for d in "$(bk_last_dir)" "$h"; do
     [ -n "$d" ] || continue
@@ -3747,13 +3988,12 @@ menu_maintenance(){
   while c=$(ui_menu "Maintenance" "Keep Steam ARM working." --default "$c" \
       1 "Update / Repair (run setup again, same parts)" 2 "View logs" \
       3 "Hardware report (for a compatibility report)" 4 "Free /dev/shm now" \
-      5 "Back up settings" 6 "Restore settings"); do
+      5 "Back up settings" 6 "Restore settings" 7 "Check for new version"); do
     case "$c" in
       1) if is_installed; then
            ui_yesno "Update / Repair" "Run setup again with the parts chosen at last setup?
 
-Setup reinstalls packages, launcher, helpers and rules for those
-parts. Games, saves and sign-in stay in the client folder." Run Back defaultno || continue
+Setup reinstalls packages, launcher, helpers and rules for those parts. Games, saves and sign-in stay in the client folder." Run Back defaultno || continue
            INST_ENV=(); run_installer "Update / Repair" --keep
          else offer_install; fi;;
       2) maint_logs;;
@@ -3761,6 +4001,7 @@ parts. Games, saves and sign-in stay in the client folder." Run Back defaultno |
       4) maint_shm;;
       5) maint_backup;;
       6) maint_restore;;
+      7) maint_update_check;;
     esac
   done
 }
@@ -3771,16 +4012,13 @@ parts. Games, saves and sign-in stay in the client folder." Run Back defaultno |
 uninstall_keep(){
   ui_yesno "Uninstall" "Remove Steam ARM?
 
-Removes the launcher, menu entries, rules and settings it added, and
-puts back system settings it changed. Your games and sign-in stay in
-the client folder; setup asks before touching it.
+Removes the launcher, menu entries, rules and settings it added, and puts back system settings it changed. Your games and sign-in stay in the client folder; setup asks before touching it.
 
 Setup runs in the terminal and may ask questions there." Remove Back defaultno || return
   run_installer_tty --remove
 }
 uninstall_purge(){
-  ui_yesno "Uninstall everything" "Remove Steam ARM AND delete all installed games, saves kept in the
-client folder, and the x86-64 system files setup downloaded?
+  ui_yesno "Uninstall everything" "Remove Steam ARM AND delete all installed games, saves kept in the client folder, and the x86-64 system files setup downloaded?
 
 This cannot be undone." Continue Back defaultno || return
   ui_yesno "Uninstall everything" "Last check: delete Steam ARM with every installed game?
@@ -3890,8 +4128,9 @@ Reading "Rules used at last start" (Games > a game)
   this game won over the rules.
 - "renderer: GPU (...)" or "renderer: warning: GPU
   forwarding not active ...": drawing on GPU or CPU.
-- No lines: the game has not started since setup, or
-  it is a Windows game (Proton keeps its own logs).
+- No lines: the game has not started since setup. Windows
+  games under x86 Proton show only compat and Godot note
+  lines (Proton keeps its own logs).
 EOF
 }
 menu_help(){
@@ -3969,6 +4208,8 @@ Commands
                             the backup, unless --take-* names them;
                             accounts, passwords and groups are never
                             changed; asks before applying unless --yes
+  update-check              ask GitHub for the newest release and compare
+                            it with this version (nothing downloads)
   help fixing              what helps a game that does not start or
                             draws wrong, and what cannot be fixed
   --help                    this text
@@ -4039,7 +4280,7 @@ cli_profile(){
 }
 cli_compat(){
   valid_appid "${1:-}" || { echo "usage: steam-arm-config compat <appid> linux|windows|clear" >&2; return 2; }
-  steam_running && { echo "steam-arm-config: close Steam ARM first" >&2; return 1; }
+  steam_running && { echo "steam-arm-config: Steam ARM is running; close it first (as $(game_user): steam-arm --shutdown)" >&2; return 1; }
   case "${2:-}" in
     linux)   "$SA_COMPATMAP" "$1" steamlinuxruntime;;
     windows) "$SA_COMPATMAP" "$1" proton-stable-arm64;;
@@ -4105,7 +4346,7 @@ cli_restore(){
     *) echo "steam-arm-config: profiles mode is merge or replace" >&2; return 2;; esac
   [[ "$ts" =~ ^(all|[0-9,]*)$ ]] && [[ "$tp" =~ ^(all|[0-9,]*)$ ]] || { echo "steam-arm-config: --take-* takes app ids (a,b,...) or all" >&2; return 2; }
   is_installed || { echo "steam-arm-config: Steam ARM is not installed; install it, then restore" >&2; return 1; }
-  steam_running && { echo "steam-arm-config: close Steam ARM first" >&2; return 1; }
+  steam_running && { echo "steam-arm-config: Steam ARM is running; close it first (as $(game_user): steam-arm --shutdown)" >&2; return 1; }
   rs_open "$f" || { echo "steam-arm-config: $RS_ERR" >&2; return 1; }
   if [ -n "$parts" ]; then
     parts_ok "$parts" || { rs_close; return 2; }
@@ -4144,6 +4385,7 @@ main(){
     components)  cli_root "$@"; shift; cli_components "$@";;
     backup)      shift; cli_backup "$@";;
     restore)     cli_root "$@"; shift; cli_restore "$@";;
+    update-check) update_check; [ $? = 2 ] && exit 1; exit 0;;
     ''|menu)
       if [ ! -t 0 ] || [ ! -t 1 ]; then echo "steam-arm-config: the menu needs a terminal; see --help" >&2; exit 1; fi
       ui_pick; menu_main;;
@@ -4245,14 +4487,16 @@ After install
   Start "Steam ARM" from the menu, or run: steam-arm
   Sign in from Big Picture, or from "Steam ARM (Desktop mode)". The first start
   downloads the client and restarts it once.
-  Settings later: steam-arm-config (menu), or steam-arm-config --help
+  Settings later: "Steam ARM Settings" menu entry, steam-arm-config (menu), or
+  steam-arm-config --help
 
 Environment
   GAMEUSER=name                account to install into (default: account of last run,
                                else uid 1000)
   ARMHOME_DIR=path             client folder relative to home of that account, first
                                install only (default .local/share/steam-arm)
-  STEAM_ARM_IGNORE_PAGESIZE=1  skip the 4K page size check
+  STEAM_ARM_IGNORE_PAGESIZE=1  skip the 4K page size check; on a non-4K kernel kept in
+                               the settings file, so launcher and later runs honour it
   STEAM_ARM_ALLOW_ARMV80=1     skip the Armv8.1 (LSE atomics) CPU check; client builds
                                newer than 15 April 2026 stop at start on Armv8.0
                                (steam-for-linux issue 13288); launcher honours it too
@@ -4284,7 +4528,7 @@ Graphics per title (x86 Linux titles)
   Forwarding (default): emulated title's GL and Vulkan calls run on host GPU drivers.
   With gpu-in-emulation on Mali GPU, titles that fail on forwarding switch automatically
   to Mali drivers inside emulation: Java titles, and 32-bit titles started with -vulkan or
-  -force-vulkan (Mali-G610 class and Mali 5th gen only). Game log line
+  -force-vulkan (Mali-G610 class, mali-csf-v10, only). Game log line
   "steam-arm: graphics:" names choice.
   Per title, in /etc/steam-arm/titles.conf:  <appid> gfx=b  (Mali drivers inside
   emulation)  or  <appid> gfx=a  (forwarding).
@@ -4538,6 +4782,8 @@ fi
 # --- page size ---
 # Emulation needs 4K pages; Pi's page-size component selects its 4K kernel, elsewhere this stops with the fix.
 PAGESIZE=$(getconf PAGESIZE 2>/dev/null || echo 4096)
+# Override from the environment, else the one an earlier run kept in the settings file.
+PS_IGNORE=${STEAM_ARM_IGNORE_PAGESIZE:-$(conf_get STEAM_ARM_IGNORE_PAGESIZE)}
 MODEL=$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null)
 FWDIR=/boot/firmware
 [ -f "$FWDIR/config.txt" ] || { [ -f /boot/config.txt ] && FWDIR=/boot; }
@@ -4571,7 +4817,7 @@ ps_remove(){
 # Retire other variant of this installer: its files into one tar in /var/backups (paths kept), then deleted.
 retire_other(){
   local ou oh oad tar utar f u kwin_copy list=() keep=() rel=() urel=() en=()
-  pgrep -x steam >/dev/null 2>&1 && die "a Steam client is running. Close it first (exit from its menu, or Stop Steam in the tray), then run this again."
+  pgrep -x steam >/dev/null 2>&1 && die "a Steam client is running. Close it first (exit from its menu, Stop Steam in the tray, or steam-arm --shutdown as its account), then run this again."
   ou=$(sed -n 's/^GAMEUSER=//p' "/etc/h96/steam-arm.conf" 2>/dev/null | tail -1)
   getent passwd "$ou" >/dev/null 2>&1 || ou=$GAMEUSER
   oh=$(getent passwd "$ou" 2>/dev/null | cut -d: -f6)
@@ -4695,7 +4941,7 @@ remove_all(){
   local linger made_acct tb="" d fstab_added rfs_made rfs_del=0 nomark=0 fstab_kept=0 foreign
   [ "$(id -u)" = 0 ] || die "run as root: sudo bash steam-arm-install.sh --remove"
   getent passwd "$GAMEUSER" >/dev/null 2>&1 && uh=$(getent passwd "$GAMEUSER" | cut -d: -f6)
-  pgrep -x steam >/dev/null 2>&1 && die "a Steam client is running. Close it first (exit from its menu, or Stop Steam in the tray), then run this again."
+  pgrep -x steam >/dev/null 2>&1 && die "a Steam client is running. Close it first (exit from its menu, Stop Steam in the tray, or steam-arm --shutdown as its account), then run this again."
   if armhome_ok "$ARMHOME_DIR"; then [ -n "$uh" ] && armhome="$uh/$ARMHOME_DIR"
   else warn "$ARMHOME_BAD"; warn "client folder is not touched by this removal"; fi
   linger=$(conf_get LINGER_SET); made_acct=$(conf_get ACCOUNT_CREATED)
@@ -4761,6 +5007,7 @@ remove_all(){
         /etc/udev/rules.d/71-steam-arm-xpad-dedup.rules /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules \
         /etc/sudoers.d/steam-arm "$GLX_HOOK" \
         /usr/share/applications/steam-arm.desktop /usr/share/applications/steam-arm-desktop.desktop \
+        /usr/share/applications/steam-arm-config.desktop \
         /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png
   grep -qs "$VALVE_MARK" /etc/udev/rules.d/60-steam-input.rules && rm -f /etc/udev/rules.d/60-steam-input.rules
   grep -qs steam-arm /usr/local/bin/steamos-session-select && rm -f /usr/local/bin/steamos-session-select
@@ -4839,12 +5086,18 @@ remove_all(){
     fi
   fi
   pkgs="fex-emu-armv8.0 fex-emu-armv8.2 fex-emu-armv8.4 fex-emu-binfmt32 fex-emu-binfmt64 bubblewrap libsdl3-0 libsdl3-image0 libsdl3-ttf0"
-  pkgs="$pkgs libgtk2.0-0t64 libopenal1 zenity xdotool patchelf libvulkan-dev python3-pil python3-evdev gir1.2-ayatanaappindicator3-0.1"
+  pkgs="$pkgs libgtk2.0-0t64 libgtk2.0-0 libopenal1 zenity xdotool patchelf libvulkan-dev python3-pil python3-evdev gir1.2-ayatanaappindicator3-0.1"
   pkgs=$(for p in $pkgs; do dpkg-query -W -f='${Status}\n' "$p" 2>/dev/null | grep -q '^install ok installed' && printf '%s ' "$p"; done)
+  # Debian FEX source from setup: goes once no FEX build is installed, else stays for its updates
+  local fexsrc=0
+  if [ -f "$FEXSRC" ]; then
+    case " $pkgs" in *" fex-emu-armv8"*) fexsrc=1;; *) rm -f "$FEXSRC" "$FEXKEY" && fexsrc=2;; esac
+  fi
   say "done: Steam ARM removed"
   echo "  Removed:   launcher, helpers, settings menu, menu and desktop entries, icons, controller rules,"
   echo "             services, sudo rule, window rule, apt hook, settings in /etc/steam-arm"
   [ "$gone_mali" = 1 ] && echo "  Removed:   Mali drivers inside emulation ($MALI)"
+  [ "$fexsrc" = 2 ] && echo "  Removed:   FEX package source $FEXSRC and its key $FEXKEY"
   [ -n "$restored" ] && echo "  Restored:  $restored"
   [ -n "$tb" ] && echo "  Saved:     game profiles from /etc/steam-arm/titles.conf in $tb"
   for p in $kept; do echo "  Kept:      $p (changed since setup, or used by other variant of this installer)"; done
@@ -4874,12 +5127,41 @@ remove_all(){
   if [ -n "$pkgs" ]; then
     echo "  Packages:  distribution packages stay installed. Remove the ones nothing else on this system"
     echo "             needs with:  sudo apt remove $pkgs"
-    echo "             FEX package source:  sudo add-apt-repository --remove $FEXPPA"
+    if [ "$fexsrc" = 1 ]; then echo "             FEX package source:  sudo rm $FEXSRC $FEXKEY"
+    elif os_ubuntu && case " $pkgs" in *" fex-emu-armv8"*) true;; *) false;; esac; then
+      echo "             FEX package source:  sudo add-apt-repository --remove $FEXPPA"; fi
   fi
   [ "$binfmt" = 1 ] && echo "  box64 and box32, if installed, handle x86 programs again after next reboot."
   return 0
 }
 if [ "$MODE" = remove ]; then remove_all; exit 0; fi
+# --- host package preflight (read-only), before any package or package source change ---
+BUILDPKGS=""; opt vk-spoof && BUILDPKGS="gcc libc6-dev libvulkan-dev"
+opt glx-lax && BUILDPKGS="$BUILDPKGS patchelf"
+opt gpu-in-emulation && BUILDPKGS="$BUILDPKGS zstd"                                  # driver archive
+want_icons(){ opt desktop || opt desktop-mode || opt icon-bigpicture || opt icon-desktop; }
+want_icons && BUILDPKGS="$BUILDPKGS python3-pil"                                     # menu and desktop icons
+opt tray && BUILDPKGS="$BUILDPKGS gir1.2-ayatanaappindicator3-0.1"                   # tray helper binding
+HOSTPKGS="bubblewrap dbus-daemon xz-utils libsdl3-0 libsdl3-image0 libsdl3-ttf0 libgtk2.0-0t64 libopenal1 zenity xdotool x11-xserver-utils curl python3 file $BUILDPKGS"
+HOST_MISS=$(pkg_missing $HOSTPKGS)
+# stale or empty package lists: read once more (sources unchanged)
+if [ -n "$HOST_MISS" ]; then
+  if [ "$(id -u)" = 0 ] && apt-get update -qq >/dev/null 2>&1; then HOST_MISS=$(pkg_missing $HOSTPKGS)
+  else HOST_MISS=; warn "package lists could not be refreshed; host package check skipped"; fi
+fi
+[ -z "$HOST_MISS" ] || die "this system's package sources lack host packages setup needs: ${HOST_MISS% }
+       Steam ARM needs Ubuntu 25.10 or newer, Debian 13 or newer, or a distribution built on
+       them (README, Requirements); Ubuntu 24.04 and Debian 12 have no SDL3 packages.
+       No package or package source changed."
+# FEX from another source (FEX command not from a fex-emu package): its x86 binfmt entries needed; FEX packages skipped.
+FEX_OTHER=0
+if command -v FEX >/dev/null 2>&1 && ! fex_packaged; then
+  fex_binfmt || die "FEX at $(command -v FEX) comes from another source, and its x86 binfmt entries
+       (FEX-x86, FEX-x86_64 in /proc/sys/fs/binfmt_misc) are not registered. Register them
+       (FEX's build guide, binfmt_misc step: https://github.com/FEX-Emu/FEX), then run this again.
+       No package or package source changed."
+  FEX_OTHER=1
+fi
 if [ "$PAGESIZE" = 4096 ]; then
   if is_pi && ps_block && ! opt page-size; then
     [ "$(id -u)" = 0 ] || die "run as root"
@@ -4887,7 +5169,7 @@ if [ "$PAGESIZE" = 4096 ]; then
     warn "page-size deselected: 4K kernel line removed from $FWCFG. After next reboot, firmware"
     warn "loads its default kernel, and x86 titles stop running until page-size is selected again."
   fi
-elif [ "${STEAM_ARM_IGNORE_PAGESIZE:-0}" = 1 ]; then
+elif [ "$PS_IGNORE" = 1 ]; then
   warn "page size is $PAGESIZE, not 4096; continuing because STEAM_ARM_IGNORE_PAGESIZE=1."
   warn "x86 titles run only if this system provides its own 4K environment for them."
 elif is_pi; then
@@ -4915,7 +5197,7 @@ else
   case "$MODEL" in
     Apple*) die "page size is $PAGESIZE (Apple Silicon) and emulation needs 4096. Kernel on this
        hardware stays at 16K; x86 side has to run inside 4K virtual machine, such as muvm,
-       which this installer does not set up. STEAM_ARM_IGNORE_PAGESIZE=1 skips this check.";;
+       which this installer does not set up.";;
   esac
   die "page size is $PAGESIZE and emulation needs 4096. Boot 4K page kernel (on most
        distributions, separate kernel package), then run this again.
@@ -4962,19 +5244,15 @@ say "1/11  host packages"
 export DEBIAN_FRONTEND=noninteractive
 wait_apt
 # FEX serves Remote Play and the thunk libraries; the client's own emulator tool comes separately.
-if ! command -v FEX >/dev/null 2>&1; then
+if ! command -v FEX >/dev/null 2>&1 && ! os_ubuntu; then
+  fex_source_debian
+elif ! command -v FEX >/dev/null 2>&1; then
   command -v add-apt-repository >/dev/null || apt-get install -y software-properties-common \
     || die "software-properties-common did not install (needed to add the FEX package source). $NETHINT"
   grep -rq "fex-emu/fex" /etc/apt/sources.list.d/ 2>/dev/null || add-apt-repository -y "$FEXPPA" \
     || die "could not add the FEX package source $FEXPPA. $NETHINT FEX packages exist for Ubuntu-based systems; on other distributions install FEX yourself first."
 fi
 wait_apt; apt-get update -y || die "package lists could not be updated (apt-get update failed). $NETHINT"
-BUILDPKGS=""; opt vk-spoof && BUILDPKGS="gcc libc6-dev libvulkan-dev"
-opt glx-lax && BUILDPKGS="$BUILDPKGS patchelf"
-opt gpu-in-emulation && BUILDPKGS="$BUILDPKGS zstd"                                  # driver archive
-want_icons(){ opt desktop || opt desktop-mode || opt icon-bigpicture || opt icon-desktop; }
-want_icons && BUILDPKGS="$BUILDPKGS python3-pil"                                     # menu and desktop icons
-opt tray && BUILDPKGS="$BUILDPKGS gir1.2-ayatanaappindicator3-0.1"                   # tray helper binding
 # FEX build for this CPU, same rule as FEX's InstallFEX.py (first CPU's Features line).
 fex_arch(){
   local f; f=" $(cpu_features) "
@@ -4988,15 +5266,24 @@ fex_pkg(){
   local a c; a=$(fex_arch)
   for c in 8.4 8.2 8.0; do
     case "$a:$c" in 8.2:8.4|8.0:8.4|8.0:8.2) continue;; esac
-    apt-cache policy "fex-emu-armv$c" 2>/dev/null | grep -q 'Candidate: [0-9]' && { echo "fex-emu-armv$c"; return; }
+    LC_ALL=C apt-cache policy "fex-emu-armv$c" 2>/dev/null | grep -q 'Candidate: [0-9]' && { echo "fex-emu-armv$c"; return; }
   done
   echo "fex-emu-armv$a"
 }
-FEXPKG=$(fex_pkg)
-say "FEX build for this CPU (ARMv$(fex_arch) features): $FEXPKG"
-wait_apt; apt-get install -y "$FEXPKG" fex-emu-binfmt32 fex-emu-binfmt64 bubblewrap dbus-daemon xz-utils \
-  libsdl3-0 libsdl3-image0 libsdl3-ttf0 libgtk2.0-0t64 libopenal1 zenity xdotool x11-xserver-utils curl python3 file $BUILDPKGS \
-  || die "host packages did not install (apt-get install failed; its message is above). $NETHINT If it reports packages it cannot find, this distribution release lacks them; README lists supported systems."
+if [ "$FEX_OTHER" = 1 ]; then
+  FEXPKGS=""
+  say "FEX from another source: $(command -v FEX); FEX packages skipped"
+else
+  FEXPKG=$(fex_pkg)
+  say "FEX build for this CPU (ARMv$(fex_arch) features): $FEXPKG"
+  FEXPKGS="$FEXPKG fex-emu-binfmt32 fex-emu-binfmt64"
+  FEX_MISS=$(pkg_missing $FEXPKGS)
+  [ -z "$FEX_MISS" ] || die "FEX packages not offered by this system's package sources: ${FEX_MISS% }
+       Install FEX from another source with its x86 binfmt entries (FEX's InstallFEX.py or
+       build guide: https://github.com/FEX-Emu/FEX), then run this again."
+fi
+wait_apt; apt-get install -y $FEXPKGS $HOSTPKGS \
+  || die "host packages did not install (apt-get install failed; its message is above). $NETHINT If it reports packages it cannot find, this distribution release lacks them; README, Requirements names supported releases."
 command -v FEX >/dev/null || die "FEX is not on this system after package install. Install $FEXPKG by hand (sudo apt install $FEXPKG), then run this again."
 for l in libSDL3.so.0 libopenal.so.1 libgtk-x11-2.0.so.0; do
   ldconfig -p | grep -q "$l" || die "$l missing after package install. Run this again; if it stays missing, report it with the output above."
@@ -5187,13 +5474,21 @@ opt glx-lax && FEXEXTRA="$FEXEXTRA,
   \"HostEnv\":\"__GLX_VENDOR_LIBRARY_NAME=steamarmlax\""
 opt vk-spoof  && FEXEXTRA="$FEXEXTRA,
   \"HostEnv\":\"VK_IMPLICIT_LAYER_PATH=/usr/share/vulkan/implicit_layer.d\""
+# Thunk folders of FEX in use (package: /usr, other source: its prefix); none found: thunks off.
+FEXTHUNK=""; FEXTH=0
+if read -r TH_HOST TH_GUEST TH_DB < <(fex_thunk_paths); then
+  FEXTHUNK=",
+  \"ThunkHostLibs\":\"$TH_HOST\",
+  \"ThunkGuestLibs\":\"$TH_GUEST\",
+  \"ThunkConfig\":\"$TH_DB\""; FEXTH=1
+else
+  warn "FEX thunk libraries not found (HostThunks, GuestThunks, ThunksDB.json beside $(command -v FEX));"
+  warn "GL and Vulkan thunks off in $UHOME/.fex-emu/Config.json (x86 Remote Play client runs without them)."
+fi
 as_user mkdir -p "$UHOME/.fex-emu" || die "could not create $UHOME/.fex-emu as '$GAMEUSER'. Check that this account owns its home folder, then run this again."
 user_write "$UHOME/.fex-emu/Config.json" <<JSON || die "could not write $UHOME/.fex-emu/Config.json as '$GAMEUSER'. Free some space, then run this again."
-{ "Config": { "RootFS":"$RFS",
-  "ThunkHostLibs":"/usr/lib/aarch64-linux-gnu/fex-emu/HostThunks/",
-  "ThunkGuestLibs":"/usr/share/fex-emu/GuestThunks/",
-  "ThunkConfig":"/usr/share/fex-emu/ThunksDB.json"$FEXEXTRA },
-  "ThunksDB":{"GL":1,"Vulkan":1} }
+{ "Config": { "RootFS":"$RFS"$FEXTHUNK$FEXEXTRA },
+  "ThunksDB":{"GL":$FEXTH,"Vulkan":$FEXTH} }
 JSON
 own_mark "$UHOME/.fex-emu/Config.json"
 as_user rm -f "$ARMHOME/.fex-emu/Config.json" 2>/dev/null   # the launcher copies the fresh one
@@ -5949,7 +6244,7 @@ else
   # Manifest entry: "sha2" = sha256 of the zip; the name ends in its sha1.
   SHA2=$(awk '/"bins_linuxarm64_linuxarm64"/ {b = 1} b && $1 == "\"sha2\"" {gsub(/"/, "", $2); print $2; exit} b && /^[[:space:]]*}/ {exit}' "$STAGE/manifest")
   echo "  package $ENTRY"
-  curl -fL --proto =https --proto-redir =https "${CURL_SHOW[@]}" -o "$STAGE/client.zip" "$CDN/$ENTRY" || die "client package download failed ($CDN/$ENTRY, about 110 MB). $NETHINT"
+  env "${CURL_ENV[@]}" curl -fL --proto =https --proto-redir =https "${CURL_SHOW[@]}" -o "$STAGE/client.zip" "$CDN/$ENTRY" || die "client package download failed ($CDN/$ENTRY, about 110 MB). $NETHINT"
   if [ "${#SHA2}" = 64 ]; then CSUM=$(sha256sum "$STAGE/client.zip" | cut -c1-64); WANT=$SHA2
   else CSUM=$(sha1sum "$STAGE/client.zip" | cut -c1-40); WANT=${ENTRY##*.}; fi
   [ "$CSUM" = "$WANT" ] || die "client package does not match the checksum in Valve's manifest (download damaged or cut short). Run this again."
@@ -6021,6 +6316,8 @@ conf_set GPU_FAMILY_SET "$GPU_SRC"
 # Graphics for x86 titles: auto = forwarding plus the handler's rules; a (or forward) = forwarding only; b = every title on Mali drivers.
 [ -n "$(conf_get GFX_DEFAULT)" ] || conf_set GFX_DEFAULT auto
 conf_set VERSION "$SA_VERSION"
+# Page size override used on a non-4K kernel: kept so the launcher and later runs honour it.
+if [ "$PAGESIZE" != 4096 ] && [ "$PS_IGNORE" = 1 ]; then conf_set STEAM_ARM_IGNORE_PAGESIZE 1; else conf_del STEAM_ARM_IGNORE_PAGESIZE; fi
 # Launch handler: replaces the FEX tool's LD_PRELOAD deletion; picks overlay/MangoHud/engine fixes per title.
 cat > /usr/local/lib/steam-arm-handler.py <<'HANDLERPY'
 #!/usr/bin/env python3
@@ -6037,6 +6334,9 @@ on the tool's os.environ and sys.argv and decides per title:
   MangoHud        loaded when title asks for it: `mangohud %command%`, `MANGOHUD=1`, or profile.
   Engine fixes    Godot 4 titles: OpenGL renderer and GL 3.3 report (Vulkan renderer freezes on
                   splash; Panfrost reports GL 3.1, Godot's OpenGL renderer needs 3.3).
+                  Godot 3 titles: GL 3.3 report (GLES3 renderer needs 3.3). Godot version from
+                  .pck beside game or PCK embedded in its executable; Windows builds under x86
+                  Proton left alone.
                   32-bit Unity players: Steam overlay off (the title stops when it attaches).
                   64-bit Unity players with a Vulkan renderer: -force-vulkan (Unity's OpenGL core
                   context needs a newer GL than Panfrost offers); overlay mode for Vulkan titles.
@@ -6048,7 +6348,7 @@ on the tool's os.environ and sys.argv and decides per title:
                   GPU_FAMILY in /etc/steam-arm/steam-arm.conf is a Mali family (panfrost/panthor), and:
                   Java title (Java runtime in game folder; Java 21+ also gets FEX Multiblock off),
                   or 32-bit title started with -vulkan/-force-vulkan (no 32-bit Vulkan thunk) on
-                  mali-csf-v10 or mali-csf-5thgen (panvk loads by default only there).
+                  mali-csf-v10 (panvk loads by default only there).
                   Otherwise 32-bit -vulkan/-force-vulkan is removed (CPU renderer).
                   Profile gfx=a|b overrides (gfx=b on other GPU: warning, forwarding). GFX_DEFAULT in
                   /etc/steam-arm/steam-arm.conf: auto (or empty) = these rules; a (or forward) = every
@@ -6130,22 +6430,58 @@ def load_profile():
     return prof
 
 
+def pck_header(f, off):
+    """Engine major from PCK header at off (GDPC, format, major...), else None."""
+    f.seek(off)
+    h = f.read(12)
+    if len(h) == 12 and h[:4] == b"GDPC":
+        fmt, major = struct.unpack("<II", h[4:12])
+        if fmt < 10 and 0 < major < 10:
+            return major
+    return None
+
+
+def embedded_pck_major(path):
+    """Engine major from PCK appended to executable ("Embed PCK" export): footer is uint64 size + GDPC."""
+    try:
+        with open(path, "rb") as f:
+            end = f.seek(0, 2)
+            if end < 24:
+                return None
+            f.seek(end - 12)
+            t = f.read(12)
+            if t[8:] != b"GDPC":
+                return None
+            size = struct.unpack("<Q", t[:8])[0]
+            return pck_header(f, end - 12 - size) if size <= end - 24 else None
+    except OSError:
+        return None
+
+
 def godot_major():
-    """Engine major version from a .pck header next to the game (GDPC, format, major...)."""
-    dirs = [os.getcwd()]
+    """Engine major in Godot's own pack order: PCK embedded in the executable, <name>.pck beside it,
+    then any .pck in its folder, the working folder or the folder of the last file argument."""
+    exe = game_binary()
+    major = embedded_pck_major(exe) if exe else None
+    if major is not None:
+        return major
+    cands = [os.path.splitext(exe)[0] + ".pck"] if exe else []
+    dirs = [os.path.dirname(exe)] if exe else []
+    dirs.append(os.getcwd())
     for a in reversed(sys.argv):
         if os.path.isfile(a):
             dirs.append(os.path.dirname(os.path.abspath(a)))
             break
     for d in dirs:
-        for p in glob.glob(os.path.join(d, "*.pck")):
-            try:
-                with open(p, "rb") as f:
-                    h = f.read(12)
-            except OSError:
-                continue
-            if len(h) == 12 and h[:4] == b"GDPC":
-                return struct.unpack("<I", h[8:12])[0]
+        cands += sorted(glob.glob(os.path.join(glob.escape(d), "*.pck")))
+    for p in cands:
+        try:
+            with open(p, "rb") as f:
+                major = pck_header(f, 0)
+        except OSError:
+            continue
+        if major is not None:
+            return major
     return None
 
 
@@ -6314,9 +6650,9 @@ def mali_ready():
     return os.path.isfile(MALI_ROOT + "/.steam-arm-mali") and os.path.isfile(MALI_ROOT + "/graphics_provider.json")
 
 
-# GPU families the second tree's drivers cover (panfrost GL, panvk); panvk loads by default only on PANVK_FAMILIES.
-MALI_FAMILIES = ("mali-csf-v10", "mali-csf-5thgen", "mali-csf", "mali-valhall-jm", "mali-bifrost", "mali-midgard", "mali-panfrost")
-PANVK_FAMILIES = ("mali-csf-v10", "mali-csf-5thgen")
+# GPU families the second tree's drivers cover (panfrost GL, panvk; G1 needs Mesa 26.2); panvk loads by default only on PANVK_FAMILIES.
+MALI_FAMILIES = ("mali-csf-v10", "mali-csf-v11", "mali-csf-5thgen", "mali-csf", "mali-valhall-jm", "mali-bifrost", "mali-midgard", "mali-panfrost")
+PANVK_FAMILIES = ("mali-csf-v10",)
 # Drivers that outrank a Mali GPU in setup's detection (discrete, Adreno, Apple).
 GPU_OUTRANK = ("amdgpu", "radeon", "nouveau", "nvidia", "i915", "xe", "msm", "msm_dpu", "msm_mdp", "mdp4", "asahi")
 _GPU_FAMILY = None
@@ -6657,7 +6993,8 @@ if goldsrc():
     log("goldsrc: OpenGL 2.1 title; its video options pick OpenGL or Software renderer (Software draws on CPU)")
 # Steam's saved tool choice is only read here, never written.
 tool = compat_mapping(APPID)
-if any(os.path.basename(a) == "proton" for a in sys.argv):
+x86_proton = any(os.path.basename(a) == "proton" for a in sys.argv)
+if x86_proton:
     log("compat: x86 Proton%s through emulation; ARM64 Proton builds run without x86 emulation" % (" (%s)" % tool if tool else ""))
 elif tool and "proton" in tool.lower():
     log("compat: warning: Steam's saved setting names %s for this title, but its Linux build started; "
@@ -6744,9 +7081,11 @@ elif wants_mh:
     os.environ["MANGOHUD"] = "1"
     log("mangohud: on")
 
-# Godot 4
+# Godot 4 OpenGL and Godot 3 GLES3 need GL 3.3 (Panfrost reports 3.1); Windows builds under Proton left alone
 major = godot_major()
-if major == 4 and prof.get("godot", "gl") == "gl":
+if major is not None and x86_proton:
+    log("godot %d: Windows build under x86 Proton, left as is" % major)
+elif major == 4 and prof.get("godot", "gl") == "gl":
     keep_env("MESA_GL_VERSION_OVERRIDE", "3.3")
     keep_env("MESA_GLSL_VERSION_OVERRIDE", "330")
     args = sys.argv + extra
@@ -6759,6 +7098,10 @@ if major == 4 and prof.get("godot", "gl") == "gl":
     # values in effect, launch options included
     log("godot 4: %s renderer, GL %s report" % ("OpenGL" if drv == "opengl3" else drv or "default",
                                                os.environ["MESA_GL_VERSION_OVERRIDE"]))
+elif major == 3 and prof.get("godot", "gl") == "gl":
+    keep_env("MESA_GL_VERSION_OVERRIDE", "3.3")
+    keep_env("MESA_GLSL_VERSION_OVERRIDE", "330")
+    log("godot 3: GL %s report" % os.environ["MESA_GL_VERSION_OVERRIDE"])
 elif major is not None:
     log("godot %d: left as is" % major)
 
@@ -7663,6 +8006,19 @@ chmod 755 /usr/local/lib/steam-arm-physx.py
 cat > /usr/local/bin/steam-arm <<'LAUNCHER'
 #!/bin/sh
 # steam-arm: launches native ARM64 Steam client; runs as desktop user, games through FEX against the RootFS.
+# Help prints usage (any account, root too); it never starts a client (Steam itself has no --help).
+case "${1:-}" in
+  -h|--help|help)
+    printf '%s\n' "Usage: steam-arm [Steam client options]" \
+      "  steam-arm               start Steam client" \
+      "  steam-arm --bigpicture  start client in Big Picture (restarts running client in it)" \
+      "  steam-arm --desktop     start client in desktop interface (restarts running client in it)" \
+      "  steam-arm --shutdown    stop running client (asks it to exit, SIGTERM after 20 s)" \
+      "  steam-arm --help        show this text" \
+      "Run as account Steam ARM is set up for, not as root." \
+      "Other options pass to Steam client unchanged. Settings: sudo steam-arm-config"
+    exit 0;;
+esac
 if [ "$(id -u)" = 0 ]; then
   echo "steam-arm: run this as the desktop account that plays games, not as root" >&2; exit 1
 fi
@@ -7671,7 +8027,7 @@ ARMHOME_DIR=.local/share/steam-arm            # relative to the user's home
 [ -r /etc/steam-arm/steam-arm.conf ] && . /etc/steam-arm/steam-arm.conf
 ARMHOME="${STEAM_ARM_HOME:-$REALHOME/$ARMHOME_DIR}"
 S="$ARMHOME/.local/share/Steam"; D="$S/steamrtarm64"; F="$S/steamapps/common/FEX-Emu"
-# Stop before any write: message on stderr, plus a dialog when started from a menu (display, no terminal).
+# Stop: message on stderr, plus a dialog when started from a menu (display, no terminal).
 stop(){
   echo "steam-arm: $1" >&2
   if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && [ ! -t 2 ] && command -v zenity >/dev/null 2>&1; then
@@ -7679,16 +8035,6 @@ stop(){
   fi
   exit 1
 }
-# Help prints usage; it never starts a client (Steam itself has no --help).
-case "${1:-}" in
-  -h|--help|help)
-    printf '%s\n' "Usage: steam-arm [Steam client options]" \
-      "  steam-arm              start Steam client" \
-      "  steam-arm --shutdown   stop running client (asks it to exit, SIGTERM after 20 s)" \
-      "  steam-arm --help       show this text" \
-      "Other options pass to Steam client unchanged. Settings: sudo steam-arm-config"
-    exit 0;;
-esac
 if command -v steam-arm-setup >/dev/null 2>&1; then SETUP=steam-arm-setup
 elif [ -f /usr/local/share/steam-arm/steam-arm-install.sh ]; then SETUP="bash /usr/local/share/steam-arm/steam-arm-install.sh"
 else SETUP="bash steam-arm-install.sh"; fi
@@ -7706,7 +8052,32 @@ export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
 export STEAM_COMPAT_GRAPHICS_PROVIDER=/opt/fex-rootfs/Ubuntu_24_04/graphics_provider.json
 export STEAMOS=1
 LOG="$ARMHOME/steam-arm.log"
+# Log cap: over 1 MiB at start, current log becomes steam-arm.log.1 (one old copy kept).
+[ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ] && mv -f "$LOG" "$LOG.1" 2>/dev/null
 lwarn(){ echo "steam-arm: $*" >&2; printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG" 2>/dev/null; }
+# notice ID SUMMARY BODY TIMEOUT_MS: send (ID 0) or replace a desktop notification; prints its id.
+notice(){
+  if command -v gdbus >/dev/null 2>&1; then
+    gdbus call --session --timeout 5 --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+      --method org.freedesktop.Notifications.Notify "Steam ARM" "$1" steam-arm "$2" "$3" '[]' '{}' "$4" 2>/dev/null \
+      | sed -n 's/.*uint32 \([0-9]*\).*/\1/p'
+  elif command -v notify-send >/dev/null 2>&1; then
+    # no -p (libnotify before 0.7.9): one notice without updates
+    notify-send -p -r "$1" -a "Steam ARM" -i steam-arm -t "$4" "$2" "$3" 2>/dev/null \
+      || { [ "$1" = 0 ] && notify-send -a "Steam ARM" -i steam-arm -t 15000 "$2" "$3" 2>/dev/null; }
+  fi
+}
+notice_close(){ command -v gdbus >/dev/null 2>&1 && gdbus call --session --timeout 5 --dest org.freedesktop.Notifications \
+  --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.CloseNotification "$1" >/dev/null 2>&1; }
+# Actionable warning: logged, plus a desktop notification when started from a menu; same text once per login session.
+lnote(){
+  lwarn "$1"
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && [ ! -t 2 ] || return 0
+  seen="$XDG_RUNTIME_DIR/steam-arm-warned"
+  grep -Fxq -- "$1" "$seen" 2>/dev/null && return 0
+  printf '%s\n' "$1" >> "$seen" 2>/dev/null
+  ( notice 0 "Steam ARM: warning" "$1" 20000 ) </dev/null >/dev/null 2>&1 &
+}
 # Stop path: steam -shutdown, then SIGTERM after 20 s (a client can stop acting on forwarded command
 # lines, for example after a second client ran with another HOME on the same account). Never SIGKILL.
 client_running(){ pgrep -u "$(id -u)" -x steam >/dev/null 2>&1; }
@@ -7731,11 +8102,35 @@ if [ -n "$CPUF" ] && [ "${STEAM_ARM_ALLOW_ARMV80:-0}" != 1 ]; then
     lwarn "$LSE" 2>/dev/null; stop "$LSE";;
   esac
 fi
+# Emulation needs 4K pages; STEAM_ARM_IGNORE_PAGESIZE=1 skips it (x86 side in a separate 4K guest).
+PGSZ=$(getconf PAGESIZE 2>/dev/null || echo 4096)
+if [ "$PGSZ" != 4096 ] && [ "${STEAM_ARM_IGNORE_PAGESIZE:-0}" != 1 ]; then
+  PSM="Kernel page size is $PGSZ bytes; emulation of x86 games needs 4096 (4K). Raspberry Pi 5: sudo steam-arm-config, Components, select page-size (or add kernel=kernel8.img to firmware config.txt), then reboot. Other systems: boot a 4K page kernel (on most distributions a separate kernel package). STEAM_ARM_IGNORE_PAGESIZE=1 (environment, or a line in /etc/steam-arm/steam-arm.conf) skips this check."
+  lwarn "$PSM" 2>/dev/null; stop "$PSM"
+fi
+# GPU access: test -r/-w follow ACLs, so seat (uaccess) grants count.
+RNODE=; RGRP=
+for r in /dev/dri/renderD*; do
+  [ -e "$r" ] || continue
+  [ -r "$r" ] && [ -w "$r" ] && { RNODE=$r; break; }
+  RGRP=$(stat -c %G "$r" 2>/dev/null)
+done
+if [ -z "$RNODE" ]; then
+  if [ -n "$RGRP" ] && [ "$RGRP" != root ]; then
+    lnote "No GPU render node (/dev/dri/renderD*) readable and writable by account $(id -un); games draw on CPU. Fix: sudo usermod -aG $RGRP $(id -un), then log out and back in."
+  elif [ -n "$RGRP" ]; then
+    lnote "No GPU render node (/dev/dri/renderD*) readable and writable by account $(id -un); games draw on CPU. Check permissions of /dev/dri/renderD* (udev rules of GPU driver)."
+  elif [ -e /dev/mali0 ]; then
+    lnote "No GPU render node (/dev/dri/renderD*) found: closed Mali driver (mali_kbase) in use; games draw on CPU. Fix: kernel with Mesa's panfrost or panthor GPU driver."
+  else
+    lnote "No GPU render node (/dev/dri/renderD*) found; games draw on CPU. Check that kernel GPU driver is loaded."
+  fi
+fi
 # Component chosen at install (COMPONENTS_ON in the settings file; all count as chosen when the file has no list).
 comp_on(){ [ -z "${COMPONENTS_ON+x}" ] && return 0; case ",$COMPONENTS_ON," in *",$1,"*) return 0;; esac; return 1; }
 # Graphics route is picked per title by the launch handler; here only a note when its second tree is gone.
 comp_on gpu-in-emulation && [ -n "${COMPONENTS_ON+x}" ] && [ ! -f /opt/fex-rootfs/Ubuntu_24_04-mali/.steam-arm-mali ] \
-  && lwarn "Mali drivers inside the emulation missing, titles that need them use forwarding; run the installer again to restore them"
+  && lnote "Mali drivers inside the emulation missing, titles that need them use forwarding; run the installer again to restore them"
 # kde-input-prompt: KDE's input permission for X11 programs, set (component on) or put back (off) in this session.
 KDEIN=/usr/local/lib/steam-arm-kde-input; KDEM="$REALHOME/.config/steam-arm/kde-input-prompt"
 if [ -x "$KDEIN" ]; then
@@ -7750,9 +8145,9 @@ fi
 LAX=/usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0; LAX_BAD=0
 if comp_on glx-lax; then
   if [ ! -f "$LAX" ]; then
-    LAX_BAD=1; lwarn "private GLX copy missing, using system Mesa GLX; run the installer again to rebuild it"
+    LAX_BAD=1; lnote "private GLX copy missing, using system Mesa GLX; run the installer again to rebuild it"
   elif ! out=$(ldd "$LAX" 2>&1) || printf '%s\n' "$out" | grep -q 'not found'; then
-    LAX_BAD=1; lwarn "private GLX copy cannot load its libraries, using system Mesa GLX; run: sudo steam-arm-glx-lax"
+    LAX_BAD=1; lnote "private GLX copy cannot load its libraries, using system Mesa GLX; run: sudo steam-arm-glx-lax"
   else
     export __GLX_VENDOR_LIBRARY_NAME=steamarmlax
   fi
@@ -7790,7 +8185,7 @@ mode_restore(){
     p=${g#*+}; set -- "$@" --output "$o" --mode "$m" --pos "${p%%+*}x${p#*+}"
   done < "$MODEF"
   if xrandr ${fb:+--fb "$fb"} "$@" 2>/dev/null; then lwarn "display mode put back after game: $(paste -sd ' ' "$MODEF")"
-  else lwarn "display mode could not be put back ($(paste -sd ' ' "$MODEF")); set it in display settings"; fi
+  else lnote "display mode could not be put back ($(paste -sd ' ' "$MODEF")); set it in display settings"; fi
 }
 # Called every second by the watcher: save before a title switches, restore 2 s after the last one ends.
 mode_watch(){
@@ -7860,7 +8255,7 @@ bt_restore(){
   [ "$(bt_powered)" = no ] || return 0
   [ "$(bt_saved 2>/dev/null)" = 0 ] && return 0
   if timeout 10 bluetoothctl power on >/dev/null 2>&1; then lwarn "Bluetooth adapter left off by client; powered on again"
-  else lwarn "Bluetooth adapter left off by client and could not be powered on; turn it on in system settings"; fi
+  else lnote "Bluetooth adapter left off by client and could not be powered on; turn it on in system settings"; fi
 }
 FEXWATCH=; PHYSXWATCH=; NOTEWATCH=
 # Single exit path: stop the watchers, put back a display mode a title left, restore the pad service and Bluetooth power.
@@ -7893,12 +8288,12 @@ SH
 chmod 755 "$D/steam-launch-wrapper"
 fi
 
-# --- Remote Play: ARM client lacks Vulkan Video decode; run x86-64 client under FEX (software decode, strip --openvr) ---
+# --- Remote Play: ARM client's V4L2 path fails (steam-for-linux #13428); run x86-64 client under FEX (software decode, strip --openvr) ---
 if [ -f "$D/streaming_client" ] && [ "$(head -c 4 "$D/streaming_client" | tr -d '\177')" = "ELF" ]; then
   mv -f "$D/streaming_client" "$D/streaming_client.real"      # only the real binary is ever moved aside
 fi
-if [ ! -x "$D/streaming_client" ] || ! grep -q 'x86-64 streaming client' "$D/streaming_client" 2>/dev/null; then
-cat > "$D/streaming_client" <<'SH'
+# stand-in rewritten whenever its body differs (older releases' stand-ins included)
+cat > "$D/streaming_client.new" <<'SH'
 #!/bin/sh
 # Stand-in: run the x86-64 streaming client from this package under FEX (see steam-arm).
 here="$(dirname "$0")"; S="$(dirname "$here")"
@@ -7906,10 +8301,11 @@ for a in "$@"; do shift; [ "$a" = "--openvr" ] || set -- "$@" "$a"; done
 export LD_LIBRARY_PATH="$S/linux64:$S/ubuntu12_64:$S/ubuntu12_32${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 unset __GLX_VENDOR_LIBRARY_NAME
 export SDL_VIDEO_X11_FORCE_EGL=0
-cd "$S" && exec /usr/bin/FEX "$S/ubuntu12_64/streaming_client" "$@"
+F=$(command -v FEX) || F=/usr/bin/FEX
+cd "$S" && exec "$F" "$S/ubuntu12_64/streaming_client" "$@"
 SH
-chmod 755 "$D/streaming_client"
-fi
+if [ -x "$D/streaming_client" ] && cmp -s "$D/streaming_client.new" "$D/streaming_client"; then rm -f "$D/streaming_client.new"
+else chmod 755 "$D/streaming_client.new" && mv -f "$D/streaming_client.new" "$D/streaming_client"; fi
 # system FEX config for the x86 streaming client (same rootfs, thunks and host settings as the x86 stack)
 mkdir -p "$ARMHOME/.fex-emu"; [ -f "$ARMHOME/.fex-emu/Config.json" ] || cp -f "$REALHOME/.fex-emu/Config.json" "$ARMHOME/.fex-emu/Config.json" 2>/dev/null
 # Unusable GLX copy: drop its HostEnv entry from this copy; put it back once the copy works again.
@@ -8022,7 +8418,7 @@ if [ "$PHYSX" = 1 ] && [ -f /usr/local/lib/steam-arm-physx.py ]; then
 fi
 
 # --- Remote Play settings: pin hardware decode + HEVC off before start (client rewrites the file on exit) ---
-if command -v steam-arm-remoteplay >/dev/null 2>&1 && ! pgrep -x steam >/dev/null 2>&1; then
+if command -v steam-arm-remoteplay >/dev/null 2>&1 && ! client_running; then
   steam-arm-remoteplay >/dev/null 2>&1
 fi
 
@@ -8110,20 +8506,6 @@ cd "$D" || exit 1
 BOOTLOG="$S/logs/bootstrap_log.txt"
 # First start: the client's bootstrap downloads its files (about 650 MB) with no window; a desktop
 # notification, updated in place from the bootstrap log, reports it. Never on later starts.
-# notice ID SUMMARY BODY TIMEOUT_MS: send (ID 0) or replace a desktop notification; prints its id.
-notice(){
-  if command -v gdbus >/dev/null 2>&1; then
-    gdbus call --session --timeout 5 --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
-      --method org.freedesktop.Notifications.Notify "Steam ARM" "$1" steam-arm "$2" "$3" '[]' '{}' "$4" 2>/dev/null \
-      | sed -n 's/.*uint32 \([0-9]*\).*/\1/p'
-  elif command -v notify-send >/dev/null 2>&1; then
-    # no -p (libnotify before 0.7.9): one notice without updates
-    notify-send -p -r "$1" -a "Steam ARM" -i steam-arm -t "$4" "$2" "$3" 2>/dev/null \
-      || { [ "$1" = 0 ] && notify-send -a "Steam ARM" -i steam-arm -t 15000 "$2" "$3" 2>/dev/null; }
-  fi
-}
-notice_close(){ command -v gdbus >/dev/null 2>&1 && gdbus call --session --timeout 5 --dest org.freedesktop.Notifications \
-  --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.CloseNotification "$1" >/dev/null 2>&1; }
 # Last bootstrap phase after byte $1 of the log: download (10 % steps), unpack, install, "done", or empty.
 boot_phase(){
   tail -c +"$(($1 + 1))" "$BOOTLOG" 2>/dev/null | awk '
@@ -8151,14 +8533,6 @@ first_start_notice(){
   done
   notice_close "$id"
 }
-# First start must verify files (downloads the rest of the package, SDK dir appears) then exits; start again skipping verification.
-if [ ! -f "$S/linuxarm64/steamclient.so" ]; then
-  first_start_notice </dev/null >/dev/null 2>&1 &
-  NOTEWATCH=$!
-  ./steam -deckard -steamos3 ${GPUI:+"$GPUI"} "$@"
-  [ -f "$S/linuxarm64/steamclient.so" ] || exit 1
-  ln -sfn "$S/linuxarm64" "$ARMHOME/.steam/sdkarm64"
-fi
 # Client exit after applying its own update: status 42 (restart request), or bootstrap log whose last
 # start ends in "Update complete, launching" with no client left running. Started again, at most twice.
 # Status 0 when the log, from byte $1 on, ends with an applied update and no new start after it.
@@ -8168,6 +8542,34 @@ updated_exit(){
   tail -c +"$(($1 + 1))" "$BOOTLOG" | awk '/\] Startup - /{u=0} /\] Update complete, launching/{u=1} END{exit !u}'
 }
 client_up(){ pgrep -u "$(id -u)" -x steam >/dev/null 2>&1; }
+# First start must verify files (downloads the rest of the package, SDK dir appears) then exits; start again skipping verification.
+# Bootstrap restart after its own update: started once more; files still missing: stop with a message.
+if [ ! -f "$S/linuxarm64/steamclient.so" ]; then
+  first_start_notice </dev/null >/dev/null 2>&1 &
+  NOTEWATCH=$!
+  ftry=0
+  while :; do
+    off=$(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)
+    ./steam -deckard -steamos3 ${GPUI:+"$GPUI"} "$@"
+    rc=$?
+    [ -f "$S/linuxarm64/steamclient.so" ] && break
+    if [ "$rc" = 42 ] || updated_exit "$off"; then
+      # a client that starts itself again is left to run, on every pass
+      n=0; while [ $n -lt 5 ] && ! client_up; do sleep 1; n=$((n + 1)); done
+      if client_up; then
+        while client_up; do sleep 2; done
+        [ -f "$S/linuxarm64/steamclient.so" ] && exit 0
+      elif [ "$ftry" = 0 ]; then
+        ftry=1; lwarn "client exited after applying its update during first start; starting it again"
+        kill -0 "$NOTEWATCH" 2>/dev/null || { first_start_notice </dev/null >/dev/null 2>&1 & NOTEWATCH=$!; }
+        continue
+      fi
+    fi
+    FSM="Steam client did not finish its first start: client files incomplete ($S/linuxarm64/steamclient.so missing). Start Steam ARM again to finish download. Details: $BOOTLOG"
+    lwarn "$FSM" 2>/dev/null; stop "$FSM"
+  done
+  ln -sfn "$S/linuxarm64" "$ARMHOME/.steam/sdkarm64"
+fi
 tries=0
 while :; do
   off=$(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)
@@ -8211,8 +8613,8 @@ The client stores its Remote Play settings as a serialized protobuf (CStreamingC
 from steammessages_remoteplay.proto), hex-encoded under "ClientConfig" in the account's
 localconfig.vdf. Two of its fields default to values this system cannot honour:
 
-  enable_hardware_decoding (field 7) defaults to true. The streaming client decodes through
-  Vulkan Video, which Mesa's Mali driver does not provide, so the client advertises
+  enable_hardware_decoding (field 7) defaults to true. The x86-64 streaming client running
+  under FEX reaches no host video decoder, so it advertises
   a decoder it does not have and the session never leaves negotiation. Titles with a light
   stream can still come up; heavier ones sit on the launch screen.
   enable_video_hevc (field 13) defaults to false, and is pinned false so the host keeps to
@@ -8463,7 +8865,7 @@ def steam_up():
 
 
 if steam_up():
-    sys.exit("steam-arm-compatmap: Steam ARM is running. Close it first (exit from its menu, or Stop Steam in the tray), then run this again.")
+    sys.exit("steam-arm-compatmap: Steam ARM is running. Close it first (exit from its menu, Stop Steam in the tray, or steam-arm --shutdown), then run this again.")
 try:
     raw = open(path, "rb").read()
 except OSError as e:
@@ -8725,15 +9127,17 @@ if opt desktop; then
   bp_entry > /usr/share/applications/steam-arm.desktop
   # Client's own drawn frame doesn't move on drag; a KWin rule gives normal windows the WM frame instead (Big Picture, fullscreen, is unaffected).
   RID=steam-arm-frame
-  kw() { login_sh "kwriteconfig6 --file kwinrulesrc --group $1 --key $2 '$3'" 2>/dev/null; }
-  if command -v kwriteconfig6 >/dev/null 2>&1; then
+  kw() { login_sh "kwriteconfig$KV --file kwinrulesrc --group $1 --key $2 '$3'" 2>/dev/null; }
+  if KV=$(kcfg_ver); then
     kw "$RID" Description "Steam ARM: window manager frame"
     kw "$RID" wmclass steam; kw "$RID" wmclassmatch 1; kw "$RID" wmclasscomplete false
     kw "$RID" types 1; kw "$RID" noborder false; kw "$RID" noborderrule 2
-    cur=$(login_sh "kreadconfig6 --file kwinrulesrc --group General --key rules" 2>/dev/null)
+    cur=$(login_sh "kreadconfig$KV --file kwinrulesrc --group General --key rules" 2>/dev/null)
     case ",$cur," in *",$RID,"*) new="$cur";; *) new="${cur:+$cur,}$RID";; esac
     kw General rules "$new"; kw General count "$(printf '%s' "$new" | awk -F, '{print NF}')"
     kwin_reload
+  elif command -v kwin_x11 >/dev/null 2>&1 || command -v kwin_wayland >/dev/null 2>&1 || command -v plasmashell >/dev/null 2>&1; then
+    say "     KDE window rule skipped: kwriteconfig6 / kwriteconfig5 not found (needed on KDE Plasma only)"
   fi
 else
   rm -f /usr/share/applications/steam-arm.desktop
@@ -8752,36 +9156,46 @@ if opt icon-desktop; then desk_icon dm_entry "$DM_ICON"; else as_user rm -f "$DM
 
 # panel tray icon
 if opt tray; then
-# Deck build has no tray item; this helper supplies one (Open/desktop/Stop/Quit), autostarted per session.
+# Deck build has no tray item; this helper supplies one (open, stop, settings, log), autostarted per session.
 cat > /usr/local/bin/steam-arm-tray <<'TRAYPY'
 #!/usr/bin/env python3
-"""Plasma system tray icon for the native ARM64 Steam client.
+"""Panel tray icon (StatusNotifier) for the native ARM64 Steam client.
 
 Valve's Deck build of Steam (the aarch64 client used here) registers
 no status-notifier item of its own, so the panel's tray never shows it. This
 script supplies that item: a Steam icon, a menu to open the client in either
-interface or stop it, and a title that reports whether it is running.
+interface, stop it, open settings or the launcher log, and a title that reports
+whether it is running.
 """
 
 import fcntl
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import time
 
 try:
     import gi
 
     gi.require_version("AyatanaAppIndicator3", "0.1")
     gi.require_version("Gtk", "3.0")
-    from gi.repository import AyatanaAppIndicator3, GLib, Gtk
+    from gi.repository import AyatanaAppIndicator3, Gio, GLib, Gtk
 except (ImportError, ValueError):
     print("steam-arm-tray: install gir1.2-ayatanaappindicator3-0.1", file=sys.stderr)
     sys.exit(1)
 
 STEAM_ARM_BIN = "/usr/local/bin/steam-arm"
+CONFIG_BIN = "/usr/local/bin/steam-arm-config"
+CONFIG_DESKTOP = "steam-arm-config.desktop"
 CONF_PATH = "/etc/steam-arm/steam-arm.conf"
 ARMHOME_DIR = ".local/share/steam-arm"
+# Terminal fallbacks when the desktop does not launch the settings entry: (program, option before command).
+TERMINALS = (
+    ("x-terminal-emulator", "-e"), ("konsole", "-e"), ("gnome-terminal", "--"), ("xfce4-terminal", "-x"),
+    ("lxterminal", "-e"), ("mate-terminal", "-x"), ("foot", None), ("alacritty", "-e"), ("xterm", "-e"),
+)
 
 
 def load_conf(path):
@@ -8820,8 +9234,20 @@ def resolve_armhome():
     return armhome_override or os.path.join(os.path.expanduser("~"), armhome_dir)
 
 
+def proc_uid(pid):
+    """Real uid from /proc/<pid>/status (the folder owner is root for non-dumpable processes)."""
+    with open("/proc/%s/status" % pid, "r") as handle:
+        for line in handle:
+            if line.startswith("Uid:"):
+                return int(line.split()[1])
+    return -1
+
+
 def comm_matches(pid, name):
+    """True for a process of this account with that name (other accounts' Steam is not ours)."""
     try:
+        if proc_uid(pid) != os.getuid():
+            return False
         with open("/proc/%s/comm" % pid, "r") as handle:
             return handle.read().strip() == name
     except OSError:
@@ -8840,22 +9266,75 @@ def steam_running():
     return len(pids_by_comm("steam")) > 0
 
 
-def signal_processes(name, sig):
-    for pid in pids_by_comm(name):
+def game_running():
+    """A title of this account runs (Steam's "reaper SteamLaunch" wrapper), as the settings menu checks."""
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
         try:
-            os.kill(pid, sig)
-        except (ProcessLookupError, PermissionError):
-            pass
+            if proc_uid(entry) != os.getuid():
+                continue
+            with open("/proc/%s/cmdline" % entry, "rb") as handle:
+                if b"reaper SteamLaunch" in handle.read().replace(b"\0", b" "):
+                    return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def spawn(argv):
+    """Detached child; False when the program cannot start."""
+    try:
+        subprocess.Popen(
+            argv,
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
+    return True
 
 
 def launch(args):
-    subprocess.Popen(
-        [STEAM_ARM_BIN] + args,
-        start_new_session=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    spawn([STEAM_ARM_BIN] + args)
+
+
+def in_terminal(argv):
+    """Command in the first terminal found; False when none starts."""
+    for program, option in TERMINALS:
+        path = shutil.which(program)
+        if path and spawn([path] + ([option] if option else []) + argv):
+            return True
+    return False
+
+
+def open_settings():
+    """Settings menu in a terminal: desktop entry through GIO (its terminal choice), else first terminal found."""
+    try:
+        info = Gio.DesktopAppInfo.new(CONFIG_DESKTOP)
+        if info is not None and info.launch([], None):
+            return
+    except GLib.Error:
+        pass
+    in_terminal([CONFIG_BIN])
+
+
+def log_has_text(path):
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
+def open_log(path):
+    """Log as text in less at its end (newest lines); desktop default program without less or a terminal."""
+    if not log_has_text(path):
+        return
+    pager = shutil.which("less")
+    if not (pager and in_terminal([pager, "+G", path])):
+        spawn(["xdg-open", path])
 
 
 def acquire_single_instance_lock():
@@ -8874,28 +9353,35 @@ class SteamTray:
     def __init__(self):
         armhome = resolve_armhome()
         # Indicator API wants an icon name in a theme dir, not a path; point the theme dir at the client's icon folder.
-        icon_dir = os.path.join(armhome, ".local/share/Steam/public")
+        self.icon_dir = os.path.join(armhome, ".local/share/Steam/public")
+        self.icon_set = False
+        self.log_path = os.path.join(armhome, "steam-arm.log")
+        self.stopping = False
         self.indicator = AyatanaAppIndicator3.Indicator.new(
             "steam-arm", "input-gaming-symbolic",
             AyatanaAppIndicator3.IndicatorCategory.APPLICATION_STATUS,
         )
-        if os.path.isfile(os.path.join(icon_dir, "steam_tray_mono.png")):
-            self.indicator.set_icon_theme_path(icon_dir)
-            self.indicator.set_icon_full("steam_tray_mono", "Steam")
         self.indicator.set_title("Steam")
         self.indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
 
         self.menu = Gtk.Menu()
         self.open_item = Gtk.MenuItem(label="Open Steam")
         self.open_item.connect("activate", lambda *_: launch([]))
+        self.bigpicture_item = Gtk.MenuItem(label="Open in Big Picture")
+        self.bigpicture_item.connect("activate", lambda *_: launch(["--bigpicture"]))
         self.desktop_item = Gtk.MenuItem(label="Open in desktop mode")
         self.desktop_item.connect("activate", lambda *_: launch(["--desktop"]))
         self.stop_item = Gtk.MenuItem(label="Stop Steam")
         self.stop_item.connect("activate", self.on_stop)
+        settings_item = Gtk.MenuItem(label="Settings")
+        settings_item.connect("activate", lambda *_: open_settings())
+        self.log_item = Gtk.MenuItem(label="View log")
+        self.log_item.connect("activate", lambda *_: open_log(self.log_path))
         quit_item = Gtk.MenuItem(label="Quit tray")
         quit_item.connect("activate", lambda *_: Gtk.main_quit())
-        for item in (self.open_item, self.desktop_item, Gtk.SeparatorMenuItem(),
-                     self.stop_item, Gtk.SeparatorMenuItem(), quit_item):
+        for item in (self.open_item, self.bigpicture_item, self.desktop_item, Gtk.SeparatorMenuItem(),
+                     self.stop_item, Gtk.SeparatorMenuItem(), settings_item, self.log_item,
+                     Gtk.SeparatorMenuItem(), quit_item):
             self.menu.append(item)
         self.menu.show_all()
         self.indicator.set_menu(self.menu)
@@ -8904,19 +9390,38 @@ class SteamTray:
         GLib.timeout_add_seconds(3, self.on_poll)
 
     def on_stop(self, *_):
-        # SIGTERM only: SIGKILL leaves the display in a misplaced-window/wrong-resolution state.
-        signal_processes("steam", signal.SIGTERM)
-        signal_processes("steamwebhelper", signal.SIGTERM)
+        # Launcher's graceful stop (client -shutdown, SIGTERM after 20 s); never SIGKILL.
+        self.stopping = time.monotonic()
+        self.stop_item.set_sensitive(False)
+        launch(["--shutdown"])
 
     def on_poll(self):
         self.update_state()
         return True
 
+    def update_icon(self):
+        # Client unpacks public/ at its first start; switch from the generic icon once its file exists.
+        if self.icon_set or not os.path.isfile(os.path.join(self.icon_dir, "steam_tray_mono.png")):
+            return
+        self.indicator.set_icon_theme_path(self.icon_dir)
+        self.indicator.set_icon_full("steam_tray_mono", "Steam")
+        self.icon_set = True
+
     def update_state(self):
         running = steam_running()
+        # launcher gives up 50 s after asking; Stop is offered again after that
+        if not running or (self.stopping and time.monotonic() - self.stopping > 60):
+            self.stopping = False
+        self.update_icon()
         self.open_item.set_sensitive(not running)
-        self.desktop_item.set_sensitive(True)   # the launcher restarts a running client
-        self.stop_item.set_sensitive(running)
+        # a running title is closed from the game first (killed fullscreen titles can leave the display mode changed)
+        game = running and game_running()
+        # the launcher restarts a running client
+        self.bigpicture_item.set_sensitive(not self.stopping and not game)
+        self.desktop_item.set_sensitive(not self.stopping and not game)
+        self.stop_item.set_sensitive(running and not self.stopping and not game)
+        # empty file: desktop opens it as inode/x-empty (often a blank browser page)
+        self.log_item.set_sensitive(log_has_text(self.log_path))
         self.indicator.set_title("Steam (running)" if running else "Steam")
 
 
@@ -8943,9 +9448,8 @@ Icon=input-gaming-symbolic
 Terminal=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
-OnlyShowIn=KDE;GNOME;XFCE;
 TRAYDESK
-say "     tray helper installed; it appears in the panel when the client starts"
+say "     tray helper installed; it appears in the panel at next login and whenever Steam ARM starts"
 else
   rm -f /usr/local/bin/steam-arm-tray; as_user rm -f "$UHOME/.config/autostart/steam-arm-tray.desktop"
   pkill -TERM -u "$GAMEUSER" -f /usr/local/bin/steam-arm-tray 2>/dev/null || true
@@ -9021,7 +9525,23 @@ if [ -f "$SELF" ] && [ "$SELF" != "$SHARE" ]; then
     warn "installer copy $SHARE could not be written; the settings menu then needs this script beside it"
   fi
 fi
-say "     settings menu: steam-arm-config"
+# Settings menu in application menu; desktop opens it in a terminal (sudo asks there).
+cat > /usr/share/applications/steam-arm-config.desktop <<'CFGDESK' || warn "settings menu entry could not be written"
+[Desktop Entry]
+Type=Application
+Name=Steam ARM Settings
+GenericName=Settings for Steam ARM
+Comment=Components, graphics routes, game profiles, controllers, maintenance; opens in a terminal
+Exec=/usr/local/bin/steam-arm-config
+TryExec=/usr/local/bin/steam-arm-config
+Icon=steam-arm
+Terminal=true
+Categories=Game;
+Keywords=steam;arm;settings;config;setup;
+StartupNotify=false
+CFGDESK
+want_icons || sed -i 's/^Icon=steam-arm$/Icon=preferences-system/' /usr/share/applications/steam-arm-config.desktop 2>/dev/null
+say "     settings menu: steam-arm-config (menu entry \"Steam ARM Settings\")"
 
 # ---------------------------------------------------------------------------
 say "11/11  done"
@@ -9035,6 +9555,9 @@ cat <<EOM
                  the ARM64 Proton build the client downloads. A title with a Linux build on
                  record but Windows files installed needs: steam-arm-compatmap <appid> proton-stable-arm64
   Optional:     $(for c in $COMPONENTS; do opt "$c" && printf ' %s' "$c" || printf ' [no %s]' "$c"; done)
+EOM
+# Command line hints only outside the settings menu (it sets STEAM_ARM_FROM_MENU=1).
+[ "${STEAM_ARM_FROM_MENU:-0}" = 1 ] || cat <<EOM
   (re-run with --select or --skip to change; see --help)
   Settings:      steam-arm-config   (menu: components, graphics, games, controllers, uninstall)
   Uninstall:     sudo bash steam-arm-install.sh --remove   (package: sudo steam-arm-setup --remove);

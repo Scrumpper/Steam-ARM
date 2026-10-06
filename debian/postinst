@@ -1,10 +1,28 @@
 #!/bin/sh
 set -e
 
-echo ""
-echo "steam-arm-setup installed."
-echo "To install the native ARM64 Steam client, run:"
-echo "  sudo steam-arm-setup"
-echo ""
+case "$1" in
+    configure)
+        new=$(sed -n 's/^SA_VERSION=//p' /usr/share/steam-arm-setup/install.sh 2>/dev/null | head -n 1) || new=""
+        old=$(sed -n 's/^VERSION=//p' /etc/steam-arm/steam-arm.conf 2>/dev/null | tail -n 1) || old=""
+        echo ""
+        # client set up earlier (package, zip or script): programs setup wrote stay old until setup runs again
+        if [ -n "$old" ] && [ "$old" != "$new" ]; then
+            echo "steam-arm-setup $new installed; Steam ARM programs on this system are from $old"
+            echo "(launcher, launch handler, settings menu). To apply $new, run:"
+            echo "  sudo steam-arm-setup --keep"
+            echo "or Maintenance > Update / Repair in steam-arm-config."
+        elif [ -n "$old" ]; then
+            echo "steam-arm-setup $new installed; Steam ARM $old is set up on this system."
+            echo "Update / Repair: sudo steam-arm-setup --keep"
+        else
+            echo "steam-arm-setup installed."
+            echo "To install the native ARM64 Steam client, run:"
+            echo "  sudo steam-arm-setup"
+            echo "or open \"Steam ARM Setup\" from the application menu."
+        fi
+        echo ""
+        ;;
+esac
 
 exit 0

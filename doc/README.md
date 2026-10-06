@@ -13,7 +13,10 @@ when setup command below is run.
     sudo steam-arm-setup
 
 Run `steam-arm-setup --help` for list of options, including
-`--defaults`, `--select`, `--skip`, and `--list`.
+`--defaults`, `--select`, `--skip`, and `--list`. `steam-arm-setup`
+without options in terminal opens setup menu, which asks for `sudo`
+itself; application menu entry "Steam ARM Setup" opens same menu in
+terminal.
 
 Installed games are kept. Re-running setup, changing components and
 upgrading package leave game library, sign-in and settings untouched.

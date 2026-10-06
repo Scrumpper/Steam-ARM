@@ -36,7 +36,8 @@ sudo bash steam-arm-install.sh [options]          (package: sudo steam-arm-setup
    |    unknown id: --detect warns and lists valid ids, install stops
    |    result: GPU family, for example mali-csf-v10 (RK3588, Mali-G610)
    +- 2 component defaults from GPU family (saved choices win)
-   |    Mali G610 / G310 / 5th gen: vk-spoof, gpu-in-emulation, glx-lax on
+   |    Mali G610 / G310: vk-spoof, gpu-in-emulation, glx-lax on
+   |    Mali G615 / G715 / 5th gen: gpu-in-emulation and glx-lax on; Mali-G1: glx-lax on
    |    older Mali: gpu-in-emulation and glx-lax on (OpenGL only)
    |    other GPUs: Mali components off, glx-lax on
    |    family changed since last run: GPU components take new defaults,
@@ -71,8 +72,9 @@ steam-arm (launcher, desktop account only, refuses root)
 |                                         vk-spoof reports features DXVK needs
 +- Play: x86 Linux title -> Valve's FEX tool -> launch handler, per title:
      reads title profile, GFX_DEFAULT, GPU family
-     detects engine: Unity, Godot, Java (bundled runtime, LWJGL), 32-bit, Source 2,
-       GoldSrc (note only)
+     detects engine: Unity, Godot (embedded PCK, else .pck beside game), Java (bundled
+       runtime, LWJGL), 32-bit, Source 2, GoldSrc (note only); Godot rules skip
+       Windows builds under x86 Proton
      reads Steam's saved tool for title (config.vdf, never written): note when
        Proton build saved but Linux build started
      profile multiblock=on|off sets FEX Multiblock for title
@@ -86,7 +88,7 @@ steam-arm (launcher, desktop account only, refuses root)
                                                 (b: Mali GPU, or custom driver archive)
        Java title on Mali GPU                -> B (LWJGL 2 option;
                                                 Java 21+: Multiblock off)
-       32-bit -vulkan on Mali G610 / 5th gen -> B (keeps -vulkan)
+       32-bit -vulkan on Mali G610           -> B (keeps -vulkan)
        other titles                          -> A
      route A: FEX forwards OpenGL and Vulkan to system Mesa (glx-lax for threads)
      route B: x86 Mesa inside emulation drives GPU directly; Multiblock set by

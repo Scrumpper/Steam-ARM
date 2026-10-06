@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Steam ARM Setup
+GenericName=Installer for native ARM64 Steam client
+Comment=Installs and configures Steam ARM; opens setup menu in a terminal
+Exec=/usr/bin/steam-arm-setup
+TryExec=/usr/bin/steam-arm-setup
+Icon=system-software-install
+Terminal=true
+Categories=Game;
+Keywords=steam;arm;setup;install;
+StartupNotify=false

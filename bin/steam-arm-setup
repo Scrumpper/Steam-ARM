@@ -15,6 +15,10 @@ case "$*" in
         exec /usr/share/steam-arm-setup/install.sh "$1"
         ;;
 esac
+# no options in a terminal: settings menu, which asks for administrator rights itself
+if [ "$#" -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then
+    exec /usr/share/steam-arm-setup/install.sh
+fi
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "run as root: sudo steam-arm-setup" >&2

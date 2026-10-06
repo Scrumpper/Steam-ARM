@@ -1,3 +1,68 @@
+steam-arm-setup (2.2) stable; urgency=low
+
+  * Debian 13 and Raspberry Pi OS: FEX PPA written as apt source
+    (steam-arm-fex.sources, Ubuntu series per Debian release) with
+    fingerprint-checked signing key; Ubuntu path unchanged.
+  * Apple GPU notes: 16K page kernel not supported; muvm not set up.
+  * Remote Play cause line: ARM64 streaming client is V4L2 stateful only
+    (steam-for-linux #13428).
+  * RESEARCH corrections (F2, F5, M3, Thief 2014); README links
+    COMPARISON.md near top.
+  * Host package check before any package or source change; minimum
+    Ubuntu 25.10, Debian 13 (SDL3 packages).
+  * FEX from another source: no FEX packages; binfmt entries checked;
+    thunk folders from FEX's prefix, /usr or /usr/local, else thunks off.
+  * Mali families mali-csf-v11 (G615/G715) and mali-csf-g1 (G1, needs
+    Mesa 26.2); 32-bit Vulkan on Mali 5th gen stays on forwarding, vk-spoof
+    off there by default.
+  * Removal list names libgtk2.0-0 too.
+  * First start that ends with client files incomplete: message to start
+    again; one more start after bootstrap self-update.
+  * Actionable launcher warnings shown as desktop notification on menu
+    starts, once per text per login session.
+  * Launcher page size check (STEAM_ARM_IGNORE_PAGESIZE=1 skips; setup
+    keeps it in /etc/steam-arm/steam-arm.conf) and
+    render node access warning (closed Mali driver: names panfrost or
+    panthor kernel); steam-arm.log capped at 1 MiB (.1 copy).
+  * Running checks in settings menu and tray count game account only.
+  * steam-arm --help lists --bigpicture, --desktop; works as root.
+  * Setup summary from settings menu without command line hints.
+  * Settings menu offers Close Steam (steam-arm --shutdown as game
+    account) where Steam must be closed; stop messages name that command.
+  * Tray: Stop, Open in Big Picture and Open in desktop mode greyed while
+    game runs; Stop through steam-arm --shutdown; client icon after first
+    start; Open in Big Picture, Settings, View log (less in terminal
+    emulator, greyed while log is empty); autostart on any desktop (labwc
+    included).
+  * KDE window rule on Plasma 5 through kwriteconfig5; skip line on KDE
+    Plasma without either tool.
+  * GE-Proton tools shown as Windows build in settings menu.
+  * View logs: plain empty text for game and setup logs; Last setup run
+    as desktop account names administrator's log folder and
+    sudo steam-arm-config.
+  * Menu entry "Steam ARM Settings"; package entry "Steam ARM Setup";
+    steam-arm-setup without options in terminal opens setup menu.
+  * Check for new version (Maintenance, update-check): GitHub latest
+    release, by hand only, nothing downloads.
+  * Hardware report: launcher log, bootstrap log lines, setup summary,
+    account groups against running processes.
+  * Godot 3 titles: GL 3.3 report by default (profile godot=vulkan: as
+    is). Godot version also read from PCK embedded in executable, in
+    Godot's pack order; start script subfolders and bracket folder names.
+  * Godot rules off for Windows builds under x86 Proton (not measured on
+    device).
+  * Package install over client set up earlier (package, zip or script)
+    names version on system and sudo steam-arm-setup --keep; package
+    install never runs setup.
+  * Package carries md5sums, Homepage, Installed-Size; build-deb.sh gives
+    same package bytes from same sources and dpkg-deb version.
+  * Setup run from settings menu: download progress bar on built-in
+    progress screen; setup log keeps final bar line.
+  * Dialog sentences without hard line breaks (no one-word lines).
+  * Package removal text: Steam ARM client and its files stay.
+
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Tue, 06 Oct 2026 00:00:00 +0000
+
 steam-arm-setup (2.1) stable; urgency=low
 
   * Renderer check: handler logs whether title draws on GPU or on CPU
