@@ -1,9 +1,9 @@
 #!/bin/sh
 # build-deb.sh: assemble the package tree from the files in this repository and build
-# steam-arm-setup_2.0_arm64.deb with dpkg-deb.
+# steam-arm-setup_2.1_arm64.deb with dpkg-deb.
 set -e
 
-VERSION=2.0
+VERSION=2.1
 PKG=steam-arm-setup
 DEB="${PKG}_${VERSION}_arm64.deb"
 

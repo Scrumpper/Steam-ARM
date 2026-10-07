@@ -1,7 +1,7 @@
 #!/bin/bash
 # steam-arm-setup: installs Valve's native ARM64 Steam client (host packages, RootFS, launcher, optional components); run as root, then launch via steam-arm. See --help.
 set -u
-SA_VERSION=2.0
+SA_VERSION=2.1
 # Banner: self-contained (no board helper needed); TTY-gated, honours NO_COLOR.
 steam_banner() {
     [ -t 1 ] || return 0
@@ -11,12 +11,20 @@ steam_banner() {
     printf '\n%s  %s%s\n' "$D" "$line" "$X"
     printf '%s   %s%s\n' "${C}${B}" "$1" "$X"
     printf '%s   %s%s\n' "$D" "$2" "$X"
+    [ -n "${3:-}" ] && printf '%s   %s%s\n' "$B" "$3" "$X"
     printf '%s  %s%s\n\n' "$D" "$line" "$X"
 }
 
 say(){ printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 warn(){ printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
 die(){ printf '\033[1;31m[fail]\033[0m %s\n' "$*"; [ -n "${DIE_NOTE:-}" ] && printf '       %s\n' "$DIE_NOTE"; exit 1; }
+# First CPU's Features line (FEX build pick, Armv8.1 check).
+cpu_features(){ grep -m1 '^Features' /proc/cpuinfo 2>/dev/null | cut -d: -f2; }
+LSE_TEXT="CPU has no Armv8.1 atomics (LSE): \"atomics\" is missing from Features line of /proc/cpuinfo.
+       Steam client needs Armv8.1 or newer; builds newer than 15 April 2026 stop at start
+       with SIGILL on Armv8.0 cores (Cortex-A53, A57, A72: Raspberry Pi 4 and 3).
+       Client issue: https://github.com/ValveSoftware/steam-for-linux/issues/13288
+       STEAM_ARM_ALLOW_ARMV80=1 skips this check."
 # curl progress bar only on a terminal; logs and the menu's screens get errors only.
 CURL_SHOW=(-sS); [ -t 2 ] && CURL_SHOW=(--progress-bar)
 # Temporary files and folders of this run, removed on any exit; UCLEANUP ones (in the game user's home) by that user.
@@ -33,11 +41,13 @@ if [ "$(id -u)" = 0 ]; then
 fi
 # Files in the game user's home are written by that user, so a link placed there never redirects a root write.
 # Account switch without a PAM session: pam_systemd writes OSC 3008 escapes straight to the terminal.
+# Runs from the account's home: a caller's folder (for example /root) may be closed to it.
 as_acct(){
   local u=$1 h s; shift
-  command -v setpriv >/dev/null 2>&1 || { runuser -u "$u" -- "$@"; return; }
   h=$(getent passwd "$u" | cut -d: -f6); s=$(getent passwd "$u" | cut -d: -f7)
-  setpriv --reuid="$u" --regid="$(id -g "$u")" --init-groups env HOME="$h" SHELL="${s:-/bin/sh}" USER="$u" LOGNAME="$u" "$@"
+  ( cd "${h:-/}" 2>/dev/null || cd /
+    command -v setpriv >/dev/null 2>&1 || exec runuser -u "$u" -- "$@"
+    exec setpriv --reuid="$u" --regid="$(id -g "$u")" --init-groups env HOME="$h" SHELL="${s:-/bin/sh}" USER="$u" LOGNAME="$u" "$@" )
 }
 as_user(){ as_acct "$GAMEUSER" env -u TMPDIR "$@"; }
 # Command line as the game user, login-style environment, from its home folder (as su - did).
@@ -53,8 +63,8 @@ user_write(){
 }
 GAMEPASS=""
 # Opt-in components (all others default on). pad-xbox: client's own Steam Input re-identifies pads.
-# shader-cache: several GB download and long first-run processing.
-DEFAULT_OFF="pad-xbox shader-cache"
+# shader-cache: several GB download and long first-run processing. kde-input-prompt: security trade-off.
+DEFAULT_OFF="pad-xbox shader-cache kde-input-prompt"
 # Client home: env, then saved setting, then default; re-run never moves the client away from its games.
 ARMHOME_ENV=${ARMHOME_DIR:-}; GAMEUSER_ENV=${GAMEUSER:-}
 ARMHOME_DIR="${ARMHOME_DIR:-$(sed -n 's/^ARMHOME_DIR=//p' /etc/steam-arm/steam-arm.conf 2>/dev/null | tail -1)}"
@@ -126,6 +136,9 @@ PROVIDER_MESA_PKGS="libgl1-mesa-dri libglx-mesa0 libegl-mesa0 libgbm1 mesa-vulka
 # Marks the copy of Valve's controller rules this installer wrote (removed only when it matches).
 VALVE_MARK='MIT licence; installed by steam-arm-setup'
 GLX_HOOK=/etc/apt/apt.conf.d/80steam-arm-glx-lax
+# Host `mangohud` command for launch option `mangohud %command%` when host has none; marker line identifies it.
+MH_SHIM=/usr/local/bin/mangohud
+MH_MARK='# steam-arm-setup mangohud shim'
 # zz- sorts after 99-sysctl.conf (else its vm.max_map_count would win at boot); drop-in saves the prior value as a comment.
 MC=/etc/sysctl.d/zz-steam-arm.conf
 MC_PRIOR='# steam-arm-setup map-count; value before setup: '
@@ -420,7 +433,7 @@ rfs_unguard(){
   return $r
 }
 # ---------------------------------------------------------------------------
-COMPONENTS_ALL="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray page-size"
+COMPONENTS_ALL="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray kde-input-prompt page-size"
 # page-size applies to Raspberry Pi 5 class boards (16K page kernel), or where its boot line is still in place.
 ps_relevant(){
   case "$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null)" in
@@ -429,9 +442,18 @@ ps_relevant(){
   esac
   grep -qs '^# steam-arm-setup page-size:' /boot/firmware/config.txt /boot/config.txt
 }
-# Components listed and saved on this system; page-size only where it applies.
+# kde-input-prompt applies where KDE Plasma's Wayland compositor is installed, or where it was set before.
+KDE_MARK=.config/steam-arm/kde-input-prompt
+kde_relevant(){
+  command -v kwin_wayland >/dev/null 2>&1 && return 0
+  [ -f "$(getent passwd "$GAMEUSER" 2>/dev/null | cut -d: -f6)/$KDE_MARK" ]
+}
+# KDE Plasma Wayland session running now (its prompt shows when a controller drives desktop input).
+kde_wayland(){ pgrep -x kwin_wayland >/dev/null 2>&1; }
+# Components listed and saved on this system; page-size and kde-input-prompt only where they apply.
 COMPONENTS=$COMPONENTS_ALL
 ps_relevant || COMPONENTS=${COMPONENTS% page-size}
+kde_relevant || COMPONENTS=${COMPONENTS/ kde-input-prompt/}
 desc_of(){ case "$1" in
   glx-lax)    echo "Private Mesa GLX copy, for GL contexts bound from several threads";;
   vk-spoof)   echo "Vulkan feature layer: DXVK device on the Mali driver (Proton titles)";;
@@ -447,6 +469,7 @@ desc_of(){ case "$1" in
   icon-bigpicture) echo "Desktop icon \"Steam ARM\"";;
   icon-desktop) echo "Desktop icon \"Steam ARM (Desktop mode)\"";;
   tray)       echo "Steam icon in the panel tray, with Open, desktop mode and Stop";;
+  kde-input-prompt) echo "KDE Plasma (Wayland): no \"Remote control requested\" prompt; any X11 program may then send input";;
   page-size)  echo "Raspberry Pi 5: boot firmware's 4K page kernel (no effect elsewhere)";;
 esac; }
 var_of(){ echo "OPT_$(echo "$1" | tr 'a-z-' 'A-Z_')"; }
@@ -454,6 +477,7 @@ for c in $COMPONENTS_ALL; do eval "$(var_of "$c")=1"; done
 # DEFAULT_OFF components stay opt-in (pad-xbox grabs the physical pad, starving direct reads).
 for c in ${DEFAULT_OFF:-}; do eval "$(var_of "$c")=0"; done
 ps_relevant || eval "$(var_of page-size)=0"
+kde_relevant || eval "$(var_of kde-input-prompt)=0"
 # GPU family: sets default states of vk-spoof, gpu-in-emulation and glx-lax. GPU_FAMILY=<id> (env) picks one by hand, GPU_FAMILY=auto detects.
 GPU_FAMILIES="mali-csf-v10 mali-csf-5thgen mali-csf mali-valhall-jm mali-bifrost mali-midgard mali-panfrost mali-utgard mali-kbase
   adreno-a8xx adreno-a7xx adreno-a6xx adreno-a702 adreno-legacy adreno apple-agx broadcom-v3d71 broadcom-v3d42 broadcom-vc4
@@ -729,15 +753,17 @@ gpu_report(){
   done
   [ -n "$GPU_NOTE" ] && echo "note: $GPU_NOTE"
   [ -n "$GPU_WARN" ] && echo "warning: $GPU_WARN"
+  kde_wayland && echo "note: $KDE_HINT"
   return 0
 }
+KDE_HINT="KDE Plasma on Wayland: controllers can raise \"Remote control requested\" prompt; optional component kde-input-prompt stops it (README, FAQ)"
 # Settings menu, installed as /usr/local/bin/steam-arm-config.
 menu_app(){ cat <<'STEAMARMCONFIG'
 #!/bin/bash
 # steam-arm-config: menu-driven settings for Steam ARM (built-in screens, dialog, whiptail or plain prompts). See --help.
 set -u
 
-SA_VERSION=2.0
+SA_VERSION=2.1
 SA_DOCS=https://github.com/Scrumpper/Steam-ARM
 SA_CONF=/etc/steam-arm/steam-arm.conf
 SA_TITLES_SHARE=/usr/local/share/steam-arm/titles.conf
@@ -773,9 +799,10 @@ SA_RULE_HIDRAW=/etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules
 SA_RULE_DEDUP=/etc/udev/rules.d/71-steam-arm-xpad-dedup.rules
 SA_PADXBOX_UNIT=/etc/systemd/system/steam-arm-pad-xbox.service
 SA_FEXLOG_GLOB='/tmp/fex-compat-tool-*.log'
+SA_CPUFREQ=/sys/devices/system/cpu/cpufreq
 # Fallback component list when the installer cannot be asked.
-SA_COMPONENTS="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray page-size"
-SA_DEFAULT_OFF="pad-xbox shader-cache"
+SA_COMPONENTS="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray kde-input-prompt page-size"
+SA_DEFAULT_OFF="pad-xbox shader-cache kde-input-prompt"
 SA_MALI_ONLY="vk-spoof gpu-in-emulation"
 SA_TOOL_RE='^(FEX|Proton|Steam Linux Runtime|Steamworks Common|Steamworks Shared)'
 
@@ -984,6 +1011,16 @@ page_size_applies(){
   grep -qs '^# steam-arm-setup page-size:' /boot/firmware/config.txt /boot/config.txt
 }
 page_label(){ case "$1" in 4096) echo "4K";; 16384) echo "16K";; 65536) echo "64K";; *) echo "$1 bytes";; esac; }
+# Page-size verdict for title bar: size in use, 4K kernel switch made by setup, pending reboot.
+page_status(){
+  local ps sw; ps=$(page_size)
+  grep -qs '^# steam-arm-setup page-size:' /boot/firmware/config.txt /boot/config.txt && sw=1 || sw=0
+  if [ "$ps" = 4096 ]; then
+    [ "$sw" = 1 ] && echo "pages 4K (setup kernel switch)" || echo "pages 4K ok"
+  elif [ "$sw" = 1 ]; then echo "pages $(page_label "$ps"): reboot for 4K"
+  else echo "pages $(page_label "$ps"): needs 4K"
+  fi
+}
 # Vulkan driver: installer's answer, else first non-CPU device from vulkaninfo.
 vk_summary(){
   local v
@@ -995,7 +1032,8 @@ vk_summary(){
     /driverName/ { drv = $2 } /driverInfo/ { info = $2 }
     END { if (name == "" || type ~ /CPU/) print "none found"; else printf "%s, %s %s, API %s\n", name, drv, info, api }'
 }
-vk_ok(){ case "$(vk_summary)" in none*|unknown*|*llvmpipe*|*lavapipe*) return 1;; esac; return 0; }
+# vk_ok [summary]: summary given, or read now
+vk_ok(){ case "${1-$(vk_summary)}" in none*|unknown*|*llvmpipe*|*lavapipe*) return 1;; esac; return 0; }
 distro(){ sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null | tr -d '"'; }
 pkg_ver(){ dpkg-query -W -f='${Version}\n' "$@" 2>/dev/null | grep -v '^$' | head -1; }
 mesa_ver(){
@@ -1004,12 +1042,29 @@ mesa_ver(){
   [ -z "${v:-}" ] && v=$(pkg_ver libgl1-mesa-dri mesa-libgallium libglx-mesa0)
   echo "${v:-unknown}"
 }
+# FEX-2608 dropped FEXInterpreter and FEX 2609.1 has no --version: FEXGetConfig, FEX, FEXInterpreter, then package.
 fex_ver(){
-  local v
-  have FEXInterpreter && v=$(FEXInterpreter --version 2>/dev/null | head -1)
+  local v='' c
+  for c in FEXGetConfig FEX FEXInterpreter; do
+    have "$c" && v=$("$c" --version 2>/dev/null | grep -m1 '[0-9]') && [ -n "$v" ] && break
+    v=
+  done
+  case "$v" in [0-9]*) v="FEX-$v";; esac
   [ -z "${v:-}" ] && v=$(dpkg-query -W -f='${Package} ${Version}\n' 'fex-emu*' 2>/dev/null | grep -v ' $' | head -1)
   echo "${v:-not installed}"
 }
+# Client needs Armv8.1 atomics (LSE); status 1 only when first CPU's Features line lacks them.
+cpu_lse_ok(){
+  local f; f=$(grep -m1 '^Features' "/proc/cpuinfo" 2>/dev/null)
+  [ -z "$f" ] || [ "${STEAM_ARM_ALLOW_ARMV80:-0}" = 1 ] && return 0
+  case " ${f#*:} " in *" atomics "*) return 0;; esac; return 1
+}
+LSE_MSG="This CPU has no Armv8.1 atomics (LSE): \"atomics\" is missing from
+Features line of /proc/cpuinfo. Steam client needs Armv8.1 or newer;
+builds newer than 15 April 2026 stop at start with SIGILL on Armv8.0
+cores (Cortex-A53, A57, A72: Raspberry Pi 4 and 3).
+Client issue: https://github.com/ValveSoftware/steam-for-linux/issues/13288
+STEAM_ARM_ALLOW_ARMV80=1 skips this check."
 disk_free(){ df -h --output=avail,target "$1" 2>/dev/null | tail -1 | awk '{print $1 " free on " $2}'; }
 
 # Hardware entries of the install flow: id|label|GPU family ("?" = asks which GPU).
@@ -1105,7 +1160,7 @@ route_b_note(){ [ "$1" = b ] && ! mali_ready && printf '%s' "$SA_NO_MALI"; retur
 status_line(){
   local d s; d=$(dot)
   s="not installed"; is_installed && s="installed"
-  BT="Steam ARM $SA_VERSION${d}$(hw_short)${d}$s${d}graphics: $(gfx_default_label "$(gfx_default)")"
+  BT="Steam ARM $SA_VERSION${d}$(page_status)${d}$(hw_short)${d}$s${d}graphics: $(gfx_default_label "$(gfx_default)")"
 }
 
 # ===========================================================================
@@ -1818,6 +1873,7 @@ def colours():
 def run(scr, feed):
     colours()
     scr.keypad(True)
+    curses.flushinp()
     a = ARGS + [""] * 6
     if KIND in ("menu", "check"):
         title, text = a[0], a[1]
@@ -1833,14 +1889,14 @@ def run(scr, feed):
     if KIND == "yesno":
         return pager(scr, a[0], a[1], [a[2] or "Yes", a[3] or "No"], 1 if a[4] == "defaultno" else 0)
     if KIND == "textstr":
-        return pager(scr, a[0], a[1], ["Back"], 0)
+        return pager(scr, a[0], a[1], [a[2] or "Back"], 0)
     if KIND == "text":
         try:
             with open(a[1], encoding="utf-8", errors="replace") as f:
                 body = f.read()
         except OSError as e:
             body = "Could not read %s: %s" % (a[1], e.strerror)
-        return pager(scr, a[0], body, ["Back"], 0)
+        return pager(scr, a[0], body, [a[2] or "Back"], 0)
     if KIND in ("input", "password"):
         return entry(scr, a[0], a[1], "" if KIND == "password" else a[2], KIND == "password")
     if KIND == "progress":
@@ -2025,30 +2081,30 @@ ui_input(){
        [ "$a" = 0 ] && return 1; echo "${a:-${3:-}}";;
   esac
 }
-# Text from a file; box sized to it, scrolling only when longer than the screen (whiptail's scroll view ignores Enter).
+# ui_text title file [button]: box sized to text, scrolling only when longer than the screen (whiptail's scroll view ignores Enter).
 ui_text(){
-  local h f
-  [ "$DIALOG" = builtin ] && { tui text "$1" "$2"; return; }
+  local h f b=${3:-Back}
+  [ "$DIALOG" = builtin ] && { tui text "$1" "$2" "$b"; return; }
   ui_size
   # no temp file: the unfolded file itself
   if f=$(tmpf); then fold -s -w $(( UW - 5 )) "$2" > "$f"; else f=$2; fi
   h=$(( $(wc -l < "$f") + 7 ))
   case "$DIALOG" in
     whiptail) if [ "$h" -le "$UH" ]; then
-                whiptail --backtitle "$BT" --title "$1" --ok-button Back --textbox "$f" "$h" "$UW"
+                whiptail --backtitle "$BT" --title "$1" --ok-button "$b" --textbox "$f" "$h" "$UW"
               else
-                whiptail --backtitle "$BT" --title "$1 (arrows scroll; Tab, Enter: Back)" --scrolltext --ok-button Back --textbox "$f" "$UH" "$UW"
+                whiptail --backtitle "$BT" --title "$1 (arrows scroll; Tab, Enter: $b)" --scrolltext --ok-button "$b" --textbox "$f" "$UH" "$UW"
               fi;;
-    dialog)   dialog --backtitle "$BT" --title "$1" --exit-label Back --textbox "$f" "$UH" "$UW";;
+    dialog)   dialog --backtitle "$BT" --title "$1" --exit-label "$b" --textbox "$f" "$UH" "$UW";;
     *) printf '\n== %s ==\n' "$1" >&2; cat "$2" >&2; ui_pause;;
   esac
   [ "$f" = "$2" ] || rm -f "$f"
 }
-# Text from a string: builtin screens take it directly; others through a temp file, else a message box.
+# ui_textstr title text [button]: builtin screens take it directly; others through a temp file, else a message box.
 ui_textstr(){
   local f
-  if [ "$DIALOG" = builtin ] && [ "${#2}" -lt 100000 ]; then tui textstr "$1" "$2"; return; fi
-  if f=$(tmpf); then printf '%s\n' "$2" > "$f"; ui_text "$1" "$f"; rm -f "$f"; return; fi
+  if [ "$DIALOG" = builtin ] && [ "${#2}" -lt 100000 ]; then tui textstr "$1" "$2" "${3:-Back}"; return; fi
+  if f=$(tmpf); then printf '%s\n' "$2" > "$f"; ui_text "$1" "$f" "${3:-Back}"; rm -f "$f"; return; fi
   case "$DIALOG" in
     builtin|whiptail|dialog) ui_msg "$1" "$2";;
     *) printf '\n== %s ==\n%s\n' "$1" "$2" >&2; ui_pause;;
@@ -2157,7 +2213,7 @@ run_installer(){
          && SA_SETUP_LOG=$(mktemp --suffix=.log "$SA_CACHE/setup-$(date +%Y%m%d-%H%M%S)-XXXXXX"); }; then
     ui_msg "$title" "Could not create a log file in $SA_CACHE. Free some space, then try again."; return 1
   fi
-  ui_run "$title" "$SA_SETUP_LOG" as_root env "${INST_ENV[@]}" "${cmd[@]}" "$@"; rc=$?
+  ui_run "$title" "$SA_SETUP_LOG" as_root env "${INST_ENV[@]}" ${STEAM_ARM_ALLOW_ARMV80:+"STEAM_ARM_ALLOW_ARMV80=$STEAM_ARM_ALLOW_ARMV80"} "${cmd[@]}" "$@"; rc=$?
   status_line
   if [ "$rc" = 0 ]; then
     ui_textstr "$title: done" "$({ echo "Finished."; echo; log_summary "$SA_SETUP_LOG"; echo
@@ -2222,7 +2278,7 @@ run_installer_tty(){
   [ "${#cmd[@]}" -gt 0 ] || { ui_msg "Steam ARM" "Setup script not found."; return 1; }
   need_root || return 1
   clear
-  as_root "${cmd[@]}" "$@"; local rc=$?
+  as_root env ${STEAM_ARM_ALLOW_ARMV80:+"STEAM_ARM_ALLOW_ARMV80=$STEAM_ARM_ALLOW_ARMV80"} "${cmd[@]}" "$@"; local rc=$?
   ui_pause; status_line; return "$rc"
 }
 
@@ -2244,6 +2300,7 @@ comp_short(){ case "$1" in
   icon-bigpicture) echo "Desktop icon \"Steam ARM\"";;
   icon-desktop) echo "Desktop icon \"Steam ARM (Desktop mode)\"";;
   tray)       echo "Steam icon in the panel tray";;
+  kde-input-prompt) echo "KDE: no input prompt; X11 apps may send input";;
   page-size)  echo "Raspberry Pi 5: switch to 4K page kernel";;
   *)          echo "$1";;
 esac; }
@@ -2254,8 +2311,11 @@ comp_all(){
   [ "${#cmd[@]}" -gt 0 ] && l=$("${cmd[@]}" --list 2>/dev/null </dev/null | strip_ansi | awk '/^[ \t]+[a-z][a-z0-9-]+[ \t]/ { print $1 }' | tr '\n' ' ')
   l=${l:-$SA_COMPONENTS}
   page_size_applies || l=$(echo " $l " | sed 's/ page-size / /')
+  kde_applies || l=$(echo " $l " | sed 's/ kde-input-prompt / /')
   echo "$l" | trim
 }
+# kde-input-prompt part applies where KDE Plasma's Wayland compositor is installed, or while its setting is in place.
+kde_applies(){ have kwin_wayland || [ -f "$(game_home)/.config/steam-arm/kde-input-prompt" ]; }
 # Recommended set for family $1 (auto = detect) and Vulkan yes/no: installer's defaults, else built-in rules.
 comp_recommended(){
   local fam=$1 vk=$2 c out
@@ -2295,9 +2355,56 @@ Page size      $ps ($(page_label "$ps")$([ "$ps" = 4096 ] && echo ", OK" || echo
 Distribution   $(distro)
 Kernel         $(uname -r)
 Mesa           $(mesa_ver)
+OpenGL         $(gl_summary)
+CPU governor   $(cpu_governor)
 FEX            $(fex_ver)
 Disk free      $(disk_free "$(game_home)")
 EOF
+}
+# Host OpenGL renderer and versions (compatibility, core) from glxinfo; what forwarding hands x86 titles.
+GL_SUMMARY=""
+gl_summary(){
+  local out r v c
+  if [ -z "$GL_SUMMARY" ]; then
+    if ! have glxinfo; then GL_SUMMARY="unknown (glxinfo not installed)"
+    elif [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then GL_SUMMARY="unknown (no desktop session in this terminal)"
+    elif ! out=$(timeout 10 glxinfo -B 2>/dev/null); then GL_SUMMARY="unknown (glxinfo failed)"
+    else
+      r=$(sed -n 's/^ *OpenGL renderer string: //p' <<<"$out" | head -1)
+      v=$(sed -n 's/^ *OpenGL version string: \([0-9.]*\).*/\1/p' <<<"$out" | head -1)
+      c=$(sed -n 's/^ *OpenGL core profile version string: \([0-9.]*\).*/\1/p' <<<"$out" | head -1)
+      GL_SUMMARY="${r:-unknown} (GL ${v:-?}, core ${c:-?})"
+    fi
+  fi
+  echo "$GL_SUMMARY"
+}
+# Governor and max clock per cpufreq policy (cluster); "mixed" when governors differ.
+cpu_governor(){
+  local p c g f out
+  out=$(for p in "$SA_CPUFREQ"/policy*; do
+          g=$(cat "$p/scaling_governor" 2>/dev/null) || continue
+          c=$(cat "$p/related_cpus" 2>/dev/null || cat "$p/affected_cpus" 2>/dev/null)
+          f=$(cat "$p/scaling_max_freq" 2>/dev/null)
+          printf '%s|%s|%s\n' "$g" "${f:+$((f / 1000))}" "$c"
+        done | awk -F'|' '
+    function span(s,   n, a, i, j, k, x, r) {
+      n = split(s, a, " ")
+      for (i = 2; i <= n; i++) { x = a[i] + 0; for (j = i - 1; j >= 1 && a[j] + 0 > x; j--) a[j + 1] = a[j]; a[j + 1] = x }
+      for (i = 1; i <= n; i = k + 1) {
+        for (k = i; k < n && a[k + 1] == a[k] + 1; k++) ;
+        r = r (r == "" ? "" : ",") (k > i ? a[i] "-" a[k] : a[i])
+      }
+      return r
+    }
+    $1 != "" { key = $1 "|" $2; if (!(key in cpus)) { order[++n] = key; gov[key] = $1; mhz[key] = $2 }
+               cpus[key] = cpus[key] " " $3; if (!($1 in seen)) { seen[$1] = 1; ng++ } }
+    END {
+      if (!n) exit
+      for (i = 1; i <= n; i++) { k = order[i]
+        s = s (i > 1 ? ", " : "") "cpu " span(cpus[k]) (ng > 1 ? " " gov[k] : "") (mhz[k] != "" ? " max " mhz[k] " MHz" : "") }
+      print (ng > 1 ? "mixed" : gov[order[1]]) ": " s
+    }')
+  echo "${out:-unknown}"
 }
 info_status(){
   if ! is_installed; then echo "Steam ARM is not installed. Use Install / Setup."; return; fi
@@ -2335,6 +2442,9 @@ info_notes_builtin(){
 info_notes(){
   local n; n=$(detect_notes)
   if [ -n "$n" ]; then printf '%s\n' "$n" | sed 's/^\([^-]\)/- \1/'; else info_notes_builtin; fi
+  case "$(gl_summary)" in *llvmpipe*|*softpipe*|*"Software Rasterizer"*)
+    echo "- GPU forwarding not active: rendering on CPU (llvmpipe). Host OpenGL itself draws on CPU: GPU driver missing, or this session has no GPU access.";;
+  esac
 }
 menu_info(){
   local c=""
@@ -2432,7 +2542,7 @@ Setup stops with this advice until the page size is 4K."
   ui_yesno "Install: page size" "$txt" Next Back
 }
 setup_vulkan(){
-  local d def c; d=$(vk_summary); def=yes; vk_ok || def=no
+  local d def c; d=$(vk_summary); def=yes; vk_ok "$d" || def=no
   c=$(ui_menu "Install: Vulkan" "Detected Vulkan: ${d:0:60}
 Windows games (Proton) need Vulkan." \
       "$def" "$([ "$def" = yes ] && echo "Vulkan works (detected, recommended)" || echo "No Vulkan (detected, recommended)")" \
@@ -2615,12 +2725,15 @@ passwd $IN_USER"
 }
 menu_setup(){
   local step=1
+  cpu_lse_ok || { ui_msg "Install / Setup" "$LSE_MSG"; return; }
   if is_installed; then
     ui_yesno "Install / Setup" "Steam ARM is already installed. Run setup again with new choices?
 
 Games, sign-in and settings are kept." Continue Back || return
   fi
   IN_HW=auto IN_FAM=auto IN_DRV="" IN_VK=yes IN_COMPS="" IN_USER="" IN_PASS="" IN_PASS_MADE=0 IN_REPLACE=0
+  # detection cached in this shell: screens reopen at once on Back
+  ui_info "Install / Setup" "Reading hardware details..."; detect_raw >/dev/null
   while :; do
     case "$step" in
       0) return;;
@@ -2990,8 +3103,22 @@ report_text(){
   echo
   echo "== Game profiles (/etc/steam-arm/titles.conf)"
   grep -v '^[[:space:]]*#' "$SA_TITLES_ETC" 2>/dev/null | grep -v '^[[:space:]]*$' || echo "(none)"
+  echo
+  echo "== Renderer at recent game starts (newest first)"
+  renderer_lines | grep . || echo "(no renderer line yet: start game once)"
   f=$(fexlogs | head -1)
   if [ -n "$f" ] && [ -r "$f" ]; then echo; echo "== Last game start"; grep -a 'steam-arm:' "$f" | tail -15; fi
+}
+# "app <id>: <renderer line>" of the five newest game logs.
+renderer_lines(){
+  local f id l
+  while IFS= read -r f; do
+    [ -r "$f" ] || continue
+    l=$(grep -a 'steam-arm: renderer:' "$f" | tail -1 | sed 's/^.*steam-arm: renderer: *//')
+    [ -n "$l" ] || continue
+    id=$(grep -a -m1 -oE '^Steam(App|Game)Id=[0-9]+' "$f" | cut -d= -f2)
+    echo "app ${id:-unknown}: $l"
+  done < <(fexlogs | head -5)
 }
 # Written by the account whose home gets it (no root write into a user folder).
 report_make(){
@@ -3021,7 +3148,8 @@ maint_logs(){
       2) f=$(fexlogs | head -1);;
       3) f=$(setuplogs | head -1);;
     esac
-    if [ -n "$f" ] && [ -r "$f" ]; then ui_textstr "Log: $(basename "$f")" "$(tail -300 "$f" | strip_ansi | tilde)"
+    if [ -n "$f" ] && [ -s "$f" ] && [ -r "$f" ]; then ui_textstr "Log: $(basename "$f")" "$(tail -300 "$f" | strip_ansi | tilde)"
+    elif [ -n "$f" ] && [ -e "$f" ]; then ui_msg "View logs" "$(basename "$f") is empty (launcher writes warnings only)."
     else ui_msg "View logs" "No log found yet."; fi
   done
 }
@@ -3338,7 +3466,7 @@ rs_line(){ printf '  %-20s %s\n' "$1" "$2"; }
 # rs_plan PARTS ACCOUNT SYS-MODE PERSONAL-MODE SYS-TAKE PERSONAL-TAKE: what restore changes, text in RS_SUM.
 rs_plan(){
   local parts=$1 acct=$2 c="$RS_D/$SA_BK_TOP" s k v cur keys skip="" fam_user=0 a r p sub dest add rep same n src
-  local vdf curmap bad="" miss="" shown=0
+  local vdf curmap bad="" miss="" shown=0 kept=0
   RS_SET=(); RS_MAP=(); RS_COPY=(); RS_COMP=0; RS_SYS_OUT=""; RS_PERS_OUT=""; RS_ACCT=$acct
   mkdir -p "$RS_D/out"
   s="Backup of $(rs_val "$c/manifest" DATE), Steam ARM $(rs_val "$c/manifest" VERSION), GPU $(rs_val "$c/manifest" GPU_FAMILY)."$'\n'
@@ -3396,12 +3524,14 @@ rs_plan(){
         [ -n "$a" ] || continue
         if ! valid_appid "$a" || [[ ! "$v" =~ ^[A-Za-z0-9_.-]{1,64}$ ]]; then bad="$bad $a"; continue; fi
         if grep -qxF "$a $v" <<<"$curmap"; then same=$((same + 1)); continue; fi
+        # tool chosen now for this game stays: explicit choice wins over the backup
+        if grep -q "^$a " <<<"$curmap"; then kept=$((kept + 1)); continue; fi
         if ! tool_ok "$acct" "$v"; then miss="$miss $a:$v"; continue; fi
         RS_MAP+=("$a $v")
         [ "$shown" -lt 8 ] && s+=$(rs_line "app $a" "-> $v")$'\n'; shown=$((shown + 1))
       done < "$c/personal/compattools.txt"
       [ "$shown" -gt 8 ] && s+="  ... $((shown - 8)) more"$'\n'
-      s+="  ${#RS_MAP[@]} to set, $same unchanged"$'\n'
+      s+="  ${#RS_MAP[@]} to set, $same unchanged, $kept kept (other tool chosen here)"$'\n'
       [ -n "$miss" ] && s+="  Tool not installed, left out:"$'\n'"$(echo "${miss# }" | fold -s -w 62 | sed 's/^/    /')"$'\n'
       [ -n "$bad" ] && s+="  Not valid, left out:$bad"$'\n'
     fi
@@ -3567,7 +3697,7 @@ rs_menu(){
     fi
   fi
   rs_plan "$sel" "$acct" "$sm" "$pm" "$ts" "$tp"
-  ui_textstr "Restore settings: summary" "$RS_SUM"
+  ui_textstr "Restore settings: summary" "$RS_SUM" Next
   if ! ui_yesno "Restore settings" "Apply these changes from
 $(basename "$f")?" Restore Back defaultno; then rs_close; return 1; fi
   comp=$RS_COMP; rs_close
@@ -3619,7 +3749,13 @@ menu_maintenance(){
       3 "Hardware report (for a compatibility report)" 4 "Free /dev/shm now" \
       5 "Back up settings" 6 "Restore settings"); do
     case "$c" in
-      1) if is_installed; then INST_ENV=(); run_installer "Update / Repair" --keep; else offer_install; fi;;
+      1) if is_installed; then
+           ui_yesno "Update / Repair" "Run setup again with the parts chosen at last setup?
+
+Setup reinstalls packages, launcher, helpers and rules for those
+parts. Games, saves and sign-in stay in the client folder." Run Back defaultno || continue
+           INST_ENV=(); run_installer "Update / Repair" --keep
+         else offer_install; fi;;
       2) maint_logs;;
       3) maint_report;;
       4) maint_shm;;
@@ -3711,6 +3847,26 @@ What works
   Deleting steamapps/shadercache by hand stops
   Steam from downloading those caches again.
 
+Game is slow (CPU-bound)
+- Games > game > rules of last start, or Maintenance
+  > Hardware report: line "renderer:". "GPU (...)"
+  means GPU drawing. "GPU forwarding not active:
+  rendering on CPU (llvmpipe)" means CPU drawing;
+  reason follows in same line.
+- GPU line, game still slow: lower its resolution.
+  Frame rate goes up: GPU limit. Unchanged: CPU limit
+  (x86 code runs through emulation).
+- MangoHud shows per-core load: one core near 100%
+  while frame rate stays low means CPU limit.
+
+Proton version keeps changing back
+- Choice in Steam (Properties > Compatibility) wins;
+  this menu writes it only through Graphics > Linux
+  or Windows build. Steam saves it in config.vdf;
+  close Steam from its own menu once after change.
+- Log line "compat: warning: ...": saved choice and
+  started build differ.
+
 What to avoid
 - MANGOHUD=1 or "mangohud %command%" on Windows games
   (Proton ARM64): the game crashes.
@@ -3732,6 +3888,8 @@ Reading "Rules used at last start" (Games > a game)
   your launch option won over a rule.
 - "title setting kept: gfx=...": the route set for
   this game won over the rules.
+- "renderer: GPU (...)" or "renderer: warning: GPU
+  forwarding not active ...": drawing on GPU or CPU.
 - No lines: the game has not started since setup, or
   it is a Windows game (Proton keeps its own logs).
 EOF
@@ -3787,7 +3945,8 @@ Commands
                             B Mali drivers in emulation for all
   profile <appid> key=value ...
                             game profile keys (overlay, mangohud, env,
-                            args, gl32, vk32, godot, unity, gfx);
+                            args, gl32, vk32, godot, unity, gfx,
+                            multiblock);
                             key= removes one, --clear removes all
   compat <appid> linux|windows|clear
                             force Linux build or Windows build (Proton),
@@ -3823,6 +3982,8 @@ Environment
                             else $SA_SHARE_INSTALLER,
                             else steam-arm-install.sh beside this app);
                             the installer sets it when it opens this menu
+  STEAM_ARM_ALLOW_ARMV80=1  skip Armv8.1 (LSE atomics) CPU check of
+                            Install / Setup; passed on to setup
 
 Files
   $SA_CONF      settings (GFX_DEFAULT=auto|a|b;
@@ -3856,6 +4017,7 @@ cli_gfx_default(){
 profile_ok(){ case "$1=$2" in
   overlay=|overlay=x86|overlay=vulkan|overlay=off|mangohud=|mangohud=on|mangohud=off|gfx=|gfx=a|gfx=b) return 0;;
   gl32=|gl32=off|vk32=|vk32=keep|godot=|godot=gl|godot=vulkan|unity=|unity=vulkan|unity=gl) return 0;;
+  multiblock=|multiblock=on|multiblock=off) return 0;;
   env=*|args=*) valid_value "$2";;
   *) return 1;;
 esac; }
@@ -3864,7 +4026,7 @@ cli_profile(){
   valid_appid "$id" || { echo "usage: steam-arm-config profile <appid> key=value ..." >&2; return 2; }
   shift
   if [ "${1:-}" = --clear ]; then
-    for k in overlay mangohud env args gl32 vk32 godot unity gfx; do tc_set "$SA_TITLES_ETC" "$id" "$k" "" || return 1; done
+    for k in overlay mangohud env args gl32 vk32 godot unity gfx multiblock; do tc_set "$SA_TITLES_ETC" "$id" "$k" "" || return 1; done
     echo "app $id: profile removed"; return 0
   fi
   for kv in "$@"; do
@@ -4059,6 +4221,12 @@ USAGE
   under emulation).
   Turning it off stops only that watcher; its helper file stays.
 
+  kde-input-prompt (off by default, KDE Plasma only) pre-authorises input
+  from X11 programs in KDE's permission store, so controller driving desktop
+  raises no "Remote control requested" prompt. Trade-off: every X11 program
+  may then send input without asking. Turning it off, or --remove, puts back
+  value from before.
+
 Examples
   sudo bash steam-arm-install.sh --defaults
   sudo bash steam-arm-install.sh --skip tray                           no tray icon
@@ -4085,6 +4253,9 @@ Environment
   ARMHOME_DIR=path             client folder relative to home of that account, first
                                install only (default .local/share/steam-arm)
   STEAM_ARM_IGNORE_PAGESIZE=1  skip the 4K page size check
+  STEAM_ARM_ALLOW_ARMV80=1     skip the Armv8.1 (LSE atomics) CPU check; client builds
+                               newer than 15 April 2026 stop at start on Armv8.0
+                               (steam-for-linux issue 13288); launcher honours it too
   GPU_FAMILY=id                GPU family in place of detection, kept for later runs
                                (GPU_FAMILY=auto detects again); wrong id lists valid ones
   STEAM_ARM_PROVIDER_TARBALL=file
@@ -4100,6 +4271,14 @@ Environment of the launcher (steam-arm) and its helpers
   STEAM_ARM_PHYSX_SKIP=0       physx-skip off for this session; =1 on for this session
   STEAM_ARM_VK_SPOOF_DEBUG=1   troubleshooting: Vulkan feature layer (vk-spoof) prints
                                its decisions to the game's output
+  STEAM_ARM_RENDERER_CHECK=0   launch option of x86 Linux title: no renderer check
+                               (log line "renderer:") for that title
+  STEAM_ARM_MODE_RESTORE=0     no display mode restore: by default (X11 session) launcher
+                               saves display mode when game starts and puts it back
+                               when game ends, crashes or is stopped, and when Steam closes
+Stopping client
+  steam-arm --shutdown         asks running client to exit; after 20 s without effect,
+                               stops it with SIGTERM (never SIGKILL)
 
 Graphics per title (x86 Linux titles)
   Forwarding (default): emulated title's GL and Vulkan calls run on host GPU drivers.
@@ -4197,11 +4376,20 @@ fi
 GPU_VK=""
 [ "$MODE" = remove ] || { gpu_vulkan; gpu_line; }
 [ "$MODE" = detect ] && { gpu_report; exit 0; }
+# Client needs Armv8.1 atomics (LSE): stop before any package change.
+if [ "$MODE" != remove ]; then
+  case " $(cpu_features) " in
+    "  "|*" atomics "*) ;;
+    *) [ "${STEAM_ARM_ALLOW_ARMV80:-0}" = 1 ] || die "$LSE_TEXT"
+       warn "CPU has no Armv8.1 atomics (LSE); continuing because STEAM_ARM_ALLOW_ARMV80=1.";;
+  esac
+fi
 if [ "$MODE" != remove ]; then
   echo "  $GPU_LINE"
   [ "$GPU_SRC" = user ] && echo "  GPU family: $GPU_FAMILY (set by user)"
   [ -n "$GPU_NOTE" ] && echo "  $GPU_NOTE"
   [ -n "$GPU_WARN" ] && warn "$GPU_WARN"
+  kde_wayland && echo "  $KDE_HINT"
   armhome_ok "$ARMHOME_DIR" || die "$ARMHOME_BAD"
 fi
 # Account name: plain characters only (it reaches runuser and su), never the administrator account.
@@ -4228,6 +4416,7 @@ installed(){ case "$1" in
   icon-bigpicture) [ -e "$2/Desktop/Steam ARM.desktop" ];;
   icon-desktop) [ -e "$2/Desktop/Steam ARM (Desktop mode).desktop" ];;
   tray)       [ -e /usr/local/bin/steam-arm-tray ];;
+  kde-input-prompt) [ -f "$2/$KDE_MARK" ];;
   page-size)  grep -qs '^# steam-arm-setup page-size:' /boot/firmware/config.txt /boot/config.txt;;
   *)          return 1;;
 esac; }
@@ -4332,8 +4521,9 @@ case "$MODE" in
           fi
           user_mark "$PRE";;
 esac
-# page-size has no effect here (no Raspberry Pi 5): always off.
+# page-size has no effect here (no Raspberry Pi 5): always off. Same for kde-input-prompt without KDE Plasma.
 ps_relevant || eval "$(var_of page-size)=0"
+kde_relevant || eval "$(var_of kde-input-prompt)=0"
 
 # Detect other installer variant (by its launcher's settings path); refuse unless --replace-other, which retires it.
 RETIRE_OTHER=0
@@ -4354,6 +4544,18 @@ FWDIR=/boot/firmware
 FWCFG="$FWDIR/config.txt"
 PS_BEGIN="# steam-arm-setup page-size: 4K page kernel for x86 emulation. Remove this block to undo."
 PS_END="# end steam-arm-setup page-size"
+# Banner line: page size in use, board default where setup switches it, what happens next.
+case "$PAGESIZE" in 4096) PS_NOW=4K;; 16384) PS_NOW=16K;; 65536) PS_NOW=64K;; *) PS_NOW="$PAGESIZE bytes";; esac
+if [ "$PAGESIZE" = 4096 ]; then
+  if grep -qs "^$PS_BEGIN" "$FWCFG"; then PS_LINE="Page size: 4K from setup's kernel switch (board default 16K; uninstall restores it)"
+  else PS_LINE="Page size: 4K, as x86 emulation needs"; fi
+elif grep -qs "^$PS_BEGIN" "$FWCFG"; then PS_LINE="Page size: $PS_NOW now; 4K kernel set in $FWCFG, starts after reboot"
+else
+  case "$MODEL" in
+    "Raspberry Pi"*) PS_LINE="Page size: $PS_NOW (board default); x86 emulation needs 4K, page-size component switches it";;
+    *) PS_LINE="Page size: $PS_NOW; x86 emulation needs 4K";;
+  esac
+fi
 is_pi(){ case "$MODEL" in "Raspberry Pi"*) [ -f "$FWCFG" ];; *) return 1;; esac; }
 ps_block(){ [ -f "$FWCFG" ] && grep -qxF "$PS_BEGIN" "$FWCFG"; }
 # Block out of $FWCFG through a new file renamed over it (power loss never leaves it half written); backup goes after.
@@ -4456,6 +4658,37 @@ retire_other(){
   return 0
 }
 
+# kde-input-prompt helper as the game account in its desktop session; 75 when no session bus is up.
+KDE_PS_CALL="org.freedesktop.impl.portal.PermissionStore /org/freedesktop/impl/portal/PermissionStore org.freedesktop.impl.portal.PermissionStore"
+kde_input(){
+  local u; u=$(id -u "$GAMEUSER" 2>/dev/null) || return 1
+  [ -x /usr/local/lib/steam-arm-kde-input ] || return 1
+  [ -S "/run/user/$u/bus" ] || return 75
+  as_user env XDG_RUNTIME_DIR="/run/user/$u" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$u/bus" \
+    /usr/local/lib/steam-arm-kde-input "$1"
+}
+# Real mangohud (no shim marker) in PATH or /usr/bin, /bin.
+mh_real(){
+  local d; local IFS=:
+  for d in $PATH /usr/bin /bin; do
+    [ -x "$d/mangohud" ] && ! grep -qsF "$MH_MARK" "$d/mangohud" && return 0
+  done
+  return 1
+}
+# Shim written only where no real mangohud exists; own shim refreshed, or removed once a real one is installed.
+mh_shim(){
+  if mh_real; then
+    grep -qsF "$MH_MARK" "$MH_SHIM" && rm -f "$MH_SHIM"
+    return 0
+  fi
+  { [ -e "$MH_SHIM" ] || [ -L "$MH_SHIM" ]; } && ! grep -qsF "$MH_MARK" "$MH_SHIM" && return 0
+  mkdir -p "$(dirname "$MH_SHIM")" && cat > "$MH_SHIM" <<MHSHIM && chmod 755 "$MH_SHIM"
+#!/bin/sh
+$MH_MARK: MANGOHUD=1 for the launch handler, which loads MangoHud of the x86 RootFS.
+[ -x /usr/bin/mangohud ] && exec /usr/bin/mangohud "\$@"
+MANGOHUD=1 exec "\$@"
+MHSHIM
+}
 # --- uninstall (--remove): everything this installer added; client folder only on typed request ---
 remove_all(){
   local uh="" armhome="" del=0 a gone_client=0 gone_rfs=0 gone_mali=0 restored="" pkgs p binfmt=0 other=0 gp_rm=0 fc_rm=0 kept="" ft
@@ -4468,7 +4701,7 @@ remove_all(){
   linger=$(conf_get LINGER_SET); made_acct=$(conf_get ACCOUNT_CREATED)
   fstab_added=$(conf_get FSTAB_ADDED); rfs_made=$(conf_get RFS_CREATED); foreign=$(conf_get ARMHOME_FOREIGN)
   grep -qs '^downloaded by steam-arm-setup' "$RFS/.steam-arm-rootfs" && rfs_made=1
-  steam_banner "Steam ARM $SA_VERSION: native ARM64 Steam client removal" "Removes what setup added; installed games stay unless asked"
+  steam_banner "Steam ARM $SA_VERSION: native ARM64 Steam client removal" "Removes what setup added; installed games stay unless asked" "$PS_LINE"
   [ "$RETIRE_OTHER" = 1 ] && retire_other
   # Shared files go only while unchanged since setup wrote them, and never while other variant is installed.
   [ -f /etc/h96/steam-arm.conf ] && other=1
@@ -4502,6 +4735,14 @@ remove_all(){
       warn "Valve's emulation tool files could not be put back; Steam restores them at its next update"
     fi
   fi
+  if [ -n "$uh" ] && [ -f "$uh/$KDE_MARK" ]; then
+    say "KDE input prompt"
+    if kde_input off; then restored="${restored:+$restored, }KDE input prompt for X11 programs"
+    else
+      warn "KDE input permission stays until reversed: log in to desktop, then run as $GAMEUSER:"
+      warn "  busctl --user call $KDE_PS_CALL DeletePermission sss kde-authorized remote-desktop \"\""
+    fi
+  fi
   say "programs, rules, menu entries, settings"
   # Profiles written by hand or by steam-arm-config: saved before /etc/steam-arm goes.
   if grep -qsv -e '^[[:space:]]*#' -e '^[[:space:]]*$' /etc/steam-arm/titles.conf; then
@@ -4511,7 +4752,7 @@ remove_all(){
   rm -f /usr/local/bin/steam-arm /usr/local/bin/steam-arm-remoteplay /usr/local/bin/steam-arm-compatmap \
         /usr/local/bin/steam-arm-icon /usr/local/bin/steam-arm-tray /usr/local/bin/steam-arm-config \
         /usr/local/lib/steam-arm-handler.py /usr/local/lib/steam-arm-fexpatch.py /usr/local/lib/steam-arm-compatmap.py \
-        /usr/local/lib/steam-arm-physx.py \
+        /usr/local/lib/steam-arm-physx.py /usr/local/lib/steam-arm-kde-input \
         /usr/local/lib/steam-arm-glx-lax-patch.py /usr/local/lib/steam-arm-glx-lax.src /usr/local/lib/steam-arm-glx-lax.stat \
         /usr/local/lib/steam-arm-vk-spoof.c \
         /usr/local/sbin/steam-arm-glx-lax /usr/local/sbin/steam-arm-xpad-dedup /usr/local/sbin/steam-arm-pad-xbox \
@@ -4523,6 +4764,7 @@ remove_all(){
         /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png
   grep -qs "$VALVE_MARK" /etc/udev/rules.d/60-steam-input.rules && rm -f /etc/udev/rules.d/60-steam-input.rules
   grep -qs steam-arm /usr/local/bin/steamos-session-select && rm -f /usr/local/bin/steamos-session-select
+  grep -qsF "$MH_MARK" "$MH_SHIM" && rm -f "$MH_SHIM"
   rm -rf /usr/local/share/steam-arm /etc/steam-arm
   if [ -d "$PSTATE" ]; then
     legacy_mesa_restore && { restored="${restored:+$restored, }distro Mesa in $RFS"; [ "$other" = 0 ] && gp_rm=1; }
@@ -4534,6 +4776,7 @@ remove_all(){
   rmdir /usr/share/guestos 2>/dev/null
   [ "$other" = 0 ] && [ -d "$RFS" ] && rfs_unguard "$RFS" && restored="${restored:+$restored, }package tools in $RFS"
   ldconfig; udevadm control --reload 2>/dev/null
+  command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q /usr/share/applications 2>/dev/null
   if [ -n "$uh" ]; then
     as_user rm -f "$uh/Desktop/Steam ARM.desktop" "$uh/Desktop/Steam ARM (Desktop mode).desktop" \
           "$uh/.config/autostart/steam-arm-tray.desktop" \
@@ -4595,7 +4838,7 @@ remove_all(){
       echo "  not confirmed; nothing deleted"
     fi
   fi
-  pkgs="fex-emu-armv8.2 fex-emu-binfmt32 fex-emu-binfmt64 bubblewrap libsdl3-0 libsdl3-image0 libsdl3-ttf0"
+  pkgs="fex-emu-armv8.0 fex-emu-armv8.2 fex-emu-armv8.4 fex-emu-binfmt32 fex-emu-binfmt64 bubblewrap libsdl3-0 libsdl3-image0 libsdl3-ttf0"
   pkgs="$pkgs libgtk2.0-0t64 libopenal1 zenity xdotool patchelf libvulkan-dev python3-pil python3-evdev gir1.2-ayatanaappindicator3-0.1"
   pkgs=$(for p in $pkgs; do dpkg-query -W -f='${Status}\n' "$p" 2>/dev/null | grep -q '^install ok installed' && printf '%s ' "$p"; done)
   say "done: Steam ARM removed"
@@ -4713,7 +4956,7 @@ NETHINT="Check the network connection (and that this system's date is right), th
 
 # ---------------------------------------------------------------------------
 steam_banner "Steam ARM $SA_VERSION: native ARM64 Steam client setup" \
-             "Valve's ARM Linux client, x86 titles through the emulation tool it downloads"
+             "Valve's ARM Linux client, x86 titles through the emulation tool it downloads" "$PS_LINE"
 printf 'Optional components:'; for c in $COMPONENTS; do opt "$c" && printf ' %s' "$c" || printf ' [no %s]' "$c"; done; echo
 say "1/11  host packages"
 export DEBIAN_FRONTEND=noninteractive
@@ -4732,10 +4975,29 @@ opt gpu-in-emulation && BUILDPKGS="$BUILDPKGS zstd"                             
 want_icons(){ opt desktop || opt desktop-mode || opt icon-bigpicture || opt icon-desktop; }
 want_icons && BUILDPKGS="$BUILDPKGS python3-pil"                                     # menu and desktop icons
 opt tray && BUILDPKGS="$BUILDPKGS gir1.2-ayatanaappindicator3-0.1"                   # tray helper binding
-wait_apt; apt-get install -y fex-emu-armv8.2 fex-emu-binfmt32 fex-emu-binfmt64 bubblewrap dbus-daemon xz-utils \
-  libsdl3-0 libsdl3-image0 libsdl3-ttf0 libgtk2.0-0t64 libopenal1 zenity xdotool curl python3 file $BUILDPKGS \
+# FEX build for this CPU, same rule as FEX's InstallFEX.py (first CPU's Features line).
+fex_arch(){
+  local f; f=" $(cpu_features) "
+  fex_has(){ local x; for x; do case "$f" in *" $x "*) ;; *) return 1;; esac; done; }
+  if fex_has atomics asimdrdm crc32 dcpop fcma jscvt lrcpc paca pacg asimddp flagm ilrcpc uscat; then echo 8.4
+  elif fex_has atomics asimdrdm crc32 dcpop; then echo 8.2
+  else echo 8.0; fi
+}
+# Newest build this CPU runs that apt offers; older builds run on newer CPUs, never the reverse.
+fex_pkg(){
+  local a c; a=$(fex_arch)
+  for c in 8.4 8.2 8.0; do
+    case "$a:$c" in 8.2:8.4|8.0:8.4|8.0:8.2) continue;; esac
+    apt-cache policy "fex-emu-armv$c" 2>/dev/null | grep -q 'Candidate: [0-9]' && { echo "fex-emu-armv$c"; return; }
+  done
+  echo "fex-emu-armv$a"
+}
+FEXPKG=$(fex_pkg)
+say "FEX build for this CPU (ARMv$(fex_arch) features): $FEXPKG"
+wait_apt; apt-get install -y "$FEXPKG" fex-emu-binfmt32 fex-emu-binfmt64 bubblewrap dbus-daemon xz-utils \
+  libsdl3-0 libsdl3-image0 libsdl3-ttf0 libgtk2.0-0t64 libopenal1 zenity xdotool x11-xserver-utils curl python3 file $BUILDPKGS \
   || die "host packages did not install (apt-get install failed; its message is above). $NETHINT If it reports packages it cannot find, this distribution release lacks them; README lists supported systems."
-command -v FEX >/dev/null || die "FEX is not on this system after package install. Install fex-emu-armv8.2 by hand (sudo apt install fex-emu-armv8.2), then run this again."
+command -v FEX >/dev/null || die "FEX is not on this system after package install. Install $FEXPKG by hand (sudo apt install $FEXPKG), then run this again."
 for l in libSDL3.so.0 libopenal.so.1 libgtk-x11-2.0.so.0; do
   ldconfig -p | grep -q "$l" || die "$l missing after package install. Run this again; if it stays missing, report it with the output above."
 done
@@ -5799,6 +6061,12 @@ on the tool's os.environ and sys.argv and decides per title:
                   provider and GLX vendor; launch options for these are replaced, with an
                   "overridden for" log line. gl32=off sets GLX vendor mesa the same way.
   Script launchers  Source engine style start scripts are followed to binary they name, for detection.
+  GoldSrc titles  note only: renderer picked in the title's video options (Software draws on CPU).
+  Compat check    note when Steam's saved tool for the title (config.vdf CompatToolMapping) names a
+                  Proton build but this Linux build started; never writes that file.
+  Renderer check  background thread: once the title loads a GL or Vulkan library, logs the GPU
+                  device its processes hold ("renderer: GPU ..."), or "GPU forwarding not active:
+                  rendering on CPU (llvmpipe)" when none is held. STEAM_ARM_RENDERER_CHECK=0 turns it off.
 
 Profiles, one title per line, later files override earlier ones:
   /usr/local/share/steam-arm/titles.conf      included with steam-arm-setup
@@ -5808,6 +6076,7 @@ Line: <appid> key=value ...   keys: overlay=x86|vulkan|off  mangohud=on|off
       godot=gl|vulkan  unity=vulkan|gl  env=NAME=VALUE;NAME=VALUE  args=ARG;ARG
       gl32=off (32-bit title on emulated x86 Mesa, no GL thunk)  vk32=keep (keep -vulkan)
       gfx=a (forwarding)  gfx=b (Mali drivers inside the emulation)
+      multiblock=on|off (FEX Multiblock; launch-option FEX_APP_CONFIG and Steam's FEX setting win)
 Per-title launch options override profiles: STEAM_ARM_OVERLAY=x86|vulkan|off, and
 STEAM_ARM_PRELOAD_KEEP=a,b (keep exactly LD_PRELOAD entries containing these substrings).
 Every decision is printed to the tool's log, /tmp/fex-compat-tool-<pid>.log."""
@@ -5816,14 +6085,18 @@ import glob
 import json
 import os
 import re
+import shutil
 import struct
 import sys
 import tempfile
+import threading
+import time
 import zipfile
 
 
 def log(*a):
-    print("steam-arm:", *a)
+    # flushed: the renderer thread writes while the game runs
+    print("steam-arm:", *a, flush=True)
 
 
 def keep_env(k, want):
@@ -6215,15 +6488,180 @@ def dedupe(seq):
     return out
 
 
+def goldsrc():
+    """True for GoldSrc titles: hl_linux binary, or a mod folder with liblist.gam beside the binary."""
+    exe = game_binary()
+    if exe and os.path.basename(exe) == "hl_linux":
+        return True
+    dirs = dedupe([os.getcwd()] + ([os.path.dirname(exe)] if exe else []))
+    return any(glob.glob(os.path.join(d, "*", "liblist.gam")) for d in dirs)
+
+
+def compat_mapping(appid):
+    """Tool name in Steam's config.vdf CompatToolMapping for appid; None when absent or empty."""
+    p = os.path.join(os.path.expanduser("~"), ".local/share/Steam/config/config.vdf")
+    try:
+        s = open(p, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return None
+    m = re.search(r'\n(\t+)"CompatToolMapping"\n\1\{\n(.*?)\n\1\}', s, re.S)
+    if not m or not appid:
+        return None
+    cur = None
+    for line in m.group(2).split("\n"):
+        t = line.strip()
+        k = re.fullmatch(r'"([^"]*)"', t)
+        if k:
+            cur = k.group(1)
+            continue
+        n = re.fullmatch(r'"name"\s+"([^"]*)"', t)
+        if n and cur == appid:
+            return n.group(1) or None
+        if t == "}":
+            cur = None
+    return None
+
+
+# Renderer check: GL/Vulkan library of the title's processes, and the GPU device they hold.
+GFX_LIB = re.compile(r"/(libGLX?(_\w+)?\.so|libEGL(_\w+)?\.so|libOpenGL\.so|libvulkan\.so|lib(GL|EGL|vulkan)-(guest|host)\.so"
+                     r"|libgallium[^/]*\.so|\w+_dri\.so|libvulkan_\w+\.so)")
+# x86 Mesa inside the emulation: on forwarding, a sign that the thunk was bypassed
+GUEST_MESA = re.compile(r"(x86_64|i386)-linux-gnu/(?:\S*/)?(libgallium[^/]*\.so|\w+_dri\.so|libvulkan_\w+\.so)")
+# runtime and launcher helpers that may load GL for checks; not the title
+HELPER_PREFIX = ("steam-runtime", "srt-", "pressure-vessel", "pv-", "steam-launch-w", "python")
+HELPER_COMM = {"bwrap", "reaper", "FEXServer", "sh", "bash", "dash", "printenv", "steam"}
+
+
+def drm_driver(node):
+    try:
+        return os.path.basename(os.readlink("/sys/class/drm/%s/device/driver" % node))
+    except OSError:
+        return "unknown"
+
+
+def descendants(root):
+    """Process ids below root, from /proc/<pid>/stat parent links."""
+    kids = {}
+    for p in os.listdir("/proc"):
+        if not p.isdigit():
+            continue
+        try:
+            st = open("/proc/%s/stat" % p).read()
+            ppid = int(st[st.rindex(")") + 2:].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        kids.setdefault(ppid, []).append(int(p))
+    out, todo = [], [root]
+    while todo:
+        for c in kids.get(todo.pop(), ()):
+            out.append(c)
+            todo.append(c)
+    return out
+
+
+# render nodes without 3D engine: virtual, display controller, NPU
+NON_GPU_DRM = ("vgem", "vkms", "rockchip-drm", "RKNPU", "rknpu")
+
+
+def drm_fd_used(pid, fd):
+    """False when the fd's memory stats are all zero (device only probed, e.g. by llvmpipe); True otherwise."""
+    try:
+        lines = open("/proc/%d/fdinfo/%s" % (pid, fd)).read().splitlines()
+    except OSError:
+        return True
+    mem = [l.split(":", 1)[1].split() for l in lines if re.match(r"drm-(total|resident|memory)-", l)]
+    return not mem or any(v and v[0] != "0" for v in mem)
+
+
+def gfx_state(pid):
+    """(comm, graphics library loaded, x86 Mesa libraries, forwarding libraries loaded, GPU devices held) or None."""
+    try:
+        comm = open("/proc/%d/comm" % pid).read().strip()
+        paths = {l.split(None, 5)[5] for l in open("/proc/%d/maps" % pid).read().splitlines() if len(l.split(None, 5)) == 6}
+    except OSError:
+        return None
+    gfx = any(GFX_LIB.search(p) for p in paths)
+    guest = sorted({m.group(2) for m in (GUEST_MESA.search(p) for p in paths) if m})
+    fwd = any(re.search(r"/lib(GL|EGL|vulkan)-(guest|host)\.so", p) for p in paths)
+    devs = set()
+    try:
+        fds = os.listdir("/proc/%d/fd" % pid)
+    except OSError:
+        fds = []
+    for fd in fds:
+        try:
+            t = os.readlink("/proc/%d/fd/%s" % (pid, fd))
+        except OSError:
+            continue
+        if t.startswith("/dev/dri/renderD"):
+            d = drm_driver(os.path.basename(t))
+            if d not in NON_GPU_DRM and drm_fd_used(pid, fd):
+                devs.add("%s %s" % (d, os.path.basename(t)))
+        elif t.startswith("/dev/nvidia"):
+            devs.add("nvidia")
+    return comm, gfx, guest, fwd, devs
+
+
+def renderer_verdict(state, polls):
+    """Log text for one process state seen with a graphics library for `polls` checks; None while undecided.
+    A GPU render node in use (memory allocated) means GPU; none after 15 checks: CPU."""
+    comm, gfx, guest, fwd, devs = state
+    if not gfx:
+        return None
+    how = "forwarding to host driver" if fwd else "drivers inside emulation" if guest else "host driver"
+    if devs:
+        return "renderer: GPU (%s), %s, process %s" % (", ".join(sorted(devs)), how, comm)
+    if polls >= 15:
+        why = ("x86 Mesa inside emulation loaded (%s)" % ", ".join(guest)) if guest else "no GPU device in use"
+        return "renderer: warning: GPU forwarding not active: rendering on CPU (llvmpipe); %s, process %s" % (why, comm)
+    return None
+
+
+def renderer_watch(root, limit=180, step=2):
+    """Every `step` s for `limit` s: first verdict for a title process below root goes to the log."""
+    seen = {}
+    t0 = time.time()
+    while time.time() - t0 < limit:
+        time.sleep(step)
+        for pid in descendants(root):
+            s = gfx_state(pid)
+            if not s or not s[1] or s[0] in HELPER_COMM or s[0].startswith(HELPER_PREFIX):
+                continue
+            seen[pid] = seen.get(pid, 0) + 1
+            v = renderer_verdict(s, seen[pid])
+            if v:
+                log(v)
+                return
+    log("renderer: not detected within %d s (no GL or Vulkan library loaded, or title still loading)" % limit)
+
+
+def renderer_thread(root):
+    try:
+        renderer_watch(root)
+    except Exception as e:
+        log("renderer: check stopped:", e)
+
+
 prof = load_profile()
 if prof:
     log("profile for", APPID, prof)
+# FEX settings from launch options, read before any rule writes its own FEX_APP_CONFIG
+LAUNCH_FEX = user_fex()
 extra = [x for x in prof.get("args", "").split(";") if x]
 engine, bits = engine_info()
 if engine:
     log("engine: %s, %s-bit" % (engine, bits))
 if source2():
     log("source 2: needs desktop-class Vulkan features; no known fix, launched unchanged")
+if goldsrc():
+    log("goldsrc: OpenGL 2.1 title; its video options pick OpenGL or Software renderer (Software draws on CPU)")
+# Steam's saved tool choice is only read here, never written.
+tool = compat_mapping(APPID)
+if any(os.path.basename(a) == "proton" for a in sys.argv):
+    log("compat: x86 Proton%s through emulation; ARM64 Proton builds run without x86 emulation" % (" (%s)" % tool if tool else ""))
+elif tool and "proton" in tool.lower():
+    log("compat: warning: Steam's saved setting names %s for this title, but its Linux build started; "
+        "Steam's current choice differs from its saved one (Properties > Compatibility)" % tool)
 # 32-bit Unity stops when x86 overlay attaches; default overlay off unless profile/launch option asks.
 engine_overlay = "off" if (engine == "unity" and bits == 32) else None
 # 64-bit Unity+Vulkan: Panfrost's GL is too old for Unity's core path (GLXBadFBConfig), so force Vulkan unless profile/launch overrides.
@@ -6260,6 +6698,37 @@ else:
     log("overlay:", mode)
 
 # MangoHud
+MH_SRC = "/opt/fex-rootfs/Ubuntu_24_04/usr/lib/%s/mangohud"
+MH_DIR = os.path.join(os.path.expanduser("~"), ".local/lib/steam-arm")
+
+
+def mh_local(name):
+    """RootFS MangoHud library copied per arch into the client folder (refreshed on change); its $LIB path or None."""
+    ok = False
+    for triplet in ("x86_64-linux-gnu", "i386-linux-gnu"):
+        src = os.path.join(MH_SRC % triplet, name)
+        dst = os.path.join(MH_DIR, "lib", triplet, name)
+        try:
+            st = os.stat(src)
+        except OSError:
+            continue
+        try:
+            d = os.stat(dst)
+            if (d.st_size, int(d.st_mtime)) == (st.st_size, int(st.st_mtime)):
+                ok = True
+                continue
+        except OSError:
+            pass
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst + ".tmp")
+            os.replace(dst + ".tmp", dst)
+            ok = True
+        except OSError as e:
+            log("mangohud: copy to client folder failed:", e)
+    return os.path.join(MH_DIR, "$LIB", name) if ok else None
+
+
 mh = prof.get("mangohud", "auto")
 wants_mh = bool(mh_entries) or os.environ.get("MANGOHUD") == "1" \
     or os.environ.get("STEAM_ARM_PRELOAD_MANGOHUD") == "1" or mh == "on"
@@ -6267,7 +6736,11 @@ if mh == "off":
     os.environ.pop("MANGOHUD", None)
     log("mangohud: off (profile)")
 elif wants_mh:
-    items += mh_entries or ["/usr/$LIB/mangohud/libMangoHud_shim.so"]
+    # RootFS copy preloaded from client folder (pressure-vessel maps /usr preloads to ARM host); 0.6.x has no shim
+    names = [os.path.basename(e) for e in mh_entries if "/mangohud/" in e] or ["libMangoHud.so"]
+    local = [x for x in (mh_local(n) for n in names) if x]
+    items += [e for e in mh_entries if "/mangohud/" not in e] \
+        + (local or [e for e in mh_entries if "/mangohud/" in e] or ["/usr/$LIB/mangohud/libMangoHud.so"])
     os.environ["MANGOHUD"] = "1"
     log("mangohud: on")
 
@@ -6393,6 +6866,32 @@ if gfx == "a" and prof.get("gl32") == "off" and bits != 64:
     except OSError as e:
         log("gl32: could not write FEX app config:", e)
 
+# multiblock=on|off: FEX Multiblock for this title in place of Valve's per-title default; launch options and Steam's FEX setting win.
+mbp = prof.get("multiblock")
+if mbp in ("on", "off"):
+    want = "1" if mbp == "on" else "0"
+    lc = LAUNCH_FEX.get("Config") if isinstance(LAUNCH_FEX.get("Config"), dict) else {}
+    if "Multiblock" in lc:
+        log("launch option kept: Multiblock=%s (title setting multiblock=%s)" % (lc["Multiblock"], mbp))
+    elif os.environ.get("STEAM_COMPAT_FEX_CONFIG"):
+        log("Steam setting kept: STEAM_COMPAT_FEX_CONFIG=%s (title setting multiblock=%s)"
+            % (os.environ["STEAM_COMPAT_FEX_CONFIG"], mbp))
+    else:
+        try:
+            prev = None
+            if APP_CFG:
+                c = json.load(open(APP_CFG)).get("Config")
+                prev = c.get("Multiblock") if isinstance(c, dict) else None
+            if prev is not None and str(prev) != want:
+                log("title setting kept: multiblock=%s (rule wanted Multiblock=%s)" % (mbp, prev))
+            fex_app_config(config={"Multiblock": want})
+            log("fex: Multiblock %s (title profile)" % mbp)
+        except (OSError, ValueError) as e:
+            log("fex: could not write FEX app config:", e)
+
+if os.environ.get("STEAM_ARM_RENDERER_CHECK", "1") != "0":
+    threading.Thread(target=renderer_thread, args=(os.getpid(),), daemon=True).start()
+
 items = dedupe(items)
 if items:
     os.environ["LD_PRELOAD"] = ":".join(items)
@@ -6402,15 +6901,18 @@ else:
     log("LD_PRELOAD: none")
 HANDLERPY
 chmod 644 /usr/local/lib/steam-arm-handler.py
+mh_shim || warn "$MH_SHIM could not be written; use MANGOHUD=1 %command% instead of mangohud %command%"
 mkdir -p /usr/local/share/steam-arm
 cat > /usr/local/share/steam-arm/titles.conf <<'TITLES'
 # Included title profiles; local overrides belong in /etc/steam-arm/titles.conf or ~/.config/steam-arm/titles.conf.
+248570 overlay=off      # custom OpenGL engine: stops when Steam overlay attaches
 TITLES
 [ -f /etc/steam-arm/titles.conf ] || cat > /etc/steam-arm/titles.conf <<'TITLES'
 # Local title profiles; override /usr/local/share/steam-arm/titles.conf. One line per title: <appid> key=value ...
 #   overlay=x86|vulkan|off  mangohud=on|off  godot=gl|vulkan  env=A=1;B=2  args=-x;-y   (example: <appid> overlay=off)
 #   gl32=off (32-bit title on emulated x86 Mesa, no GL thunk)  vk32=keep (32-bit title keeps -vulkan)
 #   gfx=b (Mali drivers inside emulation)  gfx=a (forwarding); unset = automatic
+#   multiblock=on|off (FEX Multiblock for the title; unset = Valve's per-title default)
 TITLES
 
 # FEX tool edit, shared by the launcher's start and its watcher (see the launcher).
@@ -7177,6 +7679,16 @@ stop(){
   fi
   exit 1
 }
+# Help prints usage; it never starts a client (Steam itself has no --help).
+case "${1:-}" in
+  -h|--help|help)
+    printf '%s\n' "Usage: steam-arm [Steam client options]" \
+      "  steam-arm              start Steam client" \
+      "  steam-arm --shutdown   stop running client (asks it to exit, SIGTERM after 20 s)" \
+      "  steam-arm --help       show this text" \
+      "Other options pass to Steam client unchanged. Settings: sudo steam-arm-config"
+    exit 0;;
+esac
 if command -v steam-arm-setup >/dev/null 2>&1; then SETUP=steam-arm-setup
 elif [ -f /usr/local/share/steam-arm/steam-arm-install.sh ]; then SETUP="bash /usr/local/share/steam-arm/steam-arm-install.sh"
 else SETUP="bash steam-arm-install.sh"; fi
@@ -7195,11 +7707,45 @@ export STEAM_COMPAT_GRAPHICS_PROVIDER=/opt/fex-rootfs/Ubuntu_24_04/graphics_prov
 export STEAMOS=1
 LOG="$ARMHOME/steam-arm.log"
 lwarn(){ echo "steam-arm: $*" >&2; printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG" 2>/dev/null; }
+# Stop path: steam -shutdown, then SIGTERM after 20 s (a client can stop acting on forwarded command
+# lines, for example after a second client ran with another HOME on the same account). Never SIGKILL.
+client_running(){ pgrep -u "$(id -u)" -x steam >/dev/null 2>&1; }
+client_wait(){ n=0; while client_running; do sleep 1; n=$((n + 1)); [ "$n" -ge "$1" ] && return 1; done; return 0; }
+stop_client(){
+  client_running || return 0
+  ( cd "$D" && ./steam -shutdown >/dev/null 2>&1 )
+  client_wait 20 && return 0
+  lwarn "client did not act on -shutdown within 20 s; stopping it with SIGTERM"
+  pkill -TERM -u "$(id -u)" -x steam 2>/dev/null
+  client_wait 30 && return 0
+  lwarn "client still running 30 s after SIGTERM; close it from its menu"; return 1
+}
+case "${1:-}" in
+  --shutdown) stop_client; exit $?;;
+esac
+# Client needs Armv8.1 atomics (LSE); STEAM_ARM_ALLOW_ARMV80=1 skips the check.
+CPUF=$(grep -m1 '^Features' /proc/cpuinfo 2>/dev/null)
+if [ -n "$CPUF" ] && [ "${STEAM_ARM_ALLOW_ARMV80:-0}" != 1 ]; then
+  case " ${CPUF#*:} " in *" atomics "*) ;; *)
+    LSE="This CPU has no Armv8.1 atomics (LSE). Steam client needs Armv8.1 or newer; builds newer than 15 April 2026 stop at start with SIGILL on Armv8.0 cores (Cortex-A53, A57, A72: Raspberry Pi 4 and 3). Client issue: https://github.com/ValveSoftware/steam-for-linux/issues/13288. STEAM_ARM_ALLOW_ARMV80=1 skips this check."
+    lwarn "$LSE" 2>/dev/null; stop "$LSE";;
+  esac
+fi
 # Component chosen at install (COMPONENTS_ON in the settings file; all count as chosen when the file has no list).
 comp_on(){ [ -z "${COMPONENTS_ON+x}" ] && return 0; case ",$COMPONENTS_ON," in *",$1,"*) return 0;; esac; return 1; }
 # Graphics route is picked per title by the launch handler; here only a note when its second tree is gone.
 comp_on gpu-in-emulation && [ -n "${COMPONENTS_ON+x}" ] && [ ! -f /opt/fex-rootfs/Ubuntu_24_04-mali/.steam-arm-mali ] \
   && lwarn "Mali drivers inside the emulation missing, titles that need them use forwarding; run the installer again to restore them"
+# kde-input-prompt: KDE's input permission for X11 programs, set (component on) or put back (off) in this session.
+KDEIN=/usr/local/lib/steam-arm-kde-input; KDEM="$REALHOME/.config/steam-arm/kde-input-prompt"
+if [ -x "$KDEIN" ]; then
+  if [ -n "${COMPONENTS_ON+x}" ] && comp_on kde-input-prompt && [ ! -f "$KDEM" ]; then
+    case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) HOME="$REALHOME" "$KDEIN" on >/dev/null 2>&1 \
+      || lwarn "kde-input-prompt could not be applied; KDE may ask before controller sends input";; esac
+  elif ! comp_on kde-input-prompt && [ -f "$KDEM" ]; then
+    HOME="$REALHOME" "$KDEIN" off >/dev/null 2>&1 || lwarn "kde-input-prompt could not be reversed; next start tries again"
+  fi
+fi
 # Private GLX copy only when chosen and loadable; otherwise system Mesa GLX.
 LAX=/usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0; LAX_BAD=0
 if comp_on glx-lax; then
@@ -7227,9 +7773,100 @@ if [ -f /etc/systemd/system/steam-arm-pad-xbox.service ] && systemctl is-active 
   PADSVC=1; sudo -n systemctl stop steam-arm-pad-xbox 2>/dev/null || systemctl stop steam-arm-pad-xbox 2>/dev/null
 fi
 restore_pad(){ [ "$PADSVC" = 1 ] && { sudo -n systemctl start steam-arm-pad-xbox 2>/dev/null || systemctl start steam-arm-pad-xbox 2>/dev/null; }; }
-FEXWATCH=; PHYSXWATCH=
-# Single exit path: stop the watchers, then restore the pad service.
-on_exit(){ [ -n "$FEXWATCH" ] && kill "$FEXWATCH" 2>/dev/null; [ -n "$PHYSXWATCH" ] && kill "$PHYSXWATCH" 2>/dev/null; restore_pad; }
+# Display mode (X11): a title that switches mode and quits, crashes or is stopped can leave it set.
+# Modes are saved when a title starts and put back once no title runs, and when Steam closes.
+MODEF="$XDG_RUNTIME_DIR/steam-arm-display-mode"
+game_up(){ pgrep -u "$(id -u)" -f 'reaper SteamLaunch' >/dev/null 2>&1; }
+mode_ok(){ [ -n "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ] && [ "${STEAM_ARM_MODE_RESTORE:-1}" != 0 ] && command -v xrandr >/dev/null 2>&1; }
+# One line per active output: name, mode id, geometry (WxH+X+Y).
+mode_get(){ xrandr --verbose 2>/dev/null | awk '/^[^ \t].* connected/ { for (i = 3; i < NF; i++) if ($i ~ /^[0-9]+x[0-9]+\+-?[0-9]+\+-?[0-9]+$/ && $(i + 1) ~ /^\(0x[0-9a-f]+\)$/) { m = $(i + 1); gsub(/[()]/, "", m); print $1, m, $i } }'; }
+mode_restore(){
+  [ -s "$MODEF" ] || return 0
+  now=$(mode_get); [ -n "$now" ] || return 0
+  [ "$now" = "$(cat "$MODEF")" ] && return 0
+  fb=$(awk '{ split($3, g, /[x+]/); w = g[1] + g[3]; h = g[2] + g[4]; if (w > W) W = w; if (h > H) H = h } END { if (W) print W "x" H }' "$MODEF")
+  set --
+  while read -r o m g; do
+    p=${g#*+}; set -- "$@" --output "$o" --mode "$m" --pos "${p%%+*}x${p#*+}"
+  done < "$MODEF"
+  if xrandr ${fb:+--fb "$fb"} "$@" 2>/dev/null; then lwarn "display mode put back after game: $(paste -sd ' ' "$MODEF")"
+  else lwarn "display mode could not be put back ($(paste -sd ' ' "$MODEF")); set it in display settings"; fi
+}
+# Called every second by the watcher: save before a title switches, restore 2 s after the last one ends.
+mode_watch(){
+  mode_ok || return 0
+  if game_up; then
+    [ -s "$MODEF" ] || mode_get > "$MODEF"
+  elif [ -s "$MODEF" ]; then
+    sleep 2; game_up && return 0
+    mode_restore; rm -f "$MODEF"
+  fi
+}
+# Bluetooth: SteamOS mode sets adapter power from saved System/Bluetooth/Enabled (unset = off); host state is saved there first.
+BTPOW=; BTSEED=
+bt_powered(){ command -v bluetoothctl >/dev/null 2>&1 && timeout 5 bluetoothctl show 2>/dev/null | awk '$1 == "Powered:" { print $2; exit }'; }
+# $1 0/1: write value (Steam closed); no $1: print saved value.
+bt_saved(){ python3 - "$S/config/config.vdf" "${1:-}" <<'BTPY'
+import os, re, sys, tempfile
+p, want = sys.argv[1], sys.argv[2]
+try:
+    s = open(p, encoding="utf-8", errors="surrogateescape").read()
+except FileNotFoundError:
+    s = None
+
+
+def block(s, name, ind, lo, hi):
+    m = re.compile(r'\n%s"%s"\n%s\{\n' % (ind, name, ind)).search(s, lo, hi)
+    if not m:
+        return None
+    e = s.find("\n%s}" % ind, m.end() - 1, hi)
+    return (m.end(), e + 1) if e >= 0 else None
+
+
+sysb = block(s, "System", "\t", 0, len(s)) if s else None
+btb = block(s, "Bluetooth", "\t\t", sysb[0] - 1, sysb[1]) if sysb else None
+en = re.compile(r'^\t\t\t"Enabled"\t\t"([^"]*)"\n', re.M).search(s, btb[0], btb[1]) if btb else None
+if not want:
+    print(en.group(1) if en else "")
+    sys.exit(0)
+line = '\t\t\t"Enabled"\t\t"%s"\n' % want
+if s is None:
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    s = '"InstallConfigStore"\n{\n\t"System"\n\t{\n\t\t"Bluetooth"\n\t\t{\n%s\t\t}\n\t}\n}\n' % line
+elif en:
+    if en.group(1) == want:
+        sys.exit(0)
+    s = s[:en.start()] + line + s[en.end():]
+elif btb:
+    s = s[:btb[0]] + line + s[btb[0]:]
+elif sysb:
+    s = s[:sysb[0]] + '\t\t"Bluetooth"\n\t\t{\n%s\t\t}\n' % line + s[sysb[0]:]
+else:
+    i = s.rstrip().rfind("}")
+    if not s.startswith('"InstallConfigStore"') or i < 0:
+        sys.exit("config.vdf: InstallConfigStore block not found")
+    s = s[:i] + '\t"System"\n\t{\n\t\t"Bluetooth"\n\t\t{\n%s\t\t}\n\t}\n' % line + s[i:]
+mode = os.stat(p).st_mode & 0o7777 if os.path.exists(p) else 0o644
+fd, t = tempfile.mkstemp(prefix=".steam-arm-", dir=os.path.dirname(p))
+with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
+    f.write(s)
+os.chmod(t, mode)
+os.replace(t, p)
+BTPY
+}
+# Exit: adapter powered before start and off now, not switched off in Steam's settings: power it on again.
+bt_restore(){
+  [ "$BTSEED" = 1 ] && [ "$BTPOW" = yes ] && ! client_running || return 0
+  [ "$(bt_powered)" = no ] || return 0
+  [ "$(bt_saved 2>/dev/null)" = 0 ] && return 0
+  if timeout 10 bluetoothctl power on >/dev/null 2>&1; then lwarn "Bluetooth adapter left off by client; powered on again"
+  else lwarn "Bluetooth adapter left off by client and could not be powered on; turn it on in system settings"; fi
+}
+FEXWATCH=; PHYSXWATCH=; NOTEWATCH=
+# Single exit path: stop the watchers, put back a display mode a title left, restore the pad service and Bluetooth power.
+on_exit(){ [ -n "$FEXWATCH" ] && kill "$FEXWATCH" 2>/dev/null; [ -n "$PHYSXWATCH" ] && kill "$PHYSXWATCH" 2>/dev/null
+  [ -n "$NOTEWATCH" ] && kill "$NOTEWATCH" 2>/dev/null
+  mode_ok && ! game_up && { mode_restore; rm -f "$MODEF"; }; restore_pad; bt_restore; }
 trap on_exit EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 if pgrep -f 'ubuntu12_32/steam ' >/dev/null 2>&1; then
@@ -7372,7 +8009,7 @@ for f in glob.glob("/dev/shm/fex-*-stats"):
 SHMPY
 }
 shm_sweep
-( n=0; while sleep 1; do fex_check; n=$((n + 1)); [ $((n % 60)) -eq 0 ] && shm_sweep; done ) &
+( n=0; while sleep 1; do fex_check; mode_watch; n=$((n + 1)); [ $((n % 60)) -eq 0 ] && shm_sweep; done ) &
 FEXWATCH=$!
 # physx-skip (listed by name; old settings file = on): PhysX install step of Proton titles hangs, mark it done in the prefix, else SIGTERM it after 60 s.
 # STEAM_ARM_PHYSX_SKIP=0 or =1 overrides it for this session.
@@ -7397,21 +8034,18 @@ case "$1" in
   --desktop) GPUI=; SWITCH=1; shift;;
   --bigpicture) GPUI=-gamepadui; SWITCH=1; shift;;
 esac
-# Switching interface: shut down the running client (steam -shutdown), wait, then restart in the requested mode.
-if [ -n "$SWITCH" ] && pgrep -u "$(id -u)" -x steam >/dev/null 2>&1; then
-  ( cd "$D" && ./steam -shutdown >/dev/null 2>&1 )
-  n=0
-  while pgrep -u "$(id -u)" -x steam >/dev/null 2>&1; do
-    sleep 1; n=$((n+1))
-    [ $n -ge 60 ] && { echo "steam-arm: running client did not exit within 60 s; close it from its menu, then try again" >&2; exit 1; }
-  done
+# Switching interface: stop the running client, then restart in the requested mode.
+if [ -n "$SWITCH" ] && client_running; then
+  stop_client || exit 1
 fi
 
-# Menu icon comes from the client's own icon file, absent until its first start. Wait for it in
-# the background (poll every 5 s, up to 15 min) so start is never delayed; flock keyed by uid
-# stops a second concurrent start from waiting twice.
-if command -v steam-arm-icon >/dev/null 2>&1 && [ ! -f /usr/share/icons/hicolor/256x256/apps/steam-arm.png ] \
-   && [ ! -f "$REALHOME/.local/share/icons/hicolor/256x256/apps/steam-arm.png" ]; then
+# Menu icon comes from the client's own icon file, absent until its first start (setup draws a plain
+# disc meanwhile). Wait for it in the background (poll every 5 s, up to 15 min) so start is never
+# delayed; flock keyed by uid stops a second concurrent start from waiting twice.
+UICON="$REALHOME/.local/share/icons/hicolor"
+if command -v steam-arm-icon >/dev/null 2>&1 \
+   && { [ ! -f "$UICON/256x256/apps/steam-arm.png" ] || [ -e "$UICON/.steam-arm-placeholder" ]; } \
+   && { [ ! -f /usr/share/icons/hicolor/256x256/apps/steam-arm.png ] || [ -e /usr/local/share/steam-arm/icon-placeholder ]; }; then
   ICONLOCK="${XDG_RUNTIME_DIR:-/tmp}/steam-arm-icon-wait-$(id -u).lock"
   ( flock -n 9 || exit 0
     STEP=5; n=0
@@ -7419,7 +8053,7 @@ if command -v steam-arm-icon >/dev/null 2>&1 && [ ! -f /usr/share/icons/hicolor/
       n=$((n + STEP)); [ "$n" -ge 900 ] && exit 0
       sleep "$STEP"
     done
-    steam-arm-icon "$S" "$REALHOME/.local/share/icons/hicolor" || exit 0
+    steam-arm-icon "$S" "$UICON" || exit 0
     if command -v kbuildsycoca6 >/dev/null 2>&1; then HOME="$REALHOME" kbuildsycoca6
     elif command -v kbuildsycoca5 >/dev/null 2>&1; then HOME="$REALHOME" kbuildsycoca5
     fi
@@ -7463,16 +8097,70 @@ fi
 # gameoverlayui crashes without the client dir on LD_LIBRARY_PATH; the client doesn't add it, so the launcher does.
 export LD_LIBRARY_PATH="$D${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+# Client keeps host Bluetooth power as found (client rewrites config.vdf on exit, so only while closed).
+if ! client_running; then
+  BTPOW=$(bt_powered)
+  case "$BTPOW" in
+    yes|no) if bt_saved "$([ "$BTPOW" = yes ] && echo 1 || echo 0)" 2>>"$LOG"; then BTSEED=1
+            else lwarn "Bluetooth setting could not be saved for client; client may switch adapter off"; fi;;
+  esac
+fi
+
 cd "$D" || exit 1
+BOOTLOG="$S/logs/bootstrap_log.txt"
+# First start: the client's bootstrap downloads its files (about 650 MB) with no window; a desktop
+# notification, updated in place from the bootstrap log, reports it. Never on later starts.
+# notice ID SUMMARY BODY TIMEOUT_MS: send (ID 0) or replace a desktop notification; prints its id.
+notice(){
+  if command -v gdbus >/dev/null 2>&1; then
+    gdbus call --session --timeout 5 --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+      --method org.freedesktop.Notifications.Notify "Steam ARM" "$1" steam-arm "$2" "$3" '[]' '{}' "$4" 2>/dev/null \
+      | sed -n 's/.*uint32 \([0-9]*\).*/\1/p'
+  elif command -v notify-send >/dev/null 2>&1; then
+    # no -p (libnotify before 0.7.9): one notice without updates
+    notify-send -p -r "$1" -a "Steam ARM" -i steam-arm -t "$4" "$2" "$3" 2>/dev/null \
+      || { [ "$1" = 0 ] && notify-send -a "Steam ARM" -i steam-arm -t 15000 "$2" "$3" 2>/dev/null; }
+  fi
+}
+notice_close(){ command -v gdbus >/dev/null 2>&1 && gdbus call --session --timeout 5 --dest org.freedesktop.Notifications \
+  --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.CloseNotification "$1" >/dev/null 2>&1; }
+# Last bootstrap phase after byte $1 of the log: download (10 % steps), unpack, install, "done", or empty.
+boot_phase(){
+  tail -c +"$(($1 + 1))" "$BOOTLOG" 2>/dev/null | awk '
+    /\] Downloading update \(/ { s = $0; sub(/.*\(/, "", s); sub(/ KB\).*/, "", s); gsub(/,/, "", s); split(s, a, " of ")
+      if (a[2] > 0) m = sprintf("Downloading client files: %d%% of %d MB", int(a[1] * 10 / a[2]) * 10, a[2] / 1024) }
+    /\] Extracting package/ { m = "Unpacking client files" }
+    /\] Installing update/ { m = "Installing client files" }
+    /\] Update complete/ { m = "done" }
+    END { print m }'
+}
+# Runs beside the bootstrap: a notice at once, phases as they change, "done" or a vanished client ends it.
+first_start_notice(){
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  off=$(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)
+  id=$(notice 0 "Steam ARM: first start" "Downloading client files, this takes a few minutes. Steam opens when done." 0)
+  case "$id" in ''|0) return 0;; esac
+  trap 'notice_close "$id"; exit 143' TERM
+  last=; n=0
+  while [ "$n" -lt 1800 ]; do
+    sleep 5; n=$((n + 5))
+    m=$(boot_phase "$off")
+    if [ "$m" = done ]; then notice "$id" "Steam ARM" "Client files installed. Steam opens now." 10000 >/dev/null; return 0; fi
+    [ "$n" -ge 10 ] && ! client_running && break
+    [ -n "$m" ] && [ "$m" != "$last" ] && { notice "$id" "Steam ARM: first start" "$m" 0 >/dev/null; last=$m; }
+  done
+  notice_close "$id"
+}
 # First start must verify files (downloads the rest of the package, SDK dir appears) then exits; start again skipping verification.
 if [ ! -f "$S/linuxarm64/steamclient.so" ]; then
+  first_start_notice </dev/null >/dev/null 2>&1 &
+  NOTEWATCH=$!
   ./steam -deckard -steamos3 ${GPUI:+"$GPUI"} "$@"
   [ -f "$S/linuxarm64/steamclient.so" ] || exit 1
   ln -sfn "$S/linuxarm64" "$ARMHOME/.steam/sdkarm64"
 fi
 # Client exit after applying its own update: status 42 (restart request), or bootstrap log whose last
 # start ends in "Update complete, launching" with no client left running. Started again, at most twice.
-BOOTLOG="$S/logs/bootstrap_log.txt"
 # Status 0 when the log, from byte $1 on, ends with an applied update and no new start after it.
 updated_exit(){
   sz=$(stat -c %s "$BOOTLOG" 2>/dev/null) || return 1
@@ -7875,7 +8563,9 @@ colour, generated from fixed seeds so every install draws the same icons. The lo
 entries apart: chartreuse for Big Picture (steam-arm), bone for desktop mode
 (steam-arm-desktop). The logo shape comes from the client's own steam_tray.ico, where it is
 white with graded transparency over a blue disc; whiteness picks the logo, and the disc is
-made opaque. Nothing is bundled with the package."""
+made opaque. Before the client's first start there is no logo source: disc alone is drawn and
+HICOLORDIR/.steam-arm-placeholder marks it, so the launcher redraws it once the client is in.
+Nothing is bundled with the package."""
 import math, os, subprocess, sys
 from PIL import Image
 steam, dest = sys.argv[1], sys.argv[2]
@@ -7884,12 +8574,13 @@ for c in (os.path.join(steam, "public/steam_tray.ico"),
           "/opt/fex-rootfs/Ubuntu_24_04/usr/share/icons/hicolor/256x256/apps/steam.png"):
     if os.path.isfile(c):
         src = c; break
-if not src:
-    sys.exit(1)
-im = Image.open(src)
-if src.endswith(".ico"):
-    im.size = max(im.info.get("sizes", {im.size}))
-im = im.convert("RGBA").resize((256, 256), Image.LANCZOS)
+if src:
+    im = Image.open(src)
+    if src.endswith(".ico"):
+        im.size = max(im.info.get("sizes", {im.size}))
+    im = im.convert("RGBA").resize((256, 256), Image.LANCZOS)
+else:
+    im = Image.new("RGBA", (256, 256))
 p = im.load(); W, H = im.size; CX = CY = 127.5; R = 126.5
 
 def h(x, y, seed):
@@ -7936,18 +8627,27 @@ for name, img in (("steam-arm", draw((156, 200, 101), 11)), ("steam-arm-desktop"
     for sz in (16, 32, 48, 64, 128, 256):
         d = os.path.join(dest, "%dx%d" % (sz, sz), "apps"); os.makedirs(d, exist_ok=True)
         img.resize((sz, sz), Image.LANCZOS).save(os.path.join(d, name + ".png"))
+mark = os.path.join(dest, ".steam-arm-placeholder")
+if src:
+    if os.path.lexists(mark):
+        os.remove(mark)
+else:
+    open(mark, "w").close()
 if os.path.isfile(os.path.join(dest, "index.theme")):
     subprocess.run(["gtk-update-icon-cache", "-q", "-f", "-t", dest], stderr=subprocess.DEVNULL)
 ICONPY
   chmod 755 /usr/local/bin/steam-arm-icon
   rm -f /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png
-  if icon_system; then
-    say "     menu icons made from client's own icon"
+  if ! icon_system; then
+    say "     menu icons could not be made; launcher makes them at first start"
+  elif [ -e "$ICON_MARK" ]; then
+    say "     menu icons: plain disc until first start, then redrawn from client's own icon"
   else
-    say "     menu icons: made at first start, once client has downloaded its files"
+    say "     menu icons made from client's own icon"
   fi
 }
 # Game user draws the icons into a root-made folder; root locks it, then copies plain files only.
+ICON_MARK=/usr/local/share/steam-arm/icon-placeholder
 icon_system(){
   local t sz n f ok=1
   t=$(mktemp -d /var/tmp/steam-arm-icon.XXXXXX) || return 1
@@ -7963,6 +8663,8 @@ icon_system(){
     install -D -m 644 -o root -g root "$f" "/usr/share/icons/hicolor/${sz}x$sz/apps/$n.png" || ok=0
   done; done
   [ $ok = 1 ] || rm -f /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png
+  rm -f "$ICON_MARK"
+  if [ $ok = 1 ] && [ -f "$t/.steam-arm-placeholder" ]; then mkdir -p "${ICON_MARK%/*}" && : > "$ICON_MARK"; fi
   [ -f /usr/share/icons/hicolor/index.theme ] && gtk-update-icon-cache -q -f -t /usr/share/icons/hicolor 2>/dev/null
   [ $ok = 1 ]
 }
@@ -7974,10 +8676,11 @@ Type=Application
 Name=Steam ARM
 GenericName=Steam client, native ARM64
 Comment=Native ARM64 Steam client; x86 games run through the client's emulation tool
-Exec=/usr/local/bin/steam-arm
+Exec=/usr/local/bin/steam-arm %U
 Icon=steam-arm
 Terminal=false
 Categories=Game;
+MimeType=x-scheme-handler/steam;
 Keywords=steam;arm;native;big picture;
 StartupNotify=false
 Actions=desktop;bigpicture;
@@ -8013,7 +8716,7 @@ if want_icons; then
   steam_arm_icon
 else
   rm -f /usr/share/icons/hicolor/*/apps/steam-arm.png /usr/share/icons/hicolor/*/apps/steam-arm-desktop.png \
-        /usr/local/bin/steam-arm-icon
+        /usr/local/bin/steam-arm-icon "$ICON_MARK"
   for n in steam-arm steam-arm-desktop; do as_user rm -f "$UHOME"/.local/share/icons/hicolor/*/apps/"$n".png; done
 fi
 
@@ -8040,6 +8743,8 @@ fi
 # Desktop mode entry restarts a Big-Picture-running client into the desktop interface.
 if opt desktop-mode; then dm_entry > /usr/share/applications/steam-arm-desktop.desktop
 else rm -f /usr/share/applications/steam-arm-desktop.desktop; fi
+# steam:// links (MimeType in menu entry) reach launcher once handler cache is rebuilt
+command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q /usr/share/applications 2>/dev/null
 
 # desktop icons, each on its own
 if opt icon-bigpicture; then desk_icon bp_entry "$BP_ICON"; else as_user rm -f "$BP_ICON"; fi
@@ -8244,6 +8949,62 @@ say "     tray helper installed; it appears in the panel when the client starts"
 else
   rm -f /usr/local/bin/steam-arm-tray; as_user rm -f "$UHOME/.config/autostart/steam-arm-tray.desktop"
   pkill -TERM -u "$GAMEUSER" -f /usr/local/bin/steam-arm-tray 2>/dev/null || true
+fi
+
+# kde-input-prompt (opt-in): helper always installed; the launcher applies or reverses it inside the desktop session.
+cat > /usr/local/lib/steam-arm-kde-input <<'KDEIN'
+#!/bin/sh
+# steam-arm-kde-input on|off|status: KDE Plasma (Wayland) pre-authorisation of input emulation by X11 programs,
+# which have no app id; "on" saves the value it replaces, "off" restores it. Runs as the desktop account.
+T=kde-authorized; ID=remote-desktop
+M="$HOME/.config/steam-arm/kde-input-prompt"
+ps_call(){ busctl --user --json=short call org.freedesktop.impl.portal.PermissionStore \
+  /org/freedesktop/impl/portal/PermissionStore org.freedesktop.impl.portal.PermissionStore "$@"; }
+reach(){ command -v busctl >/dev/null 2>&1 && busctl --user introspect org.freedesktop.impl.portal.PermissionStore \
+  /org/freedesktop/impl/portal/PermissionStore >/dev/null 2>&1; }
+# value for programs without app id: yes, no or none
+cur(){ ps_call Lookup ss "$T" "$ID" 2>/dev/null | python3 -c 'import json, sys
+try:
+    d = json.load(sys.stdin)["data"][0]
+except Exception:
+    d = {}
+v = d.get("") if isinstance(d, dict) else None
+print(v[0] if v else "none")'; }
+case "${1:-}" in
+  on)
+    [ -f "$M" ] && exit 0
+    reach || { echo "steam-arm-kde-input: KDE permission store not reachable (no desktop session)" >&2; exit 75; }
+    c=$(cur)
+    mkdir -p "${M%/*}" && printf '%s\n' "$c" > "$M" || exit 1
+    if ! ps_call SetPermission sbssas "$T" true "$ID" "" 1 yes >/dev/null; then
+      rm -f "$M"; echo "steam-arm-kde-input: could not set permission" >&2; exit 1
+    fi
+    echo "KDE input prompt off: X11 programs may send input without asking (value before: $c)";;
+  off)
+    [ -f "$M" ] || exit 0
+    reach || { echo "steam-arm-kde-input: KDE permission store not reachable (no desktop session)" >&2; exit 75; }
+    c=$(head -1 "$M")
+    case "$c" in
+      none) ps_call DeletePermission sss "$T" "$ID" "" >/dev/null 2>&1 || [ "$(cur)" = none ];;
+      yes)  true;;
+      *)    ps_call SetPermission sbssas "$T" true "$ID" "" 1 "$c" >/dev/null;;
+    esac || { echo "steam-arm-kde-input: could not restore permission" >&2; exit 1; }
+    rm -f "$M"; echo "KDE input prompt restored (value: $c)";;
+  status)
+    if reach; then echo "permission for X11 programs: $(cur)"; else echo "permission store not reachable"; fi
+    if [ -f "$M" ]; then echo "set by Steam ARM (value before: $(head -1 "$M"))"; else echo "not set by Steam ARM"; fi;;
+  *) echo "usage: steam-arm-kde-input on|off|status" >&2; exit 2;;
+esac
+KDEIN
+chmod 755 /usr/local/lib/steam-arm-kde-input
+if opt kde-input-prompt; then
+  kde_input on; rc=$?
+  case "$rc" in 0) ;; 75) say "     kde-input-prompt: applies at next start of Steam ARM in KDE Plasma session";;
+    *) warn "kde-input-prompt could not be applied now; Steam ARM tries again at its next start";; esac
+elif [ -f "$UHOME/$KDE_MARK" ]; then
+  kde_input off; rc=$?
+  case "$rc" in 0) ;; 75) say "     kde-input-prompt off: KDE prompt comes back at next start of Steam ARM";;
+    *) warn "kde-input-prompt could not be reversed now; Steam ARM tries again at its next start";; esac
 fi
 
 # Settings menu, and a copy of this installer for it (Update / Repair, Components, Uninstall).
