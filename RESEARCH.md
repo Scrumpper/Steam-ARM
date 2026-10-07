@@ -83,7 +83,7 @@ Line format and keys:
 <appid> key=value key=value ...
   overlay=x86|vulkan|off     Steam overlay mode
   mangohud=on|off            MangoHud HUD
-  godot=gl|vulkan            Godot 4 renderer
+  godot=gl|vulkan            Godot renderer and GL report
   unity=vulkan|gl            Unity renderer
   env=NAME=VALUE             environment; several joined with ;  (env=A=1;B=2)
   args=ARG                   extra game arguments; several joined with ;  (args=-x;-y)
@@ -319,10 +319,10 @@ Status: researched; matches test system.
 
 Panfrost reports GL 3.1 and GLES 3.1 on Valhall (Mali-G610 and siblings) and has no
 geometry shaders <https://docs.mesa3d.org/drivers/panfrost.html>. Engines that ask for GL
-3.3 or 4.x core context fail natively and need Vulkan renderer, Zink (M3) or version
-report (T4, T5).
+3.3 or 4.x core context fail natively and need Vulkan renderer or version report (T4, T5);
+Zink over PanVK reports no higher version on its own (M3).
 
-What to change: engine rules handle Unity and Godot 4. For other GL 3.2/3.3 titles see T2;
+What to change: engine rules handle Unity, Godot 4 and Godot 3. For other GL 3.2/3.3 titles see T2;
 for GL 4.x titles see M3.
 
 #### M2. PanVK Vulkan versions and conformance
@@ -344,12 +344,16 @@ against PanVK on Mali-G610 and is untested on other Mali parts.
 
 Status: researched, untested here.
 
-Zink runs OpenGL on top of PanVK and so reaches GL 4.x, past Panfrost's 3.1. Two posters
-on Armbian community forum (topic 55217, December 2025) ran Tomb Raider (2013) this way on
-Mali-G610, through box64 rather than FEX. Zink stacks two drivers; for titles that need GL
+Zink runs OpenGL on top of PanVK, but does not reach GL 4.x there: Zink needs Vulkan
+`geometryShader` for GL 3.2 and `tessellationShader` for GL 4.0
+<https://docs.mesa3d.org/drivers/zink.html>, and PanVK exposes neither (M5, T8). Two posters on
+Armbian community forum (topic 55217, December 2025) ran Tomb Raider (2013) through Zink on
+Mali-G610, through box64 rather than FEX; their recipe reports GL 4.3 through
+`MESA_GL_VERSION_OVERRIDE`, same version report trick as on Panfrost (T4, T5), so title
+runs only while it avoids missing stages (inferred). Zink stacks two drivers; for titles that need GL
 3.3 or less, native Panfrost is faster.
 
-What to change: per title only. Linux x86 title, one profile line:
+What to change: per title only, version report included. Linux x86 title, one profile line:
 
 ```
 203160 env=MESA_LOADER_DRIVER_OVERRIDE=zink;GALLIUM_DRIVER=zink;LIBGL_KOPPER_DRI2=true;MESA_GL_VERSION_OVERRIDE=4.3
@@ -494,9 +498,9 @@ conformant GL 4.6 and GLES 3.2 <https://asahilinux.org/2024/06/vk13-on-the-m1-in
 <https://asahilinux.org/2024/02/conformant-gl46-on-the-m1/>. Conformance says nothing
 about speed or optional extensions.
 
-What to change: none at install; GPU family detection leaves `vk-spoof` off on `apple-agx`. Handler's Unity and Godot 4 rules target
-Panfrost's GL 3.1; on Asahi `<appid> godot=vulkan` restores Godot's own Vulkan renderer
-(inferred, untested).
+What to change: none at install; GPU family detection leaves `vk-spoof` off on `apple-agx`. Handler's Unity and Godot rules target
+Panfrost's GL 3.1; on Asahi `<appid> godot=vulkan` restores Godot 4's own Vulkan renderer and
+leaves Godot 3 at its own GL request (inferred, untested).
 
 #### AS2. Geometry shaders and tessellation emulated
 
@@ -532,8 +536,9 @@ for workloads that poll for GPU completion
 on 16K kernel setup stops.
 
 What to change: install inside 4K page environment set up by distribution, such as muvm.
-`STEAM_ARM_IGNORE_PAGESIZE=1` skips page size check only for system whose x86 side already
-runs inside such environment.
+`STEAM_ARM_IGNORE_PAGESIZE=1` skips page size check on non-4K host kernel; use it only when
+x86 side runs inside separate 4K page guest that check cannot see. On 16K host without such
+guest, emulation fails.
 
 #### AS5. Community launch options from Asahi scripts
 
@@ -603,17 +608,23 @@ What to change:
 
 Whether Valve's FEX reads AppConfig inside Steam's runtime container is not verified.
 
-### F2. Stellar Blade: `FEX_X87REDUCEDPRECISION=0`
+### F2. PlayStation PC SDK titles: `FEX_X87REDUCEDPRECISION=0`
 
-Status: researched; confirmed by verifiers, single reporter, untested here.
+Status: researched; confirmed by FEX maintainers, untested here.
 
 Stellar Blade (3489700) under ARM64 Proton crashed about 43 s after launch with access
 violation in `VCRUNTIME140.dll` while X87ReducedPrecision was on. Setting it off reached
 gameplay; reporter tested on two ARM64 Proton builds with Adreno 830, Mesa 26.2.2
 <https://github.com/FEX-Emu/FEX/issues/5988>. Schema default is off, so ARM64 Proton's FEX
-setup turns it on (inferred).
+setup turns it on (inferred). FEX maintainers closed issue as class issue: recent titles
+built on PlayStation PC SDK need full x87 precision. Until Dawn, Horizon Zero Dawn
+Remastered and Marvel's Spider-Man 2 continue with full precision; God of War Ragnarök
+still crashes with full precision (FEX #4556 open)
+<https://github.com/FEX-Emu/FEX/issues/4556>,
+<https://wiki.fex-emu.com/index.php/Stellar_Blade%E2%84%A2>.
 
-What to change: launch option:
+What to change: launch option, for Stellar Blade, Until Dawn, Horizon Zero Dawn Remastered
+and Spider-Man 2:
 
 ```
 FEX_X87REDUCEDPRECISION=0 %command%
@@ -647,21 +658,23 @@ Source for F3 and F4 descriptions:
 
 ### F5. Metal Gear Rising: Revengeance: Multiblock and X87 combination
 
-Status: researched, untested.
+Status: researched, fixed upstream, untested here.
 
 32-bit title (235460) crashed at title screen only with Multiblock on and
 X87ReducedPrecision off together; other three combinations worked
-<https://github.com/FEX-Emu/FEX/issues/4486>. Multiblock off costs speed.
+<https://github.com/FEX-Emu/FEX/issues/4486>. Cause was ARM64 branch range in large JIT
+blocks: FEX #4538 hid it, FEX #5024 (recovering from branch encoding failures, November
+2025) fixed it, and issue closed.
 
-What to change: launch option `FEX_MULTIBLOCK=0 %command%` or
-`FEX_X87REDUCEDPRECISION=1 %command%`, not both.
+What to change: current FEX, nothing else. On FEX older than November 2025: launch option
+`FEX_MULTIBLOCK=0 %command%` or `FEX_X87REDUCEDPRECISION=1 %command%`, not both.
 
 ### F6. SMCChecks for self-modifying code
 
 Status: researched, untested.
 
 `SMCChecks` takes `none`, `mtrack` (default) or `full` (checks code before every run,
-slow). Suspected use: titles with their own JIT, such as Mono (see N2).
+slow). Suspected use: titles with their own JIT, such as Mono (see N1).
 
 What to change: per title trial: `<appid> env=FEX_SMCCHECKS=full`.
 
@@ -775,14 +788,19 @@ What to change: none. Counter-Strike 2 (730) is free to install; report result.
 
 ### E5. Godot
 
-Status: Godot 4 rule tested (T5); rest researched.
+Status: Godot 4 rule tested (T5); Godot 3 GL 3.3 report tested as profile in 2.1, automatic
+rule not run on device; rest researched.
 
 Godot 4 has three renderers: Forward+ and Mobile on Vulkan, Compatibility on OpenGL
 <https://docs.godotengine.org/en/4.4/tutorials/rendering/renderers.html>. Project setting
 `renderer/rendering_method="gl_compatibility"` selects Compatibility
 <https://godotengine.org/article/status-of-opengl-renderer/>. Godot's GPU detection can
 fall back to llvmpipe on Panfrost class hardware while other programs use GPU
-<https://github.com/godotengine/godot/issues/50469>. Godot 3 titles: no rule, not tested.
+<https://github.com/godotengine/godot/issues/50469>. Godot 3 titles stop at start on
+Panfrost's GL 3.1 (`GLXBadFBConfig`); handler sets GL 3.3 and GLSL 330 report for them
+(GAMES.md, Godot 3 row). Engine version comes from PCK embedded in executable, else `.pck`
+beside it, in Godot's own pack order. Windows builds under x86 Proton keep Godot defaults;
+A/B run with Windows Godot 4 title not done.
 
 What to change: `<appid> godot=vulkan` or `godot=gl`. Check handler log and frame rate for
 silent software rendering.
@@ -803,15 +821,7 @@ What to change: see F7.
 Titles below have no known fix; settings listed were tried and did not help. Status:
 researched unless marked.
 
-### N1. Thief 2014
-
-Crashes or freezes after about 14000 frames on Adreno 830 under Android front end, not
-Linux Steam. `FEX_TSO=1`, `FEX_MAXVM=48`, DXVK latency and chunk options and `TU_DEBUG`
-did not help <https://github.com/FEX-Emu/FEX/issues/5791>.
-
-What to change: none known.
-
-### N2. `Slay the Spire 2`
+### N1. `Slay the Spire 2`
 
 Native Linux Godot 4 Mono build crashes with access violation during menu asset preload on
 Adreno 740. `FEX_TSOENABLED=1`, with or without `FEX_PARANOIDTSO=1`, did not help;
@@ -820,19 +830,19 @@ self-modifying code tracking and Mono's JIT <https://github.com/FEX-Emu/FEX/issu
 
 What to change: none known; `FEX_SMCCHECKS=full` (F6) is untested guess.
 
-### N3. 32-bit Source engine title, native build (tested)
+### N2. 32-bit Source engine title, native build (tested)
 
 See T3: GL variants, overlay off, MangoHud off and GLX vendor did not help.
 
-### N4. Geometry shader titles on PanVK
+### N3. Geometry shader titles on PanVK
 
 See M5. No setting helps.
 
-### N5. Unreal Engine 4 Direct3D 11 titles on PanVK (tested)
+### N4. Unreal Engine 4 Direct3D 11 titles on PanVK (tested)
 
 See T8. Tessellation spoof crashed X server; raised feature level crashed engine.
 
-### N6. Valheim dedicated server
+### N5. Valheim dedicated server
 
 Unity headless server segfaults every few hours under FEX on Neoverse-N1 server, inside
 FEX syscall passthrough; issue open, low confidence
@@ -840,7 +850,7 @@ FEX syscall passthrough; issue open, low confidence
 
 What to change: none known.
 
-### N7. 32-bit Unreal Engine 3 title under Proton ARM64 (tested)
+### N6. 32-bit Unreal Engine 3 title under Proton ARM64 (tested)
 
 See T11. PhysX install step skipped; title stops 5 seconds in with engine assertion.
 `FEX_X87REDUCEDPRECISION=0` did not help.
@@ -866,7 +876,7 @@ Do not try these. Each failed verification or conflicts with test results.
   <https://wiki.fex-emu.com/index.php/Config>. Nearest options are `TSOEnabled` and
   `SMCChecks`.
 - **Multiblock off as documented stutter fix.** Refuted 0-3; FEX schema does not say that.
-  Multiblock off costs speed (F5 is title-specific crash, not stutter).
+  Multiblock off costs speed (F5 was title-specific crash, not stutter, fixed upstream).
 - **Portal 2 native build crash under FEX and Proton as its workaround.** Both refuted 0-3
   <https://github.com/FEX-Emu/FEX/issues/3807>.
 - **`PAN_MESA_DEBUG=gofaster`.** Belongs to old panfork fork; mainline Mesa flag table has

@@ -3,13 +3,13 @@
 Routes for running Steam on ARM64 hardware, side by side. Updated as routes change and as
 reports come in.
 
-**Last updated:** 2026-10-01
+**Last updated:** 2026-10-05
 
 Legend: ✅ yes  ⚠️ partly, or with conditions  ❌ no  ❓ not publicly verified
 
 | Route                      | Client itself is native ARM | Installs onto your system | Mali and PanVK                      | Adreno                                                          | Apple GPU                              | Remote Play handled             |
 |----------------------------|-----------------------------|---------------------------|-------------------------------------|-----------------------------------------------------------------|----------------------------------------|---------------------------------|
-| **This package**           | ✅                          | ✅ host, no sandbox       | ✅ test device: RK3588 board        | ⚠️ community report: Radxa Dragon Q6A (QCS6490), `vk-spoof` off | ⚠️ untested, needs 4K page environment | ✅ decode pinned once signed in |
+| **This package**           | ✅                          | ✅ host, no sandbox       | ✅ test device: RK3588 board        | ⚠️ community report: Radxa Dragon Q6A (QCS6490), `vk-spoof` off | ❌ 16K pages; `muvm` not set up        | ✅ decode pinned once signed in |
 | Canonical arm64 Steam snap | ❌ x86 client under FEX     | ⚠️ snap confinement       | ❌ open issue #471 since 2026-01-10 | ⚠️ other driver loading bugs open                               | ❓                                     | ❓                              |
 | Box86 and Box64            | ❌ x86 client under Box64   | ✅ host                   | ✅ long standing SBC route          | ✅                                                              | ❓                                     | ❓                              |
 | steamclienttermux, Android | ✅                          | ⚠️ Termux and PRoot       | ❌ Adreno only                      | ✅ Turnip                                                       | ❌                                     | ❓                              |

@@ -1,13 +1,13 @@
 #!/bin/sh
 set -e
 
-# Package removal leaves the installed client alone; say how to remove it.
+# Package removal leaves Steam ARM (package or script install) in place; say how to remove it.
 case "$1" in
     remove|purge)
         if [ -f /etc/steam-arm/steam-arm.conf ]; then
             echo ""
-            echo "steam-arm-setup: the Steam client it installed stays on this system."
-            echo "To remove that too (installed games are kept unless you ask), run:"
+            echo "steam-arm-setup: Steam ARM client and its files stay on this system."
+            echo "To remove Steam ARM too (installed games are kept unless you ask), run:"
             if [ -f /usr/local/share/steam-arm/steam-arm-install.sh ]; then
                 echo "  sudo bash /usr/local/share/steam-arm/steam-arm-install.sh --remove"
             else

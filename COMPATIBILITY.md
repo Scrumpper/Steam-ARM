@@ -6,11 +6,14 @@ Confirmed by inspection of installer:
 
 - ARM64 system.
 - Debian or Ubuntu family distribution, since installer uses `apt`.
+- Ubuntu 25.10 or newer, Debian 13 or newer, or distribution built on them: Ubuntu 24.04
+  and Debian 12 lack SDL3 packages client needs. Setup checks host packages with
+  `apt-cache policy` before any package or package source change.
 - Mesa graphics stack.
 
-FEX, emulation tool used for x86 game code, installs from Ubuntu PPA `ppa:fex-emu/fex`. Ubuntu family distribution is tested path for that step.
+FEX, emulation tool used for x86 game code, installs from FEX's Ubuntu PPA `ppa:fex-emu/fex`. Ubuntu family distribution is tested path for that step. On Debian 13 and Raspberry Pi OS built on it, setup adds same PPA as plain apt source with its Ubuntu 24.04 build (see Debian systems).
 
-Installer has no hardcoded GPU render node and no hardcoded card index. GPU family detection reads every render node and sets component defaults per family (see GPU families). Page size check names fix for Raspberry Pi and Apple Silicon.
+Installer has no hardcoded GPU render node and no hardcoded card index. GPU family detection reads every render node and sets component defaults per family (see GPU families). Page size check names fix for Raspberry Pi; on Apple Silicon it stops (16K page kernel not supported).
 
 Vulkan driver is needed for Windows titles; GPUs without one run native OpenGL titles.
 
@@ -40,7 +43,7 @@ Output on test device, RK3588 board with Mali-G610 GPU (family `mali-csf-v10`):
 | `panthor`       | loaded                                       | not loaded: image uses vendor blob or older kernel; untested here     |
 | OpenGL renderer | `Mali-G610 MC4 (Panfrost)`, Mesa 26.1.4      | `llvmpipe`: no GPU acceleration; titles run on CPU or not at all      |
 | Vulkan driver   | `panvk`, device `Mali-G610 MC4`, Mesa 26.1.4 | no Vulkan device: titles built for Linux only, no Windows titles      |
-| Distribution    | `ubuntu`, `resolute`                         | `debian`: emulation tool needs another source first, see below        |
+| Distribution    | `ubuntu`, `resolute`                         | `debian`, `trixie`: PPA added as apt source; older Debian, see below  |
 | Page size       | `4096`                                       | `16384` or `65536`: setup stops and names fix, see Raspberry Pi below |
 
 Mesa on tested device comes from `kisak-mesa` PPA. Older Mesa releases carry earlier
@@ -65,8 +68,9 @@ device. On Armbian, three choices at download time decide result:
 - **Kernel branch.** `current` and `edge` branches are mainline kernels, and mainline has
   carried Panthor since Linux 6.10. `vendor` branch is Rockchip's 6.1 kernel; whether it
   has Panthor depends on build, so check with `lsmod` above.
-- **Userland.** Ubuntu based images fit installer's tested path. Debian based images need
-  emulation tool from source other than Ubuntu PPA.
+- **Userland.** Ubuntu based images fit installer's tested path. Debian 13 (trixie) based
+  images get FEX PPA as plain apt source (see Debian systems); Debian 12 based images lack
+  SDL3 packages client needs, and setup stops there before any change.
 - **Mesa.** Image's stock Mesa may predate PanVK support in use here; `vulkaninfo` check
   above shows it.
 
@@ -83,8 +87,10 @@ GPU detection.
 | Family                                                | GPU                             | `vk-spoof` | `gpu-in-emulation` | `glx-lax` | Status   | Note                                                                                            |
 |-------------------------------------------------------|---------------------------------|------------|--------------------|-----------|----------|-------------------------------------------------------------------------------------------------|
 | `mali-csf-v10`                                        | Mali-G610, G310 (Panthor)       | on         | on                 | on        | tested   | test device (RK3588)                                                                            |
-| `mali-csf-5thgen`                                     | Mali-G720, G725 class (Panthor) | on         | on                 | on        | untested |                                                                                                 |
-| `mali-csf`                                            | other Panthor Malis, Mali-G1    | off        | off                | on        | untested | Mesa does not support model yet; titles run through forwarding                                  |
+| `mali-csf-v11`                                        | Mali-G615, G715 (Panthor)       | off        | on                 | on        | untested | PanVK loads only with `PAN_I_WANT_A_BROKEN_VULKAN_DRIVER=1`                                     |
+| `mali-csf-5thgen`                                     | Mali-G720, G725 class (Panthor) | off        | on                 | on        | untested | PanVK loads only with `PAN_I_WANT_A_BROKEN_VULKAN_DRIVER=1`                                     |
+| `mali-csf-g1`                                         | Mali-G1 (Panthor)               | off        | off                | on        | untested | needs Mesa 26.2 or newer; published driver archive (Mesa 26.1.8) does not cover it              |
+| `mali-csf`                                            | other Panthor Malis             | off        | off                | on        | untested | Mali model not in this table; titles run through forwarding                                     |
 | `mali-valhall-jm`                                     | Mali-G57, G77, G78 (Panfrost)   | off        | on                 | on        | untested | no default Vulkan driver: native OpenGL titles; Windows titles unlikely                         |
 | `mali-bifrost`                                        | Mali-G31, G52, G76 (Panfrost)   | off        | on                 | on        | untested | same as above                                                                                   |
 | `mali-midgard`                                        | Mali-T600 to T880 (Panfrost)    | off        | on                 | on        | untested | same as above                                                                                   |
@@ -94,7 +100,7 @@ GPU detection.
 | `adreno-a8xx`, `adreno-a7xx`, `adreno-a6xx`, `adreno` | Adreno 6xx to 8xx (msm)         | off        | off                | on        | untested | Windows titles through DXVK expected to work; x86 Adreno drivers for 32-bit titles not included |
 | `adreno-a702`                                         | Adreno 702                      | off        | off                | on        | untested | Vulkan too limited for most Windows titles                                                      |
 | `adreno-legacy`                                       | Adreno 5xx and older            | off        | off                | on        | untested | no Vulkan driver; native OpenGL titles only                                                     |
-| `apple-agx`                                           | Apple GPU (Asahi)               | off        | off                | on        | untested | runs inside `muvm` on 16K page hosts                                                            |
+| `apple-agx`                                           | Apple GPU (Asahi)               | off        | off                | on        | untested | not supported on 16K page kernel; setup does not set up `muvm`                                  |
 | `broadcom-v3d71`, `broadcom-v3d42`                    | Raspberry Pi 5, 4               | off        | off                | on        | untested | Vulkan too limited for most Windows titles; Pi 4: client does not start (no LSE)                |
 | `broadcom-vc4`                                        | Raspberry Pi 0 to 3             | off        | off                | on        | untested | not supported                                                                                   |
 | `vivante`                                             | Vivante (etnaviv)               | off        | off                | on        | untested | no Vulkan driver; most titles do not run                                                        |
@@ -108,17 +114,17 @@ GPU detection.
 | `none`                                                | no GPU driver                   | off        | off                | on        | untested | warning: software rendering only                                                                |
 | `unknown`                                             | driver not in this list         | off        | off                | on        | untested | safe defaults                                                                                   |
 
-Mali drivers route in launch handler applies to Mali families only; 32-bit Vulkan titles
-switch to it on `mali-csf-v10` and `mali-csf-5thgen` only, since PanVK loads by default
-only there. On other families those titles lose `-vulkan` unless profile says
-`vk32=keep`.
+Mali drivers route in launch handler applies to Mali families only, `mali-csf-g1`
+excluded; 32-bit Vulkan titles switch to it on `mali-csf-v10` only, since PanVK loads by
+default only there <https://docs.mesa3d.org/drivers/panfrost.html>. On other families
+those titles lose `-vulkan` unless profile says `vk32=keep`.
 
 ## Component scope
 
 | Component                                                 | Scope         | Note                                                                                                       |
 |-----------------------------------------------------------|---------------|------------------------------------------------------------------------------------------------------------|
 | `glx-lax`                                                 | Mesa specific | Addresses Mesa client library limit with titles that bind one OpenGL context from several threads.         |
-| `vk-spoof`                                                | Mali specific | Written for PanVK Vulkan driver on Mali; on by default on Mali-G610 class and Mali 5th gen only.           |
+| `vk-spoof`                                                | Mali specific | Written for PanVK Vulkan driver on Mali; on by default on Mali-G610 class only.                            |
 | `gpu-in-emulation`                                        | Mali specific | Published archive: Panfrost and PanVK only; on by default on Mali GPUs. Custom archive: route set by hand. |
 | `shader-cache`                                            | Generic       | Off by default. Steam's shader pre-caching; in-game videos of Windows titles; several GB of download.      |
 | `physx-skip`                                              | Generic       | On by default. Marks PhysX install step of Windows titles done; off removes no files.                      |
@@ -126,7 +132,7 @@ only there. On other families those titles lose `-vulkan` unless profile says
 | `xpad-dedup`                                              | Generic       | Applies to any system where kernel exposes duplicate joystick node for pad.                                |
 | `pad-hidraw`                                              | Generic       | Valve's `steam-devices` rules plus pads from kernel `xpad` list; any udev system.                          |
 | `pad-xbox`                                                | Generic       | Applies to any XInput pad from maker other than Microsoft.                                                 |
-| `desktop`                                                 | Generic       | Application menu entry and window rule; no hardware dependency.                                            |
+| `desktop`                                                 | Generic       | Application menu entry and window rule (KDE Plasma 6 or 5); no hardware dependency.                        |
 | `desktop-mode`, `icon-bigpicture`, `icon-desktop`, `tray` | Generic       | Menu entry, desktop icons and tray icon; no hardware dependency.                                           |
 | `page-size`                                               | Raspberry Pi  | Selects 4K page kernel in firmware `config.txt`; listed only on Pi 5 class or Pi without 4K pages.         |
 | `kde-input-prompt`                                        | KDE Plasma    | Off by default. Pre-authorises input from X11 programs on Plasma Wayland; any X11 program may send input.  |
@@ -170,11 +176,21 @@ fail.
 
 - Other RK3588 boards with Mali-G610 GPU (for example Rock 5B, Orange Pi 5, NanoPi, and other Radxa boards): same GPU family as test device.
 - Boards with different SoC or GPU; defaults per family in GPU families.
-- Debian family distributions outside Ubuntu family.
+- Debian family distributions outside Ubuntu family: FEX source step tested in Debian 13
+  containers only (Debian 12 stops at host package check).
 
-## Non-Ubuntu Debian systems
+## Debian systems
 
-Installer installs FEX from Ubuntu PPA `ppa:fex-emu/fex`. On Debian system without access to that PPA, FEX needs to come from another source before emulation component can be set up; installer does not provide alternative source.
+`add-apt-repository` maps PPA to Debian release name, which PPA does not publish, so on systems outside Ubuntu family setup writes PPA as apt source `/etc/apt/sources.list.d/steam-arm-fex.sources` (deb822, `Architectures: arm64`). Ubuntu series follows Debian release: FEX build must need C library no newer than host's and Qt 5 package names Debian release uses.
+
+| Debian release              | glibc | PPA series (FEX build needs)     | Result                                                             |
+|-----------------------------|-------|----------------------------------|--------------------------------------------------------------------|
+| 13 trixie (Raspberry Pi OS) | 2.41  | noble, Ubuntu 24.04 (glibc 2.38) | FEX and every host package resolve for arm64 (container test)      |
+| 12 bookworm                 | 2.36  | jammy, Ubuntu 22.04 (glibc 2.34) | setup stops before any change: no `libsdl3-0`, `libgtk2.0-0t64`    |
+| testing, unstable           | 2.41+ | noble                            | untested                                                           |
+| 11 bullseye and older       | 2.31  | none                             | setup stops before any change: no SDL3 packages; upgrade to 13     |
+
+Signing key comes from `keyserver.ubuntu.com` by fingerprint `EDB98BFE8A2310DC9C4A376E76DBFEBEA206F5AC` (Launchpad's `signing_key_fingerprint` for `~fex-emu/+archive/ubuntu/fex`); setup checks that download holds this one key only, then writes `/etc/apt/keyrings/steam-arm-fex.gpg`. Existing FEX source is kept; one naming Debian release (left by `add-apt-repository` on Debian) is renamed to `.disabled`, since apt cannot update it. With `FEX` command already present, setup adds no source. To build FEX instead: FEX's `InstallFEX.py` or build guide, <https://github.com/FEX-Emu/FEX>. FEX from another source (`FEX` command not owned by `fex-emu` package) needs its x86 binfmt entries registered; setup then installs no FEX packages and reads thunk folders from FEX's own prefix, `/usr` or `/usr/local` (see `README.md`, Requirements). Tested with stubs only.
 
 ## Non-Mali GPUs
 
@@ -197,8 +213,9 @@ Two properties decide whether this works on system, and neither is about board:
    OpenGL, and cannot run Windows titles.
 2. **4K page size for emulation half.** Code built for x86 assumes 4K pages. Most
    ARM64 Linux systems use 4K, but two common ones do not. Apple Silicon runs 16K pages and
-   needs x86 side inside environment that provides 4K pages. Raspberry Pi 5 also
-   defaults to 16K, and switches with one line of firmware configuration, described below.
+   needs x86 side inside environment that provides 4K pages, which this package does not set
+   up. Raspberry Pi 5 also defaults to 16K, and switches with one line of firmware
+   configuration, described below.
 
 What changes per graphics driver:
 
@@ -210,8 +227,8 @@ What changes per graphics driver:
 
 Distribution matters as much as hardware: installer uses apt throughout, and
 emulation tool comes from Ubuntu PPA, so Ubuntu family system is path that has been
-exercised. Debian system needs that tool from another source first. Distribution outside
-Debian family needs package steps rewritten.
+exercised. Debian 13 gets that PPA as plain apt source (see Debian systems). Distribution
+outside Debian family needs package steps rewritten.
 
 Everything in this section is reasoning from requirements, not result.
 
@@ -231,9 +248,6 @@ RK3588 boards running same stack are expected to work.
 **Raspberry Pi 5.** Vulkan 1.3 through V3DV, but firmware loads 16K page kernel by
 default and emulation layer needs 4K. Add `kernel=kernel8.img` to `config.txt`, described
 below.
-
-**Apple Silicon under Asahi.** Honeykrisp is functional at Vulkan 1.3, and system runs 16K
-pages, so emulation half has to run inside guest that provides 4K pages.
 
 ### Titles built for Linux, but not Windows titles
 
@@ -273,6 +287,12 @@ is no display stack to speak of.
 **Android through terminal emulator.** Whatever GPU can do, that environment has no
 system service manager, which several components require.
 
+**Apple Silicon under Asahi.** Honeykrisp is functional at Vulkan 1.3, but kernel runs 16K
+pages and setup stops. Emulation half needs 4K page guest such as `muvm`, which this package
+does not set up. `STEAM_ARM_IGNORE_PAGESIZE=1` skips check on non-4K host kernel; use it only
+when x86 side runs inside separate 4K page guest that check cannot see. On 16K host without
+such guest, emulation fails. Untested.
+
 **Hardware with no 64-bit ARM support**, which is excluded by architecture itself.
 
 **Armv8.0 CPUs without LSE atomics** (Cortex-A53, A57, A72): Raspberry Pi 4 and 3, Odroid
@@ -298,8 +318,9 @@ not reasonable expectation there.
 
 **Page size, where it is not 4K.** Raspberry Pi 5 and Apple Silicon both default to 16K.
 Pi is one line firmware change, which `page-size` component makes. Apple Silicon needs
-emulation inside guest that provides 4K pages. Setup checks page size first and stops
-with fix for that system rather than installing something that cannot run. On ARM workstations default has moved between releases of same
+emulation inside guest that provides 4K pages, which this package does not set up.
+Setup checks page size first and stops with fix for that system rather than installing
+something that cannot run. On ARM workstations default has moved between releases of same
 distribution, so it is worth checking rather than assuming.
 
 **Whether system has service manager and device manager at all.** Terminal emulator
@@ -329,10 +350,11 @@ block, keeps `config.txt.steam-arm.bak`, and stops so system can reboot; second 
 `kernel=` or when `kernel8.img` is missing. Deselecting `page-size` removes block again. 16K kernel is there for performance, so change costs a
 few percent on other workloads.
 
-**Distribution.** Raspberry Pi OS is Debian based, and emulation tool used here comes from
-Ubuntu PPA, so that step does not apply as written. Ubuntu for Raspberry Pi fits path
-this installer uses; on Raspberry Pi OS emulation tool has to come from another source
-first.
+**Distribution.** Raspberry Pi OS is Debian based (`ID=debian` in `/etc/os-release`). On
+Raspberry Pi OS built on Debian 13 (trixie), setup adds FEX PPA as apt source with its
+Ubuntu 24.04 build (see Debian systems). Raspberry Pi OS built on Debian 12 (bookworm)
+lacks SDL3 packages client needs; host package check stops setup there before any change. Ubuntu for Raspberry
+Pi fits installer's tested path.
 
 **Graphics.** Mesa drives Pi GPU with V3D (OpenGL) and V3DV (Vulkan); V3DV is Vulkan 1.3
 conformant on Pi 4 and Pi 5 since Mesa 24.3
