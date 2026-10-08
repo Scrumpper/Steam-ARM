@@ -611,11 +611,14 @@ S=/work/stage
 L=$S/usr/lib/$T-linux-gnu
 FAIL=0
 check(){ local name=$1; shift; if "$@"; then echo "PASS $name"; else echo "FAIL $name"; FAIL=1; fi; }
-missing=0
+missing=0 seen=0
 while IFS= read -r f; do
+  seen=$((seen + 1))
   out=$(LD_LIBRARY_PATH=$L ldd "$f" 2>&1)
   if grep -q "not found" <<<"$out"; then echo "unresolved in $f:"; grep "not found" <<<"$out"; missing=1; fi
 done < <(find "$L" -type f -name "*.so*")
+# no library read (file list unreadable) counts as failure, not as pass
+check "$T: libraries found to check ($seen)" test "$seen" -gt 0
 check "$T: all NEEDED libraries resolve" test $missing = 0
 echo "$T: libraries the drivers load from the RootFS:"
 find "$L" -type f -name "*.so*" -exec readelf -d {} + 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort -u |
@@ -678,6 +681,8 @@ inroot(){
     R=$1; W=$2; H=$3; shift 3
     for d in null zero random urandom tty full; do [ -e $R/dev/$d ] || touch $R/dev/$d; mount --bind /dev/$d $R/dev/$d; done
     mount -t proc proc $R/proc
+    # process substitution in the inner scripts needs /dev/fd
+    [ -e $R/dev/fd ] || ln -s /proc/self/fd $R/dev/fd
     touch $R/etc/resolv.conf; mount --bind /etc/resolv.conf $R/etc/resolv.conf
     mount -t tmpfs tmpfs $R/tmp
     mkdir -p $R/work $R/recipe

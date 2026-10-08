@@ -347,7 +347,7 @@ Status: researched, untested here.
 Zink runs OpenGL on top of PanVK, but does not reach GL 4.x there: Zink needs Vulkan
 `geometryShader` for GL 3.2 and `tessellationShader` for GL 4.0
 <https://docs.mesa3d.org/drivers/zink.html>, and PanVK exposes neither (M5, T8). Two posters on
-Armbian community forum (topic 55217, December 2025) ran Tomb Raider (2013) through Zink on
+Armbian community forum (topic 55217, December 2025) ran Feral GL 4 port through Zink on
 Mali-G610, through box64 rather than FEX; their recipe reports GL 4.3 through
 `MESA_GL_VERSION_OVERRIDE`, same version report trick as on Panfrost (T4, T5), so title
 runs only while it avoids missing stages (inferred). Zink stacks two drivers; for titles that need GL
@@ -391,7 +391,7 @@ Re-test `glx-lax` and `vk-spoof` titles after any Mesa change.
 Status: researched, untested here.
 
 DXVK maps Direct3D geometry shader stages to Vulkan geometry shaders, which PanVK lacks.
-Dragon Quest XI S failed for this reason in Armbian community forum topic 55217; forum
+UE4 title failed for this reason in Armbian community forum topic 55217; forum
 thread tracks it as open Mesa merge request 38401. With `vk-spoof`, feature is reported
 present and removed at device creation, so such title gets device and then misrenders,
 crashes or hangs instead of refusing to start.
@@ -507,8 +507,8 @@ leaves Godot 3 at its own GL request (inferred, untested).
 Status: researched, untested.
 
 Apple GPUs have no hardware geometry shaders, tessellation or transform feedback; Asahi
-emulates all three with compute shaders, at speed cost. Titles shown running: Witcher 3,
-Ghostrunner, Control, Cyberpunk 2077, Fallout 4, Hollow Knight, Portal 2. Newer AAA titles
+emulates all three with compute shaders, at speed cost. Titles shown running: Direct3D 11
+and Direct3D 12 AAA titles, Unity 2D title, Source engine title. Newer AAA titles
 did not reach 60 fps <https://asahilinux.org/2024/10/aaa-gaming-on-asahi-linux/>.
 
 What to change: none.
@@ -764,8 +764,8 @@ opt-in `-vulkan` through DXVK Native. Reported problems with it on desktop GPUs:
 set to 24 Hz, worked around with `-freq 120` or `-freq 144`
 <https://github.com/ValveSoftware/Source-1-Games/issues/7778>; crash on start with Mesa
 25.3.1 <https://github.com/ValveSoftware/Source-1-Games/issues/7783>; props that vanish in
-Left 4 Dead 2. FEX wiki reports Portal's native build crashing on level load unless run
-with Vulkan <https://wiki.fex-emu.com/index.php/Portal>.
+another Source title. FEX wiki reports native build of one Source title crashing on level
+load unless run with Vulkan <https://wiki.fex-emu.com/index.php/Portal>.
 
 What to change:
 
@@ -778,13 +778,13 @@ What to change:
 
 Status: researched, untested.
 
-Source 2 is Vulkan only, with no OpenGL fallback. Counter-Strike 2 lists AMD GCN or NVIDIA
+Source 2 is Vulkan only, with no OpenGL fallback. Source 2 shooter lists AMD GCN or NVIDIA
 Kepler as floor <https://www.phoronix.com/news/Counter-Strike-2-Linux> and reports Vulkan
 1.2 errors on weaker drivers
 <https://github.com/ValveSoftware/csgo-osx-linux/issues/3772>. No report was found of
 Source 2 running on Mali or other mobile Vulkan driver.
 
-What to change: none. Counter-Strike 2 (730) is free to install; report result.
+What to change: none.
 
 ### E5. Godot
 
@@ -842,7 +842,7 @@ See M5. No setting helps.
 
 See T8. Tessellation spoof crashed X server; raised feature level crashed engine.
 
-### N5. Valheim dedicated server
+### N5. Unity dedicated server
 
 Unity headless server segfaults every few hours under FEX on Neoverse-N1 server, inside
 FEX syscall passthrough; issue open, low confidence
@@ -877,7 +877,7 @@ Do not try these. Each failed verification or conflicts with test results.
   `SMCChecks`.
 - **Multiblock off as documented stutter fix.** Refuted 0-3; FEX schema does not say that.
   Multiblock off costs speed (F5 was title-specific crash, not stutter, fixed upstream).
-- **Portal 2 native build crash under FEX and Proton as its workaround.** Both refuted 0-3
+- **Source engine native build crash under FEX and Proton as its workaround.** Both refuted 0-3
   <https://github.com/FEX-Emu/FEX/issues/3807>.
 - **`PAN_MESA_DEBUG=gofaster`.** Belongs to old panfork fork; mainline Mesa flag table has
   no such flag.
@@ -895,9 +895,9 @@ Do not try these. Each failed verification or conflicts with test results.
 - **Turnip needing driver-side handling for Execute Indirect Tier 1.1 misuse.** Refuted
   0-3.
 - **DXVK and vkd3d-proton not yet running on Honeykrisp in June 2024.** Refuted 1-2.
-- **Counter-Strike 2 dedicated server segfault under FEX on Neoverse-N1.** Refuted 1-2
+- **Source 2 dedicated server segfault under FEX on Neoverse-N1.** Refuted 1-2
   <https://github.com/FEX-Emu/FEX/issues/4568>.
-- **Unity `A Short Hike` freezing under box64 on Mali-G52 class hardware.** Refuted 1-2
+- **Unity title freezing under box64 on Mali-G52 class hardware.** Refuted 1-2
   <https://github.com/ptitSeb/box64/issues/1252>.
 
 ---

@@ -4,6 +4,77 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.3] - 2026-10-07
+
+### Highlights
+
+- x86 client on Armv8.0 CPUs without LSE atomics: setup installs Valve's x86 client and runs it through system FEX in place of stopping; native client returns once Valve's build runs on CPU again.
+- Driver archive source for `gpu-in-emulation` picked in settings menu: download, local copy of published archive, or custom archive.
+- FEX code cache per title (`diskcache=on`), off by default; Maintenance, Caches lists and clears it.
+- 32-bit Source engine titles start through Windows build (Proton ARM64) automatically on `mali-csf-v10` with Valve FEX tool up to 2609 and `vk-spoof` chosen.
+- Optional GE-Proton (ARM64) install from settings menu Maintenance; nothing downloads until picked.
+
+### Added
+
+- x86 client on Armv8.0 CPUs without LSE atomics (Cortex-A53, A57, A72, A73): setup installs Valve's x86 client and runs it through system FEX, in place of stopping ([steam-for-linux #13288](https://github.com/ValveSoftware/steam-for-linux/issues/13288)). Warning names cores and costs (slower start, client window drawn on CPU, x86 Proton for Windows titles). Same launcher, launch handler (through Valve's launch wrapper, forwarding route only), tray, settings menu and removal. Memory check: stop below 2 GB, warning below 4 GB. Package tools (`apt`, `apt-get`, `dpkg`, `pkexec`, `sudo`, `steamdeps`) refused for programs client starts, since emulated writes reach host system. Untested on Armv8.0 hardware.
+- Native client check on x86 client: each setup run scans newest native client package (once per build) for Armv8.1 atomic instructions and, on Armv8.0 CPU, starts its client once; clean result moves back to native client in same run. `--client-check` checks only.
+- `--client=auto|arm64|x86` and settings menu Maintenance, Client type: client type by hand, kept for later runs (`CLIENT`, `CLIENT_SET`, `CLIENT_PROBE` in settings file; machine state, not restored from backups). Information rows `Client type` and `CPU`, tray entry and title, hardware report block, `--detect` lines `cpu:` and `client:` name client type.
+- Settings menu: Components opens Parts (checklist) and Driver archive. Driver archive picks source of `gpu-in-emulation` drivers: Download (default), Local copy of published archive (SHA-256 checked against published archive, path saved as `PROVIDER_LOCAL_FILE`) or Custom archive (SHA-256 from `.sha256` file beside archive, else typed). Information status row `Driver archive` names source. Command line: `steam-arm-config driver-archive status|download|local FILE|custom FILE SHA256`.
+- Setup uses published driver archive placed beside `steam-arm-install.sh` when its SHA-256 matches, in place of download, and saves its path; path from `STEAM_ARM_PROVIDER_TARBALL` is saved too. Saved file gone or changed: setup downloads published copy with note. `--detect` prints `driver archive:` line (file name, SHA-256).
+- Profile key `diskcache=on|off`: FEX code cache per title, Valve FEX tool FEX-2609.1 or newer; off unless set. Titles with own JIT compiler cache file-backed code only. Cache of title deleted once after FEX tool or game build change. Settings menu Games: FEX code cache row.
+- Maintenance, Caches, and `steam-arm-config cache [list|clear all|<appid>]`: FEX code cache sizes, clear all or one game; Steam shader cache size shown, never cleared there. Hardware report line counts titles with code cache on.
+- Settings menu Graphics, Automatic Windows build, and `steam-arm-config auto-build [on|off]`: state, rules and titles set; `AUTO_BUILD` key, carried in settings backup. Route per game shows titles set automatically and suggestions.
+- Steam Deck category of title (hint) in settings menu Games header, from client's appinfo cache; Rules page adds Steam Deck runtime.
+- CPU drawing notice, off by default: settings menu Graphics, CPU drawing notice, and `steam-arm-config cpu-notice [on|off]`; `CPU_NOTICE` key, carried in settings backup. With it on, x86 title drawn on CPU (renderer check) raises desktop notice that stays until closed; GoldSrc titles excluded. Game lists of settings menu mark titles drawn on CPU at last start with `CPU!`.
+- `--detect` prints which features `vk-spoof` reports Vulkan driver has itself (`vulkan features native:`, `vulkan features missing:`); Information row `Vulkan gaps`.
+- Settings menu Maintenance, GE-Proton (ARM64), and `steam-arm-config ge-proton [status|check|install|remove]`: optional install of newest GE-Proton ARM64 build, or of downloaded file with its `.sha512sum` (sha512 check, archive members checked, unpacked as game account); per-game pick in Graphics, Route per game (`ge`) and `steam-arm-config compat <appid> ge`; removal per version and on uninstall; hand-installed copies left unchanged. Off until installed; nothing downloads otherwise.
+
+### Changed
+
+- Armv8.0 CPUs no longer stop setup, Install / Setup screen or launcher: x86 client takes their place. `STEAM_ARM_ALLOW_ARMV80=1` now keeps native client (same as `--client=arm64`); launcher stops native client chosen automatically on Armv8.0 CPU (install from 2.2 or older) with hint to run Update / Repair.
+- Tray icon drawn with dark outline (copy in runtime folder), readable on light panels.
+- Settings menu game lists: name column 36 characters, setting column 24.
+- GE-Proton tools show as `Windows build (GE-Proton<version>)` without `-aarch64` suffix (game lists: `Windows, GE-Proton<version>`). Restore lists GE-Proton builds not installed with install hint.
+- `--provider-default` also clears saved local driver archive path. Driver download failure message names settings menu path (Components, Driver archive, Local copy) and file beside installer.
+
+### Fixed
+
+- 32-bit Source engine titles start through Windows build (Proton ARM64) without manual route choice on `mali-csf-v10` with Valve FEX tool up to 2609 and `vk-spoof` chosen: launcher sets it once per title when no build is chosen; title started before that skips one start with notice. Launch option `STEAM_ARM_AUTO_BUILD=0` starts Linux build once; Graphics > Route per game > Force Linux build keeps it.
+- Windows build route uses tool name `proton_11-arm64`, as Steam lists it in Compatibility (`proton-stable-arm64` ran but showed blank there); earlier mappings stay valid.
+- Automatic Windows build: title set by rule disappeared from lists once Steam swapped in Windows files, so Route per game, Automatic never dropped its record; record now decides. Shared-content manifests (`LastOwner` 0) no longer count as titles (notice counted one game twice) and no longer show in settings menu Games and Route per game.
+- Renderer check gave CPU verdict and notice for start that hung before game ran (FEX loader process); no CPU verdict for such process. Wine helper processes (`explorer.exe`, `services.exe`, `wineserver` and others) no longer named as title in verdict.
+- `--client-check` on Armv8.1 CPU reported "still needs Armv8.1"; Armv8.1 CPU runs any build (manifest read only). Result recorded as `CLIENT_PROBE`, so Client type screen shows last check.
+- x86 client: `-shutdown` through emulation takes over 20 s; launcher waits 45 s before SIGTERM.
+- Native client ended by signal (abort inside client) left no line in `steam-arm.log`; logged now, as for x86 client.
+- x86 client: first start skipped file check when native package had left `ubuntu12_64/steamwebhelper`; marker `x86-verified` now decides. Private host libX11 copy makes X errors (`GLXBadFBConfig`) non-fatal for client. Client exit during first start logged with notice.
+- Switch from x86 client back to native client left x86 builds of shared client files (Compatibility page failed); package records dropped, native client checks and downloads its files at next start. Client home records its client type (`.config/steam-arm/client-type`): setup moved from x86 test account back to native account no longer drops package records of native folder x86 client never used.
+- Removal after switch back left `steam-launch-wrapper.real` copy; removed now.
+- Setup summary and Notes line named missing Armv8.1 atomics for x86 client chosen by hand.
+- Settings menu: CPU and Driver archive rows wrap with indent; dialog lists keep columns (`--no-collapse`); whiptail list height follows entry count, so summary lines above lists stay visible; Install wizard hardware screen keeps earlier choice after Back; download gauge shows download percent; dialog and whiptail text boxes use terminal height (System on 30-row terminal without scrolling).
+- Hardware report and `cache` from other account: cache sizes unknown (no read access) in place of 0; `cache` asks for administrator rights with reason.
+- GE-Proton remove: message names Steam's choice (Linux build where game has one) in place of default Proton alone.
+- GE-Proton: interrupted release list or checksum download reported with curl status and retry hint (was `GitHub answer not understood.`); lock file `.steam-arm-ge.lock` removed after every action; failed screen puts log path on own line.
+- Setup prints `local copy of driver archive` line for file named in environment (settings menu Local copy too), also when Mali tree is already built from that archive.
+- Setup restarts running tray of game account, so new tray version runs without new login; restarted tray holds no file of setup run open (setup lock stays free for later runs; settings menu progress screen and piped setup output end with setup); summary names restart in place of next login.
+- x86 client: fresh client folder never started (`Couldn't set up the Steam Runtime`): bootstrap package holds no runtime. Setup fetches runtime package `runtime_scout_ubuntu12` from x86 manifest (SHA-256 checked); launcher names missing runtime and Update / Repair in place of download hint.
+- x86 client: first start in Deck interface on new account stopped at SteamOS update step (`steamos-update` missing, status 127). First sign-in now in desktop window; Deck interface from next start.
+- x86 client: with `file` 5.4x (32-bit programs named `Intel i386`) every setup run unpacked bootstrap package again over updated client and left x86 `bwrap` of root filesystem in place; both checks accept `Intel i386` and `Intel 80386`.
+- Automatic Windows build notice titled `Steam ARM: Windows build set`; says Steam downloads build in background; Graphics, Automatic Windows build screen says same.
+- KDE rules file `kwinrulesrc` created by setup stayed after removal with no rules in it; removal now deletes it once empty (setup records that it created file).
+- Setup for another account left records of previous account (`kwinrules-made`, FEX settings line in `owned.sha`), so later removal could take rule file of new account as setup-made. Record names account; setup for another account removes rule and created file of previous account and drops its lines.
+- Driver archive recipe: library check in verify step read no library inside build roots (`/dev/fd` missing there) and reported pass. Build roots get `/dev/fd`; check that reads no library fails.
+
+### Known issues
+
+- x86 client: on RK3588 test device (x86 client chosen by hand) client reaches sign-in and library with private libX11 copy (X errors not fatal); no client exit on X error in 6 starts. 32-bit Windows titles through x86 Proton draw on CPU (llvmpipe): emulator has no 32-bit GL or Vulkan forwarding; 64-bit Windows titles reach GPU. Untested on Armv8.0 hardware: first start, sign-in and GPU use of titles not confirmed there.
+- FEX code cache (`diskcache=on`): setting covers runtime helper scripts of title start too; 2 of 11 starts with empty cache on FEX-2609.1 hung before game start. Off by default.
+- Steam Frame rating of titles not shown: appinfo key (`steam_frame_compatibility`, categories as Steam Deck) known since this release, display not built yet.
+- Linux build of 32-bit Source engine titles stuck at loading screen ignores Stop in Steam; desktop task manager (force quit) ends it.
+- Java (LWJGL 2) titles on Valve FEX tool FEX-2607: about half of first-start map loads still fail; cause lies in FEX.
+- 32-bit Source engine titles, native Linux build: Windows build set automatically only on `mali-csf-v10` with native ARM64 client, Valve FEX tool up to 2609 and `vk-spoof` chosen; other systems get suggestion in Graphics > Route per game.
+- x86 client at sign-in window takes `-shutdown` but does not exit (client behaviour; native client exits); Steam ARM stops it with SIGTERM after 45 s.
+- Items listed under 2.2 Known issues and not fixed above still apply.
+
 ## [2.2] - 2026-10-06
 
 ### Fixed

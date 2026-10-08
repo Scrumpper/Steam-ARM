@@ -19,6 +19,9 @@ published with its release under Mesa's own licences.
   <https://github.com/ValveSoftware/steam-devices>
 - **Wine**: Windows compatibility layer Proton is built from.
   <https://www.winehq.org>
+- **GE-Proton** by GloriousEggroll: third-party Proton build with ARM64 releases; settings
+  menu downloads it on request only, not bundled.
+  <https://github.com/GloriousEggroll/proton-ge-custom>
 - **DXVK** by Philip Rebohle and contributors: Direct3D to Vulkan layer inside Proton.
   Component `vk-spoof` exists because DXVK requires set of Vulkan device features that
   Mali driver does not expose.

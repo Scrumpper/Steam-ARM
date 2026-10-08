@@ -3,13 +3,13 @@
 Routes for running Steam on ARM64 hardware, side by side. Updated as routes change and as
 reports come in.
 
-**Last updated:** 2026-10-05
+**Last updated:** 2026-10-07
 
 Legend: ✅ yes  ⚠️ partly, or with conditions  ❌ no  ❓ not publicly verified
 
 | Route                      | Client itself is native ARM | Installs onto your system | Mali and PanVK                      | Adreno                                                          | Apple GPU                              | Remote Play handled             |
 |----------------------------|-----------------------------|---------------------------|-------------------------------------|-----------------------------------------------------------------|----------------------------------------|---------------------------------|
-| **This package**           | ✅                          | ✅ host, no sandbox       | ✅ test device: RK3588 board        | ⚠️ community report: Radxa Dragon Q6A (QCS6490), `vk-spoof` off | ❌ 16K pages; `muvm` not set up        | ✅ decode pinned once signed in |
+| **This package**           | ⚠️ Armv8.0: x86 under FEX   | ✅ host, no sandbox       | ✅ test device: RK3588 board        | ⚠️ community report: Radxa Dragon Q6A (QCS6490), `vk-spoof` off | ❌ 16K pages; `muvm` not set up        | ✅ decode pinned once signed in |
 | Canonical arm64 Steam snap | ❌ x86 client under FEX     | ⚠️ snap confinement       | ❌ open issue #471 since 2026-01-10 | ⚠️ other driver loading bugs open                               | ❓                                     | ❓                              |
 | Box86 and Box64            | ❌ x86 client under Box64   | ✅ host                   | ✅ long standing SBC route          | ✅                                                              | ❓                                     | ❓                              |
 | steamclienttermux, Android | ✅                          | ⚠️ Termux and PRoot       | ❌ Adreno only                      | ✅ Turnip                                                       | ❌                                     | ❓                              |
@@ -18,8 +18,8 @@ Legend: ✅ yes  ⚠️ partly, or with conditions  ❌ no  ❓ not publicly ver
 | Windows on ARM, Prism      | ❌ x86 under Prism          | ✅ host                   | ❌                                  | ✅ Snapdragon X                                                 | ❌                                     | ✅ native to Windows            |
 | macOS on Apple Silicon     | ✅ since 2025-06 beta       | ✅ host                   | ❌                                  | ❌                                                              | ✅                                     | ✅                              |
 
-Reading table: routes that run **native** client are this package, Android and
-handheld projects, UbuntuAsahi, and macOS. Of those, everything except this one targets
+Reading table: routes that run **native** client are this package (Armv8.0 CPUs: x86
+client under FEX), Android and handheld projects, UbuntuAsahi, and macOS. Of those, everything except this one targets
 Adreno or Apple GPUs. Routes that cover Mali at all run **x86** client under
 emulation, or fail on driver.
 
