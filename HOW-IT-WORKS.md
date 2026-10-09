@@ -14,6 +14,8 @@ sudo bash steam-arm-install.sh [options]          (package: sudo steam-arm-setup
 |    front end: built-in screens, else dialog, whiptail or plain prompts
 |    menu calls installer back with options (--select ..., GPU_FAMILY=...)
 +- --detect, --list, --help -> print and exit, no root needed
++- other options without apt-get, apt-cache, dpkg or package architecture arm64
+|    -> stop before any change ("No change made")
 +- --remove [--purge]       -> uninstall (see Uninstall in README.md)
 |    refuses while Steam client runs or another setup run holds lock
 |    /etc/fstab: /dev/shm line out only when setup added it (FSTAB_ADDED=1);
@@ -47,6 +49,7 @@ sudo bash steam-arm-install.sh [options]          (package: sudo steam-arm-setup
    +- 3 host: FEX and binfmt, account and groups, /dev/shm (fstab line only
    |    when nothing else mounts it), vm.max_map_count,
    |    x86 root filesystem /opt/fex-rootfs/Ubuntu_24_04 (route A);
+   |    root filesystem and second tree owned by root, no set-user-ID files;
    |    unfinished extraction discarded, or extracted again from .sqsh;
    |    package guard: apt and dpkg inside emulation refuse to run
    +- 4 components: glx-lax, vk-spoof, gpu-in-emulation (second tree

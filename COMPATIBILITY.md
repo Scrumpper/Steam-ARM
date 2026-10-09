@@ -5,7 +5,8 @@
 Confirmed by inspection of installer:
 
 - ARM64 system.
-- Debian or Ubuntu family distribution, since installer uses `apt`.
+- Debian or Ubuntu family distribution, since installer uses `apt`. Setup stops before any
+  change without `apt-get`, `apt-cache`, `dpkg` or package architecture `arm64`.
 - Ubuntu 25.10 or newer, Debian 13 or newer, or distribution built on them: Ubuntu 24.04
   and Debian 12 lack SDL3 packages client needs. Setup checks host packages with
   `apt-cache policy` before any package or package source change.

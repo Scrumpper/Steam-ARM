@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.3.1] - 2026-10-09
+
+### Fixed
+
+- Hardware report kept Steam IDs (SteamID64, SteamID3, SteamID2, `-steamid=`, `userdata/<id>`), Steam sign-in and persona names (`config/loginusers.vdf`, `SteamUser`, `SteamAppUser`), public IPv4, IPv6 and e-mail addresses and token values; removed now. Account named with common word (`steam`, `games`, `pi`) no longer rewrites `steam-arm-config` and Steam paths; dot in account name no longer matches any character; host name holding account name no longer stays in part. Line still holding account, host or sign-in name after filter reads `(line removed: personal data)`.
+- Handler logs `/tmp/fex-compat-tool-<pid>.log` and `/tmp/steam-arm-run-<pid>.log` were readable by every account (Valve's tool writes title's environment there); readable by game account only now. Run log never written through link or into file of another account.
+- Setup on system without `apt-get`, `apt-cache` or `dpkg`, or with package architecture other than `arm64`, stops before any change with `No change made`; it wrote apt keyring folder and setup lock file before failing, and ran on x86-64 hosts. `--help`, `--detect` and `--list` run anywhere.
+- x86 root filesystem and second graphics tree belonged to uid 1000 (owner in fetched image), so that account could change x86 programs other accounts run. Setup sets owner root and removes set-user-ID and set-group-ID bits, on trees of earlier versions too (logged once).
+- Removal summary named `graphics_provider.json` as kept when `--purge` deleted root filesystem in same run. Empty `~/.fex-emu` and runtime files of tray and launcher in `/run/user/<uid>` (`steam-arm-tray`, `steam-arm-tray.lock`, `steam-arm-start.lock`, `steam-arm-warned`) stayed after removal; removed now.
+- Program started from tray menu stayed as defunct process after it ended, until next start from tray; tray reaps it now.
+
 ## [2.3] - 2026-10-07
 
 ### Highlights

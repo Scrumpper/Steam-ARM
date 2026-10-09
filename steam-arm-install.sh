@@ -1,7 +1,7 @@
 #!/bin/bash
 # steam-arm-setup: installs Valve's native ARM64 Steam client (x86 client through FEX on CPUs without Armv8.1 atomics), with host packages, RootFS, launcher, optional components; run as root, then launch via steam-arm. See --help.
 set -u
-SA_VERSION=2.3
+SA_VERSION=2.3.1
 # Banner: self-contained (no board helper needed); TTY-gated, honours NO_COLOR.
 steam_banner() {
     [ -t 1 ] || return 0
@@ -694,6 +694,16 @@ rfs_bwrap_off(){
   file -b "$p" 2>/dev/null | grep -qE 'x86-64|Intel (80386|i386)' || return 0
   mv -f "$p" "$p.steam-arm-real" && echo "  x86 bwrap in $RFS set aside (host bubblewrap serves the x86 client)"
 }
+# Tree owned by root, no set-user-ID or set-group-ID files: fetched image carries uid 1000, so that account could change x86 programs others run.
+rfs_root_own(){
+  [ -d "$1" ] && [ ! -L "$1" ] || return 0
+  if [ -n "$(find "$1" -xdev \( ! -uid 0 -o ! -gid 0 \) -print -quit 2>/dev/null)" ]; then
+    chown -R -h root:root "$1" || return 1
+    echo "  $1 owned by root now (was owned by another account)"
+  fi
+  [ -z "$(find "$1" -xdev -type f -perm /6000 -print -quit 2>/dev/null)" ] && return 0
+  find "$1" -xdev -type f -perm /6000 -exec chmod ug-s {} + && echo "  set-user-ID and set-group-ID bits removed in $1"
+}
 # ---------------------------------------------------------------------------
 COMPONENTS_ALL="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray kde-input-prompt page-size"
 # page-size applies to Raspberry Pi 5 class boards (16K page kernel), or where its boot line is still in place.
@@ -1063,7 +1073,7 @@ menu_app(){ cat <<'STEAMARMCONFIG'
 # steam-arm-config: menu-driven settings for Steam ARM (built-in screens, dialog, whiptail or plain prompts). See --help.
 set -u
 
-SA_VERSION=2.3
+SA_VERSION=2.3.1
 SA_DOCS=https://github.com/Scrumpper/Steam-ARM
 SA_CONF=/etc/steam-arm/steam-arm.conf
 SA_TITLES_SHARE=/usr/local/share/steam-arm/titles.conf
@@ -3786,19 +3796,113 @@ menu_remoteplay(){
 # ===========================================================================
 # 8. Maintenance
 # ===========================================================================
-# Report text with personal details removed (home paths, account names, host name, local addresses, MACs).
+# Scrubber of sanitize: stdin to stdout. Arguments h=home u=account n=full name s=host v=loginusers.vdf.
+san_py(){ cat <<'PY'
+import ipaddress, re, sys
+STOP = {"steam", "games", "game", "user", "users", "admin", "administrator", "pi", "root", "guest", "test", "ubuntu",
+        "debian", "linux", "arm", "default", "video", "render", "input", "audio", "player", "home", "desktop", "localhost"}
+lit, homes, check = [], [], []
+def add(v, tag, ci=False, chk=True):
+    v = v.strip()
+    if v and len(v) <= 128:
+        lit.append((v, tag, ci))
+        # self-check list: identifying names still present after scrubbing drop their line
+        if chk and len(v) >= 4 and v.lower() not in STOP:
+            check.append(v.lower())
+for a in sys.argv[1:]:
+    k, _, v = a.partition("=")
+    if k == "h" and v.startswith("/") and len(v) > 1:
+        homes.append(v.rstrip("/"))
+    elif k in ("u", "n"):
+        add(v, "<user>")
+    elif k == "s":
+        add(v, "<host>", True)
+        add(v.split(".")[0], "<host>", True)
+    elif k == "v":
+        try:
+            t = open(v, encoding="utf-8", errors="replace").read()
+        except OSError:
+            t = ""
+        for m in re.finditer(r'"(7656119[0-9]{10})"\s*\{([^{}]*)\}', t):
+            aid = int(m.group(1)) - 76561197960265728
+            if aid >= 10000:
+                add(str(aid), "<steamid>", chk=False)
+            for key, val in re.findall(r'"(AccountName|PersonaName)"\s+"((?:[^"\\]|\\.)*)"', m.group(2)):
+                val = val.replace('\\"', '"').replace("\\\\", "\\")
+                add(val, "<login>", key == "AccountName", key == "AccountName")
+B, A = r"(?<![A-Za-z0-9_.<-])", r"(?![A-Za-z0-9_>-]|\.[A-Za-z0-9])"
+rules = []
+for h in sorted(set(homes), key=len, reverse=True):
+    rules.append((re.compile(re.escape(h) + r"(?![A-Za-z0-9_.-])"), "~"))
+rules += [(re.compile(r"/home/[^/\s\"']*"), "~"), (re.compile(r"/root\b"), "~"),
+          (re.compile(r"(\\{1,2})home\1[^\\\s\"']+"), r"\1~"),
+          (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}"), "<email>"),
+          (re.compile(r"(?i)\b(token|ticket|password|passwd|secret|auth|session|sessionid|access_token|steamLoginSecure)=[^&\s\"']+"),
+           r"\1=<removed>")]
+seen = set()
+for v, tag, ci in sorted(lit, key=lambda x: -len(x[0])):
+    if (v.lower(), tag) in seen:
+        continue
+    seen.add((v.lower(), tag))
+    e, f = re.escape(v), re.I if ci else 0
+    if tag != "<steamid>" and (v.lower() in STOP or len(v) < 3):
+        # common words and short names: path and assignment context only
+        rules.append((re.compile(r"(/media/|/run/media/|=)" + e + r"(?![A-Za-z0-9_.-])", f), r"\1" + tag))
+    else:
+        # host names: domain suffix may follow
+        rules.append((re.compile(B + e + (r"(?![A-Za-z0-9_>-])" if tag == "<host>" else A), f), tag))
+rules += [
+    (re.compile(r'"(AccountName|PersonaName)"(\s+)"(?:[^"\\]|\\.)*"'), r'"\1"\2"<login>"'),
+    (re.compile(r"\b(SteamUser|SteamAppUser|STEAM_USER|SteamUserName)=[^\s&\"']+"), r"\1=<login>"),
+    (re.compile(r"\b7656119[0-9]{10}\b"), "<steamid>"),
+    (re.compile(r"\[U:[0-9]:[0-9]+\]"), "<steamid>"),
+    (re.compile(r"\bSTEAM_[0-5]:[01]:[0-9]+\b"), "<steamid>"),
+    (re.compile(r"(?i)\b(steamid[=:\"\s]+)[0-9]+"), r"\1<steamid>"),
+    (re.compile(r"userdata/[0-9]+"), "userdata/<steamid>"),
+    (re.compile(r"\b([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b"), "<mac>"),
+    # interface names built from MAC (enx..., wlx...)
+    (re.compile(r"\b(enx|wlx)[0-9a-fA-F]{12}\b"), r"\1<mac>"),
+]
+O = r"(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"
+V4 = re.compile(r"(?<![0-9A-Za-z.-])" + O + r"(?:\." + O + r"){3}(?![0-9A-Za-z]|\.[0-9])")
+V6 = re.compile(r"(?<![0-9A-Za-z:.])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:%[0-9A-Za-z_.-]+)?(?![0-9A-Za-z:])")
+def v4(m):
+    # version numbers (v1.2.3.4, version 1.2.3.4) and loopback stay
+    if m.group(0) in ("127.0.0.1", "0.0.0.0") or re.search(r"(?i)version[ :=]*$", m.string[max(0, m.start() - 16):m.start()]):
+        return m.group(0)
+    return "<ip>"
+def v6(m):
+    a = m.group(0).split("%")[0]
+    if ("::" not in a and a.count(":") != 7) or a in ("::", "::1") or len(re.sub("[^0-9A-Fa-f]", "", a)) < 4:
+        return m.group(0)
+    try:
+        ipaddress.IPv6Address(a)
+    except ValueError:
+        return m.group(0)
+    return "<ip6>"
+out = sys.stdout.buffer
+for line in sys.stdin.buffer.read().decode("utf-8", "surrogateescape").splitlines(True):
+    for rx, rep in rules:
+        line = rx.sub(rep, line)
+    line = V6.sub(v6, V4.sub(v4, line))
+    if any(c in line.lower() for c in check):
+        line = "(line removed: personal data)\n"
+    out.write(line.encode("utf-8", "surrogateescape"))
+PY
+}
+# Report text with personal details removed: home paths, account, Steam sign-in and persona names, Steam IDs, host name,
+# addresses, MACs, e-mail, tokens. Without python3 nothing passes.
 sanitize(){
-  local h u names=() host
-  host=$(hostname 2>/dev/null)
-  for u in "$(game_user)" "${SUDO_USER:-}" "$(id -un)"; do [ -n "$u" ] && [ "$u" != root ] && names+=("$u"); done
-  h=$(game_home)
-  local -a sedargs=(-e 's#/home/[^/[:space:]]*#~#g' -e 's#/root\b#~#g')
-  [ -n "$h" ] && sedargs+=(-e "s#${h}#~#g")
-  for u in "${names[@]}"; do sedargs+=(-e "s/\\b${u}\\b/<user>/g"); done
-  [ -n "$host" ] && [ "$host" != localhost ] && sedargs+=(-e "s/\\b${host}\\b/<host>/g")
-  sedargs+=(-E -e 's/\b(10\.[0-9]{1,3}|127\.[0-9]{1,3}|192\.168|169\.254|172\.(1[6-9]|2[0-9]|3[01]))\.[0-9]{1,3}\.[0-9]{1,3}\b/<ip>/g'
-            -e 's/\b([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b/<mac>/g')
-  sed "${sedargs[@]}"
+  local u g args=()
+  if ! have python3; then cat >/dev/null; echo "(report text left out: python3 is missing; it removes personal details)"; return 1; fi
+  args+=("h=$(game_home)")
+  for u in "$(game_user)" "${SUDO_USER:-}" "$(id -un)"; do
+    [ -n "$u" ] && [ "$u" != root ] || continue
+    g=$(getent passwd "$u" 2>/dev/null | cut -d: -f5 | cut -d, -f1)
+    args+=("u=$u" "n=$g")
+  done
+  args+=("s=$(hostname 2>/dev/null)" "v=$(steam_dir)/config/loginusers.vdf")
+  python3 -c "$(san_py)" "${args[@]}"
 }
 report_text(){
   local d f
@@ -3899,7 +4003,7 @@ maint_report(){
   ui_text "Hardware report" "$SA_REPORT"
   ui_msg "Hardware report" "Saved to $SA_REPORT (your home folder).
 
-Home folders, account names, host name and local addresses are removed. Attach the file to a compatibility report at:
+Home folders, account names, Steam sign-in names, Steam IDs, host name, network addresses and e-mail addresses are removed. Attach the file to a compatibility report at:
 $SA_DOCS/issues"
 }
 maint_logs(){
@@ -5737,6 +5841,18 @@ while [ $# -gt 0 ]; do
 done
 if [ "$PURGE" = 1 ] && [ "$MODE" != remove ]; then die "--purge works only together with --remove (see --help)"; fi
 case "$OPT_CLIENT" in ""|auto|arm64|x86) ;; *) die "--client takes auto, arm64 or x86 (see --help)";; esac
+# Debian or Ubuntu family on 64-bit ARM (apt tools, dpkg architecture arm64): checked before any change; --help and --detect run anywhere.
+platform_gap(){
+  local c a
+  for c in apt-get apt-cache dpkg; do command -v "$c" >/dev/null 2>&1 || { echo "no $c"; return; }; done
+  a=$(dpkg --print-architecture 2>/dev/null)
+  [ "$a" = arm64 ] || echo "package architecture ${a:-unknown}"
+}
+if [ "$HELP" = 0 ] && [ "$MODE" != detect ]; then
+  PGAP=$(platform_gap)
+  [ -z "$PGAP" ] || die "Steam ARM needs a Debian or Ubuntu family distribution on 64-bit ARM (apt, dpkg, arm64).
+       This system: $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null | tr -d '"' | grep . || echo unknown), $(uname -m), $PGAP. No change made."
+fi
 # Custom driver archive: only a local file with its sha256; downloads are always the published archive.
 if [ -n "${STEAM_ARM_PROVIDER_SHA256:-}" ] && [ "$MODE" != remove ] && [ "$HELP" = 0 ]; then
   [ -n "${STEAM_ARM_PROVIDER_TARBALL:-}" ] || die "STEAM_ARM_PROVIDER_SHA256 works only together with STEAM_ARM_PROVIDER_TARBALL=/path/to/file (a custom driver archive on this computer). Downloads are always the published archive."
@@ -6214,9 +6330,14 @@ remove_all(){
     as_user rm -f "$uh/Desktop/Steam ARM.desktop" "$uh/Desktop/Steam ARM (Desktop mode).desktop" \
           "$uh/.config/autostart/steam-arm-tray.desktop" \
           "$uh"/.local/share/icons/hicolor/*/apps/steam-arm.png "$uh"/.local/share/icons/hicolor/*/apps/steam-arm-desktop.png
-    if [ "$fc_rm" = 1 ]; then as_user rm -f "$uh/.fex-emu/Config.json"
+    # folder goes with setup's Config.json when nothing else is in it
+    if [ "$fc_rm" = 1 ]; then as_user rm -f "$uh/.fex-emu/Config.json"; as_user rmdir "$uh/.fex-emu" 2>/dev/null
     elif [ -f "$uh/.fex-emu/Config.json" ]; then kept="$kept $uh/.fex-emu/Config.json"; fi
     [ -n "$armhome" ] && as_user rm -f "$armhome/.local/share/vulkan/implicit_layer.d/steamoverlay_arm64_steamarm.json"
+    # runtime files of tray and launcher (tray stopped above, client not running)
+    d=/run/user/$(id -u "$GAMEUSER" 2>/dev/null)
+    [ -d "$d" ] && as_user rm -rf "$d/steam-arm-tray" "$d/steam-arm-tray.lock" "$d/steam-arm-start.lock" "$d/steam-arm-warned" \
+      "$d/steam-arm-display-mode" "$d/steam-arm-icon-wait-$(id -u "$GAMEUSER").lock" 2>/dev/null
   fi
   # Setup logs and temporary files of the settings menu, for the game account and the account that ran it.
   for p in "$GAMEUSER" "${SUDO_USER:-}"; do
@@ -6286,7 +6407,11 @@ remove_all(){
   [ "$fexsrc" = 2 ] && echo "  Removed:   FEX package source $FEXSRC and its key $FEXKEY"
   [ -n "$restored" ] && echo "  Restored:  $restored"
   [ -n "$tb" ] && echo "  Saved:     game profiles from /etc/steam-arm/titles.conf in $tb"
-  for p in $kept; do echo "  Kept:      $p (changed since setup, or used by other variant of this installer)"; done
+  for p in $kept; do
+    # file went with the deleted RootFS
+    [ "$gone_rfs" = 1 ] && [ "$p" = "$RFS/graphics_provider.json" ] && continue
+    echo "  Kept:      $p (changed since setup, or used by other variant of this installer)"
+  done
   if [ "$gone_client" = 1 ]; then echo "  Deleted:   client folder $armhome (games included)"
   elif [ "$nomark" = 1 ] && [ "$foreign" = 1 ]; then
     echo "  Kept:      folder $armhome: it held other files before setup, so setup does not delete it."
@@ -6675,6 +6800,9 @@ if [ "$PROVIDER_DEFAULT" = 1 ] && grep -qs '^PROVIDER_\(CUSTOM\|LOCAL\)_' "$CONF
     echo "  driver archive settings cleared: download from project release from now on"
   fi
 fi
+for t in "$RFS" "$MALI"; do
+  rfs_root_own "$t" || warn "owner of $t could not be set to root; account owning it can change x86 programs of the emulation"
+done
 # FEX config for the game user; HostEnv entries select the GLX copy (step 4) and Vulkan layer path (step 5).
 FEXEXTRA=",
   \"Multiblock\":\"1\""
@@ -8176,7 +8304,7 @@ Line: <appid> key=value ...   keys: overlay=x86|vulkan|off  mangohud=on|off
       diskcache=on|off (FEX code cache, FEX tool 2609.1+; launch-option FEX_DISKCACHE / FEX_APP_CONFIG win)
 Per-title launch options override profiles: STEAM_ARM_OVERLAY=x86|vulkan|off, and
 STEAM_ARM_PRELOAD_KEEP=a,b (keep exactly LD_PRELOAD entries containing these substrings).
-Every decision is printed to the tool's log, /tmp/fex-compat-tool-<pid>.log."""
+Every decision is printed to the tool's log, /tmp/fex-compat-tool-<pid>.log, readable by game account only."""
 import atexit
 import glob
 import json
@@ -8196,6 +8324,21 @@ import zipfile
 def log(*a):
     # flushed: the renderer thread writes while the game runs
     print("steam-arm:", *a, flush=True)
+
+
+def private_log():
+    """Tool log in /tmp (Valve's tool creates it readable by all; environment follows): owner only."""
+    try:
+        fd = sys.stdout.fileno()
+        st = os.fstat(fd)
+        if (re.fullmatch(r"/tmp/fex-compat-tool-[0-9]+\.log", os.readlink("/proc/self/fd/%d" % fd))
+                and st.st_uid == os.getuid() and st.st_mode & 0o077):
+            os.fchmod(fd, 0o600)
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+private_log()
 
 
 def keep_env(k, want):
@@ -9275,7 +9418,7 @@ Stand-in of Valve's launch wrapper runs:
 Launch handler (/usr/local/lib/steam-arm-handler.py) decides per title on this process's environment and
 arguments, as inside Valve's FEX tool for native client; LIST is the game's LD_PRELOAD (kept out of this
 native process). WRAPPER then runs as child with result; SIGTERM, SIGINT and SIGHUP pass on to it; exit
-status is its own. Handler log: /tmp/steam-arm-run-<pid>.log."""
+status is its own. Handler log: /tmp/steam-arm-run-<pid>.log, readable by game account only."""
 import os
 import runpy
 import signal
@@ -9297,6 +9440,23 @@ def parse(a):
     return client, preload, rest[1:]
 
 
+def open_log(path):
+    """Handler log readable by owner only; never through a link or another account's file; else /dev/null."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        return open(os.devnull, "w")
+    try:
+        if os.fstat(fd).st_uid != os.getuid():
+            raise OSError("not own file")
+        os.fchmod(fd, 0o600)
+        os.ftruncate(fd, 0)
+    except OSError:
+        os.close(fd)
+        return open(os.devnull, "w")
+    return os.fdopen(fd, "w", buffering=1)
+
+
 def main(a):
     p = parse(a)
     if not p:
@@ -9309,10 +9469,7 @@ def main(a):
         else:
             os.environ.pop("LD_PRELOAD", None)
     sys.argv = ["steam-arm-run"] + cmd
-    try:
-        log = open("/tmp/steam-arm-run-%d.log" % os.getpid(), "w", buffering=1)
-    except OSError:
-        log = open(os.devnull, "w")
+    log = open_log("/tmp/steam-arm-run-%d.log" % os.getpid())
     out = sys.stdout
     sys.stdout = log
     print("SteamAppId=%s" % (os.environ.get("SteamAppId") or os.environ.get("SteamGameId") or ""))
@@ -12720,6 +12877,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 try:
@@ -12850,9 +13008,9 @@ def start_locked(armhome):
 
 
 def spawn(argv):
-    """Detached child; False when the program cannot start."""
+    """Detached child, reaped by a waiting thread when it ends (no zombie); False when the program cannot start."""
     try:
-        subprocess.Popen(
+        p = subprocess.Popen(
             argv,
             start_new_session=True,
             stdin=subprocess.DEVNULL,
@@ -12861,6 +13019,7 @@ def spawn(argv):
         )
     except OSError:
         return False
+    threading.Thread(target=p.wait, daemon=True).start()
     return True
 
 

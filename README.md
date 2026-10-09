@@ -105,8 +105,10 @@ replaced, and only when it is missing or damaged.
   Debian 12 lack. Before any package or package source change, setup reads
   `apt-cache policy` for each distribution package it installs and stops with names of
   missing ones; FEX packages are checked once FEX package source is in place.
-- Debian or Ubuntu family distribution, since installer uses `apt`. FEX, emulation tool
-  for x86 game code, installs from FEX's Ubuntu PPA `ppa:fex-emu/fex`:
+- Debian or Ubuntu family distribution, since installer uses `apt`. Before any change,
+  setup checks for `apt-get`, `apt-cache`, `dpkg` and package architecture `arm64`, and
+  stops with `No change made` otherwise; `--help`, `--detect` and `--list` run anywhere.
+  FEX, emulation tool for x86 game code, installs from FEX's Ubuntu PPA `ppa:fex-emu/fex`:
   - Ubuntu family: added with `add-apt-repository`.
   - Debian 13 (trixie) and Raspberry Pi OS built on it: setup writes same PPA as apt
     source `/etc/apt/sources.list.d/steam-arm-fex.sources` with Ubuntu 24.04 (noble)
@@ -240,7 +242,11 @@ Sections:
    system, status, notes, detection, profiles, renderer lines, last game start, last 20
    launcher log lines, start, update and error lines of client's bootstrap log, closing
    block of newest setup log, and groups of game account next to groups of its running
-   processes (`Not active yet` names groups that need new login). Caches shows FEX code
+   processes (`Not active yet` names groups that need new login). Report leaves out home
+   folders, account and full names, host name, Steam sign-in and persona names (from
+   `config/loginusers.vdf`), Steam IDs, IPv4 and IPv6 addresses, MAC and e-mail addresses
+   and token values; line still holding account, host or sign-in name after that reads
+   `(line removed: personal data)`. Caches shows FEX code
    cache sizes (Linux games, Windows games in Proton prefixes, shared folder of
    client) and Steam's shader cache size, and deletes FEX code caches of all games or
    one game; Steam's shader cache is never deleted there. Refused while game runs.
@@ -537,7 +543,10 @@ detection). Installer downloads driver archive
 release (release address first, then same file name under `releases/latest/download`),
 checks its SHA-256, and builds `/opt/fex-rootfs/Ubuntu_24_04-mali`: hard-link
 copy of root filesystem with archive's Mesa, about 330 MB extra disk. Root filesystem
-used for forwarding stays unchanged. PanVK in archive reports features DXVK and vkd3d ask
+used for forwarding stays unchanged. Both trees belong to root and hold no set-user-ID
+files: fetched image carries uid 1000, so every setup run sets owner (trees from earlier
+versions included, logged once), and no desktop account can change x86 programs other
+accounts run. PanVK in archive reports features DXVK and vkd3d ask
 for, same set `vk-spoof` reports, for those two engines only. Deselecting component or
 uninstalling deletes second tree. Without it, 32-bit titles lose `-vulkan` and Java
 titles stay on forwarding. When both addresses answer HTTP 404, setup stops with message
@@ -640,7 +649,8 @@ What runs:
   Proton through emulation. 32-bit Windows titles draw on CPU (llvmpipe): emulator has no
   32-bit GL or Vulkan forwarding; 64-bit Windows titles reach GPU. Launch handler runs through Valve's launch wrapper (stand-in
   starts `/usr/local/lib/steam-arm-run.py`), so title rules, renderer check and logs work
-  as with native client; log `/tmp/steam-arm-run-<pid>.log`.
+  as with native client; log `/tmp/steam-arm-run-<pid>.log`, readable by game account
+  only.
 - Package tools (`apt`, `apt-get`, `dpkg`, `pkexec`, `sudo`, `steamdeps`) refused for
   programs client starts: emulated writes reach host system.
 
@@ -711,8 +721,9 @@ are replaced, since that route needs its own (`overridden for Mali route`). Prof
 effect, launch options included: renderer and reported GL version, for example
 `unity: OpenGL core, GL 4.5 report`, `godot 4: OpenGL renderer, GL 3.3 report` or
 `godot 3: GL 3.3 report`.
-Handler log of each start: `/tmp/fex-compat-tool-<pid>.log`; menu shows lines of last
-start under Games, "Rules used at last start".
+Handler log of each start: `/tmp/fex-compat-tool-<pid>.log`, readable by game account only
+(handler sets mode 600 before Valve's tool writes title's environment there); menu shows
+lines of last start under Games, "Rules used at last start".
 
 Renderer check: once title loads OpenGL or Vulkan library, handler logs which GPU device
 its processes use: `renderer: GPU (v3d renderD128), forwarding to host driver, process
@@ -1077,6 +1088,7 @@ another setup run is in progress.
 Removed: launcher, helpers, settings menu `steam-arm-config`, installer copy in
 `/usr/local/share/steam-arm`, menu and desktop entries, icons, controller rules,
 services, sudo rule, window rule, apt hook, settings in `/etc/steam-arm`, setup logs,
+runtime files of tray and launcher in `/run/user/<uid>`,
 second graphics tree `/opt/fex-rootfs/Ubuntu_24_04-mali`, GE-Proton builds installed from
 settings menu (games set to them go back to Steam's choice: Linux build where game has
 one, else default Proton; Proton prefixes stay), x86
@@ -1092,7 +1104,7 @@ client folder (while unchanged since edit), own FEX app settings removed, native
 channel file back; package tools and `bwrap` of x86 root filesystem; user services stop
 at logout again, only when setup turned lingering on; `/etc/fstab` without `/dev/shm` line, only when setup
 added it. `graphics_provider.json` and `~/.fex-emu/Config.json` go only while unchanged
-since setup.
+since setup; `~/.fex-emu` goes with `Config.json` when nothing else is in it.
 
 Setup adds `/dev/shm` line to `/etc/fstab` only when nothing else mounts `/dev/shm` at
 boot (no `/dev/shm` line of its own, no `dev-shm.mount` unit), and records that as
