@@ -65,6 +65,14 @@ steam-arm-setup (2.3) stable; urgency=low
     GE-Proton (ARM64); steam-arm-config ge-proton; sha512 check,
     unpacked as game account; per-game pick (compat <appid> ge);
     removal per version and on uninstall; off until installed.
+  * Launcher: one client start at once; start during first start
+    shows progress notice and exits, client untouched; tray Open items
+    greyed meanwhile.
+  * Icon redraw at first start: KDE icon change signal after drawing;
+    drawn once client icon file keeps its size.
+  * Tray Steam pages (Store, Library, Friends, Downloads, Screenshots,
+    Steam Settings) pass steam:// link to running client through
+    steam-arm --open; tray item Steam ARM Settings.
 
  -- Scrumpper <Scrumpper@users.noreply.github.com>  Wed, 07 Oct 2026 00:00:00 +0000
 

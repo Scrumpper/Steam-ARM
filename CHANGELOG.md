@@ -28,6 +28,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - CPU drawing notice, off by default: settings menu Graphics, CPU drawing notice, and `steam-arm-config cpu-notice [on|off]`; `CPU_NOTICE` key, carried in settings backup. With it on, x86 title drawn on CPU (renderer check) raises desktop notice that stays until closed; GoldSrc titles excluded. Game lists of settings menu mark titles drawn on CPU at last start with `CPU!`.
 - `--detect` prints which features `vk-spoof` reports Vulkan driver has itself (`vulkan features native:`, `vulkan features missing:`); Information row `Vulkan gaps`.
 - Settings menu Maintenance, GE-Proton (ARM64), and `steam-arm-config ge-proton [status|check|install|remove]`: optional install of newest GE-Proton ARM64 build, or of downloaded file with its `.sha512sum` (sha512 check, archive members checked, unpacked as game account); per-game pick in Graphics, Route per game (`ge`) and `steam-arm-config compat <appid> ge`; removal per version and on uninstall; hand-installed copies left unchanged. Off until installed; nothing downloads otherwise.
+- Tray Steam pages: Store, Library, Friends, Downloads, Screenshots and Steam Settings, as in Steam's own tray menu. Each passes its `steam://` link to running client (`steam-arm --open`); never starts, stops or restarts client. Greyed while client is not running, while stop runs and during first start. Tray item for settings menu named `Steam ARM Settings`.
 
 ### Changed
 
@@ -63,6 +64,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - KDE rules file `kwinrulesrc` created by setup stayed after removal with no rules in it; removal now deletes it once empty (setup records that it created file).
 - Setup for another account left records of previous account (`kwinrules-made`, FEX settings line in `owned.sha`), so later removal could take rule file of new account as setup-made. Record names account; setup for another account removes rule and created file of previous account and drops its lines.
 - Driver archive recipe: library check in verify step read no library inside build roots (`/dev/fd` missing there) and reported pass. Build roots get `/dev/fd`; check that reads no library fails.
+- Repeated starts during first start (menu entry, desktop icon, tray) stopped client still downloading its files and began first start again on each click, so first start never finished. Launcher runs one client start at once: lock held through first start and normal start until client window process runs; start meanwhile shows notice with progress (`Steam ARM is still setting up: downloading client files (40% of 648 MB)`; dialog with `zenity` without notification service, text on terminal) and exits without touching client. Tray Open items greyed meanwhile.
+- Menu and desktop icons redrawn during first start stayed plain disc in running KDE session until next login. Launcher sends KDE icon change signal (`org.kde.KIconLoader.iconChanged`) after drawing, and draws once client's icon file keeps its size over one poll.
 
 ### Known issues
 

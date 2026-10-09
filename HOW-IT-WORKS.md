@@ -68,6 +68,8 @@ steam-arm (launcher, desktop account only, refuses root)
 +- before client start, client closed: automatic Windows build rule
 |    (steam-arm-autobuild.py) sets Proton ARM64 for matching titles through
 |    steam-arm-compatmap.py, once per title
++- one client start at once (start lock): start during first start or before
+|    client window runs shows progress notice and exits, client untouched
 +- starts client (Big Picture or desktop mode)
 +- client exits after applying its own update -> started again, at most twice
 +- keeps Valve's FEX tool set up (forwarding on, per-title hook) when tool changes:

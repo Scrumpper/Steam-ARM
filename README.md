@@ -175,7 +175,7 @@ from other version, package says so, naming `sudo steam-arm-setup --keep`.
 
 `steam-arm-config` is menu app for settings after install, installed as
 `/usr/local/bin/steam-arm-config`. Application menu entry "Steam ARM Settings" (added with
-launcher) and tray item Settings open it in terminal emulator. Front end: built-in full-screen screens (Python
+launcher) and tray item Steam ARM Settings open it in terminal emulator. Front end: built-in full-screen screens (Python
 `curses`) with textured background and light dialog box, when `python3` with `curses` is
 present and terminal can place cursor; else `dialog` when installed, else `whiptail`, else
 plain prompts. `STEAM_ARM_DIALOG=builtin|dialog|whiptail|read` picks one. `NO_COLOR` turns
@@ -401,6 +401,12 @@ network gone) stops launcher with message, also as dialog (with `zenity`) when s
 menu: start Steam ARM again to finish download. Bootstrap log:
 `.local/share/Steam/logs/bootstrap_log.txt` in client home.
 
+Starting Steam ARM again while first start runs (menu, desktop icon, tray) starts nothing:
+notification shows progress (`Steam ARM is still setting up: downloading client files (40% of
+648 MB). Steam opens by itself when done.`), dialog with `zenity` when no notification
+service runs, text on terminal. Same at normal start until client window process runs, so
+interface switch never interrupts start. Tray Open items greyed meanwhile.
+
 Installer downloads client from Valve's stable ARM64 channel and checks it against
 checksum in Valve's manifest. On first start client's Steam Frame mode moves it to its
 own ARM update channel, and client updates itself from there.
@@ -410,7 +416,7 @@ restart it in desktop interface; Big Picture entry switches back.
 
 Until first start, menu and desktop entries show plain disc: client's own icon file does
 not exist yet. During first start, once client has downloaded that file, launcher redraws
-icons with logo. Icons are Steam's round icon on dark, grainy green disc with small squares of vivid
+icons with logo and sends KDE icon change signal (`org.kde.KIconLoader.iconChanged`). Icons are Steam's round icon on dark, grainy green disc with small squares of vivid
 colour: chartreuse logo for Big Picture, bone logo for desktop mode.
 
 ## Component selection
@@ -474,7 +480,9 @@ upgrade from 1.2, which saved no family record, only turns such parts off.
 - `icon-bigpicture`: Places "Steam ARM" icon on desktop. (scope: Generic)
 - `icon-desktop`: Places "Steam ARM (Desktop mode)" icon on desktop. (scope: Generic)
 - `tray`: Steam icon in panel tray with Open Steam, Open in Big Picture, Open in desktop
-  mode, Stop Steam (`steam-arm --shutdown`; greyed while game runs), Settings
+  mode, Steam pages (Store, Library, Friends, Downloads, Screenshots and Steam Settings; link to running client
+  through `steam-arm --open`, greyed while client is not running and during first start),
+  Stop Steam (`steam-arm --shutdown`; greyed while game runs), Steam ARM Settings
   (`steam-arm-config` in terminal emulator), View log (launcher log in `less`; greyed while empty) and Quit tray; client
   build shows none of its own.
   Starts at login through autostart entry for any desktop that reads autostart entries,
@@ -1207,7 +1215,8 @@ Environment for launcher (`steam-arm`) and its helpers:
 - `STEAM_ARM_VK_SPOOF_DEBUG=1`: troubleshooting; `vk-spoof` layer prints its decisions
   to game's output.
 - `steam-arm --desktop` and `steam-arm --bigpicture` start client in that interface, or
-  restart running client in it. `steam-arm --help` lists launcher options, also as root.
+  restart running client in it. `steam-arm --open steam://...` passes link to running
+  client and never starts one. `steam-arm --help` lists launcher options, also as root.
 
 Per-title launch options (`STEAM_ARM_OVERLAY`, `STEAM_ARM_PRELOAD_KEEP`,
 `STEAM_ARM_VK_SPOOF_DISABLE`, `PROTON_DXVK_D3D8`, `STEAM_ARM_AUTO_BUILD`): see Playing

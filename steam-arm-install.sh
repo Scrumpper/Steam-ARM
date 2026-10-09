@@ -730,7 +730,7 @@ desc_of(){ case "$1" in
   desktop-mode) echo "Menu entry \"Steam ARM (Desktop mode)\": desktop interface, for signing in";;
   icon-bigpicture) echo "Desktop icon \"Steam ARM\"";;
   icon-desktop) echo "Desktop icon \"Steam ARM (Desktop mode)\"";;
-  tray)       echo "Steam icon in the panel tray: open, Big Picture, desktop mode, Stop, Settings, log";;
+  tray)       echo "Steam icon in the panel tray: open, Big Picture, desktop mode, Steam pages, Stop, Steam ARM Settings, log";;
   kde-input-prompt) echo "KDE Plasma (Wayland): no \"Remote control requested\" prompt; any X11 program may then send input";;
   page-size)  echo "Raspberry Pi 5: boot firmware's 4K page kernel (no effect elsewhere)";;
 esac; }
@@ -10148,6 +10148,7 @@ case "${1:-}" in
       "  steam-arm --bigpicture  start client in Big Picture (restarts running client in it)" \
       "  steam-arm --desktop     start client in desktop interface (restarts running client in it)" \
       "  steam-arm --shutdown    stop running client (asks it to exit, SIGTERM after 20 s, x86 client 45 s)" \
+      "  steam-arm --open URL    pass steam:// link to running client (never starts one)" \
       "  steam-arm --help        show this text" \
       "Run as account Steam ARM is set up for, not as root." \
       "Other options pass to Steam client unchanged. Settings: sudo steam-arm-config"
@@ -10238,13 +10239,31 @@ stop_client(){
   client_wait 30 && return 0
   lwarn "client still running 30 s after SIGTERM; close it from its menu"; return 1
 }
-# --shutdown: stop method from this client folder (client-type record, else client files), not settings file.
-if [ "${1:-}" = --shutdown ]; then
+# Client start lock (guard below); held: first start or start in progress. Read from /proc/locks, never taken here.
+STARTLOCK="$XDG_RUNTIME_DIR/steam-arm-start.lock"
+{ [ -d "$XDG_RUNTIME_DIR" ] && [ -w "$XDG_RUNTIME_DIR" ]; } || STARTLOCK="$ARMHOME/.steam-arm-start.lock"
+STARTST="$STARTLOCK.state"
+start_locked(){
+  k=$(stat -c '%d %i' "$STARTLOCK" 2>/dev/null) || return 1
+  set -- $k
+  k=$(printf '%02x:%02x:%s' $((($1 >> 8) & 4095)) $((($1 & 255) | (($1 >> 12) & 1048320))) "$2")
+  awk -v k="$k" '{ sub(/->/, "") } $2 == "FLOCK" && $6 == k { f = 1 } END { exit !f }' /proc/locks 2>/dev/null
+}
+# --open steam://...: link to running client only (tray Steam pages); never starts, stops or restarts a client.
+open_link(){
+  case "$1" in steam://*) ;; *) echo "steam-arm: --open needs steam:// link" >&2; return 2;; esac
+  client_running || { echo "steam-arm: Steam is not running; start Steam ARM first" >&2; return 1; }
+  start_locked && { echo "steam-arm: Steam ARM is starting; Steam pages open once Steam is up" >&2; return 1; }
+  if [ "${CLIENT:-}" = x86 ]; then client_x86 "$1" >/dev/null 2>&1; else ( cd "$D" && ./steam "$1" >/dev/null 2>&1 ); fi
+}
+# --shutdown, --open: client type from this client folder (client-type record, else client files), not settings file.
+if [ "${1:-}" = --shutdown ] || [ "${1:-}" = --open ]; then
   r=$(head -n 1 "$ARMHOME/.config/steam-arm/client-type" 2>/dev/null)
   case $r in arm64|x86) CLIENT=$r;; *) if [ -x "$D/steam" ]; then CLIENT=arm64; elif [ -x "$S/ubuntu12_32/steam" ]; then CLIENT=x86; fi;; esac
 fi
 case "${1:-}" in
   --shutdown) stop_client; exit $?;;
+  --open) open_link "${2:-}"; exit $?;;
 esac
 # Installed client check (after --shutdown: stopping needs no client files).
 if [ "$CLIENT" = x86 ]; then
@@ -10325,6 +10344,95 @@ fi
 comp_on vk-spoof && [ -f /usr/share/vulkan/implicit_layer.d/VkLayer_steam_arm_spoof.json ] && export STEAM_ARM_VK_SPOOF=1
 # PROTON_DXVK_D3D8=1: use DXVK's d3d8 (wined3d's GL path misrenders on Mali); launch option can override.
 export PROTON_DXVK_D3D8="${PROTON_DXVK_D3D8:-1}"
+
+BOOTLOG="$S/logs/bootstrap_log.txt"
+FIRST_MSG="Downloading client files, this takes a few minutes. Steam opens when done."
+[ "$CLIENT" = x86 ] && FIRST_MSG="Downloading x86 client files, this takes several minutes. Steam opens when done."
+# First start: the client's bootstrap downloads its files (about 650 MB) with no window; a desktop
+# notification, updated in place from the bootstrap log, reports it. Never on later starts.
+# Last bootstrap phase after byte $1 of the log: download (10 % steps), unpack, install, "done", or empty.
+boot_phase(){
+  tail -c +"$(($1 + 1))" "$BOOTLOG" 2>/dev/null | awk '
+    /\] Downloading update \(/ { s = $0; sub(/.*\(/, "", s); sub(/ KB\).*/, "", s); gsub(/,/, "", s); split(s, a, " of ")
+      if (a[2] > 0) m = sprintf("Downloading client files: %d%% of %d MB", int(a[1] * 10 / a[2]) * 10, a[2] / 1024) }
+    /\] Extracting package/ { m = "Unpacking client files" }
+    /\] Installing update/ { m = "Installing client files" }
+    /\] Update complete/ { m = "done" }
+    END { print m }'
+}
+# Runs beside the bootstrap: a notice at once, phases as they change, "done" or a vanished client ends it.
+first_start_notice(){
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  off=$(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)
+  id=$(notice 0 "Steam ARM: first start" "$FIRST_MSG" 0)
+  case "$id" in ''|0) return 0;; esac
+  trap 'notice_close "$id"; exit 143' TERM
+  last=; n=0
+  while [ "$n" -lt 1800 ]; do
+    sleep 5; n=$((n + 5))
+    m=$(boot_phase "$off")
+    if [ "$m" = done ]; then notice "$id" "Steam ARM" "Client files installed. Steam opens now." 10000 >/dev/null; return 0; fi
+    [ "$n" -ge 10 ] && ! client_running && break
+    [ -n "$m" ] && [ "$m" != "$last" ] && { notice "$id" "Steam ARM: first start" "$m" 0 >/dev/null; last=$m; }
+  done
+  notice_close "$id"
+}
+# One client start at once: lock held through first start, update restarts and normal start until client window
+# runs; another launch meanwhile (repeated clicks) shows progress and exits, never stops or restarts client.
+start_state(){ [ -e "$STARTST" ] && printf '%s\n' "$1" > "$STARTST"; }
+# State "first OFFSET" (bootstrap log byte at first start): phase text; else client starting.
+start_msg(){
+  st=$(head -n 1 "$STARTST" 2>/dev/null)
+  case $st in
+    "first "*)
+      m=$(boot_phase "${st#first }")
+      case $m in
+        Downloading*) m="downloading client files (${m#*: })";;
+        Unpacking*) m="unpacking client files";;
+        Installing*) m="installing client files";;
+        done) m="starting client";;
+        *) m="downloading client files";;
+      esac
+      echo "Steam ARM is still setting up: $m. Steam opens by itself when done.";;
+    *) echo "Steam ARM is starting. Steam opens by itself when ready.";;
+  esac
+}
+# Second launch: stderr and log; from a menu one notice replaced in place per click, dialog when no notice service.
+start_busy(){
+  msg=$(start_msg)
+  echo "steam-arm: $msg" >&2
+  printf '%s %s\n' "$(date '+%F %T')" "start while client starts: not started again ($msg)" >> "$LOG" 2>/dev/null
+  { [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && [ ! -t 2 ]; } || return 0
+  nid=$(head -n 1 "$STARTLOCK.note" 2>/dev/null); case $nid in ''|*[!0-9]*) nid=0;; esac
+  nid=$(notice "$nid" "Steam ARM" "$msg" 10000)
+  case $nid in
+    ''|0) command -v zenity >/dev/null 2>&1 && command -v flock >/dev/null 2>&1 \
+            && ( flock -n 8 || exit 0; zenity --info --title="Steam ARM" --width=420 --text="$msg" 2>/dev/null ) 8>"$STARTLOCK.dialog";;
+    *) printf '%s\n' "$nid" > "$STARTLOCK.note" 2>/dev/null;;
+  esac
+  return 0
+}
+# Holder of the lock: ends with launcher, or after normal start began once client window process runs (cap 180 s).
+start_hold(){
+  n=0
+  while kill -0 "$1" 2>/dev/null; do
+    if [ "$(head -n 1 "$STARTST" 2>/dev/null)" = start ]; then
+      n=$((n + 1))
+      [ "$n" -ge 180 ] && break
+      [ "$n" -ge 3 ] && pgrep -u "$(id -u)" -f steamwebhelper >/dev/null 2>&1 && break
+    fi
+    sleep 1
+  done
+  rm -f "$STARTST"
+}
+if command -v flock >/dev/null 2>&1 && ( : >> "$STARTLOCK" ) 2>/dev/null; then
+  exec 7>>"$STARTLOCK"
+  flock -n 7 || { start_busy; exit 0; }
+  echo init > "$STARTST"
+  # lock fd only in holder: client and helpers started later never keep it
+  start_hold $$ </dev/null >/dev/null 2>&1 &
+  exec 7>&-
+fi
 
 # Pause steam-arm-pad-xbox while this client runs (its own Steam Input re-IDs pads; the service would starve direct pad reads); resume on exit.
 PADSVC=0
@@ -10610,22 +10718,33 @@ fi
 
 # Menu icon comes from the client's own icon file, absent until its first start (setup draws a plain
 # disc meanwhile). Wait for it in the background (poll every 5 s, up to 15 min) so start is never
-# delayed; flock keyed by uid stops a second concurrent start from waiting twice.
+# delayed; flock keyed by uid stops a second concurrent start from waiting twice. Drawn once the file
+# keeps its size over one poll (client unpacks it); KDE programs reload icons on KIconLoader's signal.
 UICON="$REALHOME/.local/share/icons/hicolor"
 if command -v steam-arm-icon >/dev/null 2>&1 \
    && { [ ! -f "$UICON/256x256/apps/steam-arm.png" ] || [ -e "$UICON/.steam-arm-placeholder" ]; } \
    && { [ ! -f /usr/share/icons/hicolor/256x256/apps/steam-arm.png ] || [ -e /usr/local/share/steam-arm/icon-placeholder ]; }; then
   ICONLOCK="${XDG_RUNTIME_DIR:-/tmp}/steam-arm-icon-wait-$(id -u).lock"
   ( flock -n 9 || exit 0
-    STEP=5; n=0
-    while [ ! -f "$S/public/steam_tray.ico" ]; do
-      n=$((n + STEP)); [ "$n" -ge 900 ] && exit 0
+    STEP=5; n=0; last=
+    while :; do
+      sz=$(stat -c %s "$S/public/steam_tray.ico" 2>/dev/null)
+      [ -n "$sz" ] && [ "$sz" -gt 0 ] && [ "$sz" = "$last" ] && break
+      last=$sz; n=$((n + STEP)); [ "$n" -ge 900 ] && exit 0
       sleep "$STEP"
     done
     steam-arm-icon "$S" "$UICON" || exit 0
     if command -v kbuildsycoca6 >/dev/null 2>&1; then HOME="$REALHOME" kbuildsycoca6
     elif command -v kbuildsycoca5 >/dev/null 2>&1; then HOME="$REALHOME" kbuildsycoca5
     fi
+    # icon groups 0-5, as KDE's icon settings page sends on theme change
+    for g in 0 1 2 3 4 5; do
+      if command -v gdbus >/dev/null 2>&1; then
+        gdbus emit --session --object-path /KIconLoader --signal org.kde.KIconLoader.iconChanged "$g"
+      elif command -v dbus-send >/dev/null 2>&1; then
+        dbus-send --session --type=signal /KIconLoader org.kde.KIconLoader.iconChanged "int32:$g"
+      fi
+    done
     for d in "$REALHOME/Desktop/Steam ARM.desktop" "$REALHOME/Desktop/Steam ARM (Desktop mode).desktop"; do
       [ -f "$d" ] && touch "$d"
     done
@@ -10687,38 +10806,6 @@ if [ -f "$AB" ] && ! client_running; then
 fi
 
 if [ "$CLIENT" = x86 ]; then cd "$S" || exit 1; else cd "$D" || exit 1; fi
-BOOTLOG="$S/logs/bootstrap_log.txt"
-FIRST_MSG="Downloading client files, this takes a few minutes. Steam opens when done."
-[ "$CLIENT" = x86 ] && FIRST_MSG="Downloading x86 client files, this takes several minutes. Steam opens when done."
-# First start: the client's bootstrap downloads its files (about 650 MB) with no window; a desktop
-# notification, updated in place from the bootstrap log, reports it. Never on later starts.
-# Last bootstrap phase after byte $1 of the log: download (10 % steps), unpack, install, "done", or empty.
-boot_phase(){
-  tail -c +"$(($1 + 1))" "$BOOTLOG" 2>/dev/null | awk '
-    /\] Downloading update \(/ { s = $0; sub(/.*\(/, "", s); sub(/ KB\).*/, "", s); gsub(/,/, "", s); split(s, a, " of ")
-      if (a[2] > 0) m = sprintf("Downloading client files: %d%% of %d MB", int(a[1] * 10 / a[2]) * 10, a[2] / 1024) }
-    /\] Extracting package/ { m = "Unpacking client files" }
-    /\] Installing update/ { m = "Installing client files" }
-    /\] Update complete/ { m = "done" }
-    END { print m }'
-}
-# Runs beside the bootstrap: a notice at once, phases as they change, "done" or a vanished client ends it.
-first_start_notice(){
-  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
-  off=$(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)
-  id=$(notice 0 "Steam ARM: first start" "$FIRST_MSG" 0)
-  case "$id" in ''|0) return 0;; esac
-  trap 'notice_close "$id"; exit 143' TERM
-  last=; n=0
-  while [ "$n" -lt 1800 ]; do
-    sleep 5; n=$((n + 5))
-    m=$(boot_phase "$off")
-    if [ "$m" = done ]; then notice "$id" "Steam ARM" "Client files installed. Steam opens now." 10000 >/dev/null; return 0; fi
-    [ "$n" -ge 10 ] && ! client_running && break
-    [ -n "$m" ] && [ "$m" != "$last" ] && { notice "$id" "Steam ARM: first start" "$m" 0 >/dev/null; last=$m; }
-  done
-  notice_close "$id"
-}
 # Client exit after applying its own update: status 42 (restart request), or bootstrap log whose last
 # start ends in "Update complete, launching" with no client left running. Started again, at most twice.
 # Status 0 when the log, from byte $1 on, ends with an applied update and no new start after it.
@@ -10744,6 +10831,7 @@ if [ "$CLIENT" = x86 ]; then
   if [ ! -f "$READY" ] || [ ! -f "$XOK" ]; then
     first_start_notice </dev/null >/dev/null 2>&1 &
     NOTEWATCH=$!
+    start_state "first $(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)"
     ftry=0
     while :; do
       off=$(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)
@@ -10786,6 +10874,7 @@ if [ "$CLIENT" = x86 ]; then
       lwarn "$FSM" 2>/dev/null; stop "$FSM"
     done
   fi
+  start_state start
   tries=0
   while :; do
     off=$(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)
@@ -10809,6 +10898,7 @@ NVER="$ARMHOME/.config/steam-arm/native-verify"
 if [ ! -f "$S/linuxarm64/steamclient.so" ] || [ -f "$NVER" ]; then
   first_start_notice </dev/null >/dev/null 2>&1 &
   NOTEWATCH=$!
+  start_state "first $(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)"
   ftry=0
   while :; do
     off=$(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)
@@ -10836,6 +10926,7 @@ if [ ! -f "$S/linuxarm64/steamclient.so" ] || [ -f "$NVER" ]; then
   done
   ln -sfn "$S/linuxarm64" "$ARMHOME/.steam/sdkarm64"
 fi
+start_state start
 tries=0
 while :; do
   off=$(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)
@@ -12708,6 +12799,27 @@ def game_running():
     return False
 
 
+def start_locked(armhome):
+    """Launcher's client start lock held (first start or start in progress); read from /proc/locks, never taken."""
+    runtime_dir = "/run/user/%d" % os.getuid()
+    if os.path.isdir(runtime_dir) and os.access(runtime_dir, os.W_OK):
+        path = os.path.join(runtime_dir, "steam-arm-start.lock")
+    else:
+        path = os.path.join(armhome, ".steam-arm-start.lock")
+    try:
+        st = os.stat(path)
+        with open("/proc/locks") as handle:
+            locks = handle.read().split("\n")
+    except OSError:
+        return False
+    key = "%02x:%02x:%d" % (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino)
+    for line in locks:
+        f = line.replace("->", "").split()
+        if len(f) > 5 and f[1] == "FLOCK" and f[5] == key:
+            return True
+    return False
+
+
 def spawn(argv):
     """Detached child; False when the program cannot start."""
     try:
@@ -12806,6 +12918,7 @@ def contrast_icon(src, runtime_dir):
 class SteamTray:
     def __init__(self):
         armhome = resolve_armhome()
+        self.armhome = armhome
         # Indicator API wants an icon name in a theme dir, not a path; point the theme dir at the client's icon folder.
         self.icon_dir = os.path.join(armhome, ".local/share/Steam/public")
         self.icon_set = False
@@ -12829,16 +12942,24 @@ class SteamTray:
         self.bigpicture_item.connect("activate", lambda *_: launch(["--bigpicture"]))
         self.desktop_item = Gtk.MenuItem(label="Open in desktop mode")
         self.desktop_item.connect("activate", lambda *_: launch(["--desktop"]))
+        # Steam's own tray pages, forwarded to running client (steam-arm --open)
+        self.page_items = []
+        for label, url in (("Store", "steam://store"), ("Library", "steam://open/games"),
+                           ("Friends", "steam://open/friends"), ("Downloads", "steam://open/downloads"),
+                           ("Screenshots", "steam://open/screenshots"), ("Steam Settings", "steam://open/settings")):
+            item = Gtk.MenuItem(label=label)
+            item.connect("activate", lambda _w, u=url: launch(["--open", u]))
+            self.page_items.append(item)
         self.stop_item = Gtk.MenuItem(label="Stop Steam")
         self.stop_item.connect("activate", self.on_stop)
-        settings_item = Gtk.MenuItem(label="Settings")
+        settings_item = Gtk.MenuItem(label="Steam ARM Settings")
         settings_item.connect("activate", lambda *_: open_settings())
         self.log_item = Gtk.MenuItem(label="View log")
         self.log_item.connect("activate", lambda *_: open_log(self.log_path))
         quit_item = Gtk.MenuItem(label="Quit tray")
         quit_item.connect("activate", lambda *_: Gtk.main_quit())
         for item in (client_item, Gtk.SeparatorMenuItem(), self.open_item, self.bigpicture_item, self.desktop_item, Gtk.SeparatorMenuItem(),
-                     self.stop_item, Gtk.SeparatorMenuItem(), settings_item, self.log_item,
+                     *self.page_items, Gtk.SeparatorMenuItem(), self.stop_item, Gtk.SeparatorMenuItem(), settings_item, self.log_item,
                      Gtk.SeparatorMenuItem(), quit_item):
             self.menu.append(item)
         self.menu.show_all()
@@ -12888,16 +13009,21 @@ class SteamTray:
         if not running or (self.stopping and time.monotonic() - self.stopping > 60):
             self.stopping = False
         self.update_icon()
-        self.open_item.set_sensitive(not running)
+        # first start or start in progress: launcher would only show its progress notice
+        starting = start_locked(self.armhome)
+        self.open_item.set_sensitive(not running and not starting)
         # a running title is closed from the game first (killed fullscreen titles can leave the display mode changed)
         game = running and game_running()
         # the launcher restarts a running client
-        self.bigpicture_item.set_sensitive(not self.stopping and not game)
-        self.desktop_item.set_sensitive(not self.stopping and not game)
+        self.bigpicture_item.set_sensitive(not self.stopping and not game and not starting)
+        self.desktop_item.set_sensitive(not self.stopping and not game and not starting)
+        for item in self.page_items:
+            item.set_sensitive(running and not self.stopping and not starting)
         self.stop_item.set_sensitive(running and not self.stopping and not game)
         # empty file: desktop opens it as inode/x-empty (often a blank browser page)
         self.log_item.set_sensitive(log_has_text(self.log_path))
-        self.indicator.set_title(self.title[:-1] + ", running)" if running and self.x86 else
+        self.indicator.set_title("Steam (starting)" if starting else
+                                 self.title[:-1] + ", running)" if running and self.x86 else
                                  "Steam (running)" if running else self.title)
 
 
