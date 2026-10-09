@@ -17,8 +17,9 @@ Installer has no hardcoded GPU render node and no hardcoded card index. GPU fami
 
 Vulkan driver is needed for Windows titles; GPUs without one run native OpenGL titles.
 
-Client itself needs Armv8.1 or newer CPU with LSE atomics; Armv8.0 cores (Cortex-A53, A57,
-A72) are not supported by current client builds. See `README.md`, Requirements.
+Native ARM64 client needs Armv8.1 or newer CPU with LSE atomics; on Armv8.0 cores
+(Cortex-A53, A57, A72, A73) setup installs Valve's x86 client through emulation instead.
+See `README.md`, Requirements and x86 client.
 
 ## Before you install
 
@@ -101,7 +102,7 @@ GPU detection.
 | `adreno-a702`                                         | Adreno 702                      | off        | off                | on        | untested | Vulkan too limited for most Windows titles                                                      |
 | `adreno-legacy`                                       | Adreno 5xx and older            | off        | off                | on        | untested | no Vulkan driver; native OpenGL titles only                                                     |
 | `apple-agx`                                           | Apple GPU (Asahi)               | off        | off                | on        | untested | not supported on 16K page kernel; setup does not set up `muvm`                                  |
-| `broadcom-v3d71`, `broadcom-v3d42`                    | Raspberry Pi 5, 4               | off        | off                | on        | untested | Vulkan too limited for most Windows titles; Pi 4: client does not start (no LSE)                |
+| `broadcom-v3d71`, `broadcom-v3d42`                    | Raspberry Pi 5, 4               | off        | off                | on        | untested | Vulkan too limited for most Windows titles; Pi 4: x86 client through emulation                  |
 | `broadcom-vc4`                                        | Raspberry Pi 0 to 3             | off        | off                | on        | untested | not supported                                                                                   |
 | `vivante`                                             | Vivante (etnaviv)               | off        | off                | on        | untested | no Vulkan driver; most titles do not run                                                        |
 | `img-powervr`                                         | PowerVR                         | off        | off                | off       | untested | Vulkan driver in development; OpenGL through Zink                                               |
@@ -174,6 +175,7 @@ fail.
 
 ## Untested
 
+- GE-Proton ARM64 builds (optional, Maintenance, GE-Proton (ARM64)) on Mali and V3D GPUs.
 - Other RK3588 boards with Mali-G610 GPU (for example Rock 5B, Orange Pi 5, NanoPi, and other Radxa boards): same GPU family as test device.
 - Boards with different SoC or GPU; defaults per family in GPU families.
 - Debian family distributions outside Ubuntu family: FEX source step tested in Debian 13
@@ -197,6 +199,8 @@ Signing key comes from `keyserver.ubuntu.com` by fingerprint `EDB98BFE8A2310DC9C
 `vk-spoof` exists to report device features that Direct3D translation layer requires and that Mali PanVK driver does not expose. On system with Vulkan driver that already exposes those features, `vk-spoof` is unnecessary; GPU family detection leaves it and `gpu-in-emulation` off on non-Mali GPUs.
 
 Published driver archive of `gpu-in-emulation` carries Mali drivers only; on non-Mali GPU, profile `gfx=b` logs warning and title stays on forwarding. Custom driver archive (`STEAM_ARM_PROVIDER_TARBALL` with `STEAM_ARM_PROVIDER_SHA256`, see Custom driver archive in `README.md`) can carry Mesa drivers for other GPUs; with it, `gfx=b` and `GFX_DEFAULT=b` apply on any GPU family, while automatic rules stay Mali-only. Untested on non-Mali GPUs; results depend on Mesa and kernel versions.
+
+Automatic Windows build applies on `mali-csf-v10` only; other families show it as suggestion.
 
 `glx-lax` addresses Mesa client library limit and applies to any Mesa based driver, not only Mali's, so it remains relevant on non-Mali GPUs that use Mesa.
 
@@ -255,7 +259,8 @@ below.
 parts.** These carry Mali-G52 or G31. Panfrost gives them OpenGL, which is what title built
 for Linux needs. Open Vulkan driver is not usable on this generation, so Direct3D
 translation layer has nothing to reach and Windows titles are not reasonable expectation.
-Odroid N2, N2+ and Allwinner parts with Cortex-A53 cores lack LSE atomics: see Out of scope.
+Odroid N2, N2+ and Allwinner parts with Cortex-A53 cores lack LSE atomics: x86 client
+through emulation (see Plausible, not tested).
 
 ### Plausible, not tested
 
@@ -268,6 +273,12 @@ part of that driver.
 **ARM workstations with graphics card.** Card's own driver provides Vulkan exactly as it
 does on desktop machine, which makes this least exotic case in list. Check page
 size, because it has differed between releases of same distribution on this hardware.
+
+**Armv8.0 CPUs without LSE atomics** (Cortex-A53, A57, A72, A73): Raspberry Pi 4, Odroid
+N2 and N2+, Allwinner parts with Cortex-A53 cores. Native client builds stop at start;
+setup installs Valve's x86 client through emulation there (`README.md`, x86 client).
+Untested on such hardware. Boards with 1 GB of memory (Raspberry Pi 3) stop at memory
+check.
 
 ### Wait
 
@@ -294,10 +305,6 @@ when x86 side runs inside separate 4K page guest that check cannot see. On 16K h
 such guest, emulation fails. Untested.
 
 **Hardware with no 64-bit ARM support**, which is excluded by architecture itself.
-
-**Armv8.0 CPUs without LSE atomics** (Cortex-A53, A57, A72): Raspberry Pi 4 and 3, Odroid
-N2 and N2+, Allwinner parts with Cortex-A53 cores. Current client builds stop at start;
-see `README.md`, Requirements.
 
 ## What decides it, in practice
 
@@ -333,8 +340,9 @@ computers, is excluded by architecture rather than by any of above.
 
 Raspberry Pi 5 meets both requirements in principle: it is ARM64, and Mesa provides
 Vulkan driver for its GPU. Three things need attention before emulation half runs.
-Raspberry Pi 4 (Cortex-A72, Armv8.0 without LSE atomics) is not supported: current client
-builds stop at start (see `README.md`, Requirements).
+Raspberry Pi 4 (Cortex-A72, Armv8.0 without LSE atomics) runs Valve's x86 client through
+emulation, since native client builds stop at start there (`README.md`, x86 client);
+untested.
 
 **Page size.** Pi 5 firmware loads `kernel_2712.img` by default, which uses 16K pages.
 Code built for x86 assumes 4K, and emulators refuse to start on 16K kernel. Adding
@@ -347,8 +355,8 @@ to `config.txt` (on current Raspberry Pi OS that file is `/boot/firmware/config.
 4K page kernel instead. `page-size` component, on by default, writes that line in marked
 block, keeps `config.txt.steam-arm.bak`, and stops so system can reboot; second run of
 `sudo bash steam-arm-install.sh` then installs. It stops instead when `config.txt` already sets
-`kernel=` or when `kernel8.img` is missing. Deselecting `page-size` removes block again. 16K kernel is there for performance, so change costs a
-few percent on other workloads.
+`kernel=` or when `kernel8.img` is missing. Deselecting `page-size` removes block again. 16K
+kernel is there for performance, so change costs several percent on other workloads.
 
 **Distribution.** Raspberry Pi OS is Debian based (`ID=debian` in `/etc/os-release`). On
 Raspberry Pi OS built on Debian 13 (trixie), setup adds FEX PPA as apt source with its
@@ -405,7 +413,11 @@ and stay off unless set by hand.
    that default for one title. Unmeasured on Pi 5; on RK3588 test device one 32-bit Unity
    title ran 5 to 9 % faster with 9 to 12 % less CPU load, first frame 2 to 4 s later.
    Java 21 and newer titles fail with it on.
-8. **Clocks (opt-in, warranty and heat).** Raspberry Pi documents `arm_freq`, `gpu_freq`,
+8. **FEX code cache per title (opt-in).** `steam-arm-config profile <appid> diskcache=on`;
+   needs Valve FEX tool FEX-2609.1 or newer. Unmeasured on Pi 5 and RK3588 test device;
+   on RK3588 test device 2 of 11 starts with empty cache hung before game start.
+   Proton Experimental (ARM64) turns code cache on for Windows titles by itself.
+9. **Clocks (opt-in, warranty and heat).** Raspberry Pi documents `arm_freq`, `gpu_freq`,
    `v3d_freq` (on Pi 5 V3D clock is independent of core clock) and `over_voltage_delta`
    for `config.txt`; Steam ARM sets none of them and suggests no values. Active cooling
    needed. Raspberry Pi documents that some combinations set permanent bit in SoC

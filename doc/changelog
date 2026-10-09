@@ -1,3 +1,85 @@
+steam-arm-setup (2.3) stable; urgency=low
+
+  * x86 client on Armv8.0 CPUs without LSE atomics: Valve's x86 client
+    through system FEX in place of stop (steam-for-linux #13288);
+    warning, memory check (2 GB), forwarding route only; native client
+    check per setup run moves back once native build runs; --client=,
+    --client-check, Maintenance > Client type; CLIENT keys not restored
+    from backups. STEAM_ARM_ALLOW_ARMV80=1 keeps native client.
+  * Settings menu Components: Parts and Driver archive (download, local
+    copy of published archive, custom archive); steam-arm-config
+    driver-archive command; status row Driver archive.
+  * Published driver archive beside installer used when SHA-256 matches;
+    local archive path saved (PROVIDER_LOCAL_FILE); saved file gone or
+    changed: download with note; --provider-default clears it.
+  * --detect prints driver archive line.
+  * Driver archive recipe: verify step library check runs again.
+  * Profile key diskcache=on|off: FEX code cache per title (FEX tool
+    2609.1 or newer); cache deleted once after FEX tool or game build
+    change.
+  * Maintenance, Caches and steam-arm-config cache: FEX code cache
+    sizes, clear all or one game; Steam shader cache never deleted.
+  * 32-bit Source engine titles: Windows build (Proton ARM64,
+    proton_11-arm64) set automatically on mali-csf-v10 (FEX tool up to
+    2609, vk-spoof chosen), once per title; settings menu Graphics,
+    Automatic Windows build; steam-arm-config auto-build; AUTO_BUILD key.
+    Record decides for titles Steam swapped to Windows files; shared
+    content manifests (LastOwner 0) skipped, also in settings menu game
+    lists; Graphics screen text matches notice.
+  * x86 client: file check at first start (marker x86-verified); private
+    host libX11 copy with non-fatal X error handler; switch back to
+    native client drops package records, native client checks its files
+    at next start; stale launch wrapper copy removed; client home records
+    its client type, so setup for another account checks only folders
+    x86 client used.
+  * --client-check: Armv8.1 CPU runs any build; result recorded as
+    CLIENT_PROBE.
+  * Renderer check: no CPU verdict for FEX loader process; Wine helper
+    processes never named as title.
+  * x86 client stop waits 45 s before SIGTERM; native client end by
+    signal logged.
+  * GE-Proton: interrupted download reported with curl status; lock
+    file removed after each action; log path on own line in failed
+    screen.
+  * Settings menu: rows wrap with indent, dialog --no-collapse, whiptail
+    list height per entry count, wizard Back keeps hardware choice,
+    download gauge percent; cache sizes unknown without read access;
+    dialog and whiptail text boxes use terminal height.
+  * Setup restarts running tray (setup lock and output not inherited,
+    summary names restart); local driver archive line for file named in
+    environment, also with Mali tree already built.
+  * x86 client: setup fetches runtime package runtime_scout_ubuntu12;
+    launcher names missing runtime; first sign-in in desktop window;
+    x86 program check accepts file 5.4x output (Intel i386).
+  * Setup for another account drops records of previous account
+    (kwinrules-made names account, owned.sha lines).
+  * Settings menu Games header: Steam Deck category (hint).
+  * CPU drawing notice (off by default): settings menu Graphics,
+    steam-arm-config cpu-notice, CPU_NOTICE key; game lists mark
+    titles drawn on CPU with CPU!.
+  * --detect: vulkan features native / missing lines (vk-spoof set);
+    Information row Vulkan gaps.
+  * Tray icon with dark outline for light panels.
+  * Removal deletes kwinrulesrc that setup created once it is empty.
+  * Optional GE-Proton ARM64 install: settings menu Maintenance,
+    GE-Proton (ARM64); steam-arm-config ge-proton; sha512 check,
+    unpacked as game account; per-game pick (compat <appid> ge);
+    removal per version and on uninstall; off until installed.
+  * Launcher: one client start at once; start during first start
+    shows progress notice and exits, client untouched; tray Open items
+    greyed meanwhile.
+  * Icon redraw at first start: KDE icon change signal after drawing;
+    drawn once client icon file keeps its size.
+  * Tray Steam pages (Store, Library, Friends, Downloads, Screenshots,
+    Steam Settings) pass steam:// link to running client through
+    steam-arm --open; tray item Steam ARM Settings.
+  * Host package libibus-1.0-5 (steamwebhelper of native client loads
+    it; Raspberry Pi OS desktop lacks it). Launcher warning names
+    library steamwebhelper cannot load and its package; hardware report
+    shows such lines.
+
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Wed, 07 Oct 2026 00:00:00 +0000
+
 steam-arm-setup (2.2) stable; urgency=low
 
   * Debian 13 and Raspberry Pi OS: FEX PPA written as apt source
