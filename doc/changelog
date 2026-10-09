@@ -73,6 +73,10 @@ steam-arm-setup (2.3) stable; urgency=low
   * Tray Steam pages (Store, Library, Friends, Downloads, Screenshots,
     Steam Settings) pass steam:// link to running client through
     steam-arm --open; tray item Steam ARM Settings.
+  * Host package libibus-1.0-5 (steamwebhelper of native client loads
+    it; Raspberry Pi OS desktop lacks it). Launcher warning names
+    library steamwebhelper cannot load and its package; hardware report
+    shows such lines.
 
  -- Scrumpper <Scrumpper@users.noreply.github.com>  Wed, 07 Oct 2026 00:00:00 +0000
 

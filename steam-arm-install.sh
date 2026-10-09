@@ -3823,6 +3823,10 @@ report_text(){
       [ -r "$f" ] || continue
       echo "$(basename "$f"):"; grep -aiE 'error|fail|check-requirements' "$f" | tail -10
     done
+  else
+    f="$(steam_dir)/logs/steamwebhelper.log"
+    [ -r "$f" ] && grep -aq 'error while loading shared libraries' "$f" \
+      && { echo "steamwebhelper.log:"; grep -a 'error while loading shared libraries' "$f" | tail -3; }
   fi
   echo
   echo "== Notes"; info_notes
@@ -6267,7 +6271,7 @@ remove_all(){
     fi
   fi
   pkgs="fex-emu-armv8.0 fex-emu-armv8.2 fex-emu-armv8.4 fex-emu-binfmt32 fex-emu-binfmt64 bubblewrap libsdl3-0 libsdl3-image0 libsdl3-ttf0"
-  pkgs="$pkgs libgtk2.0-0t64 libgtk2.0-0 libopenal1 zenity xdotool patchelf libvulkan-dev python3-pil python3-evdev gir1.2-ayatanaappindicator3-0.1"
+  pkgs="$pkgs libgtk2.0-0t64 libgtk2.0-0 libopenal1 libibus-1.0-5 zenity xdotool patchelf libvulkan-dev python3-pil python3-evdev gir1.2-ayatanaappindicator3-0.1"
   pkgs=$(for p in $pkgs; do dpkg-query -W -f='${Status}\n' "$p" 2>/dev/null | grep -q '^install ok installed' && printf '%s ' "$p"; done)
   # Debian FEX source from setup: goes once no FEX build is installed, else stays for its updates
   local fexsrc=0
@@ -6325,7 +6329,7 @@ opt gpu-in-emulation && BUILDPKGS="$BUILDPKGS zstd"                             
 want_icons(){ opt desktop || opt desktop-mode || opt icon-bigpicture || opt icon-desktop; }
 want_icons && BUILDPKGS="$BUILDPKGS python3-pil"                                     # menu and desktop icons
 opt tray && BUILDPKGS="$BUILDPKGS gir1.2-ayatanaappindicator3-0.1"                   # tray helper binding
-HOSTPKGS="bubblewrap dbus-daemon xz-utils libsdl3-0 libsdl3-image0 libsdl3-ttf0 libgtk2.0-0t64 libopenal1 zenity xdotool x11-xserver-utils curl python3 file $BUILDPKGS"
+HOSTPKGS="bubblewrap dbus-daemon xz-utils libsdl3-0 libsdl3-image0 libsdl3-ttf0 libgtk2.0-0t64 libopenal1 libibus-1.0-5 zenity xdotool x11-xserver-utils curl python3 file $BUILDPKGS"
 HOST_MISS=$(pkg_missing $HOSTPKGS)
 # stale or empty package lists: read once more (sources unchanged)
 if [ -n "$HOST_MISS" ]; then
@@ -6480,7 +6484,7 @@ command -v FEX >/dev/null || die "FEX is not on this system after package instal
 if [ "$CLIENT" = x86 ] && ! file -b "$(command -v bwrap 2>/dev/null || echo /nonexistent)" 2>/dev/null | grep -q aarch64; then
   die "native bubblewrap needed for x86 client: $(command -v bwrap || echo 'bwrap not found'). Install distribution package bubblewrap (ARM64 build), then run this again."
 fi
-for l in libSDL3.so.0 libopenal.so.1 libgtk-x11-2.0.so.0; do
+for l in libSDL3.so.0 libopenal.so.1 libgtk-x11-2.0.so.0 libibus-1.0.so.5; do
   ldconfig -p | grep -q "$l" || die "$l missing after package install. Run this again; if it stays missing, report it with the output above."
 done
 # FEX owns x86 execution (box64/box32 binfmt off), persistent
@@ -10891,6 +10895,31 @@ if [ "$CLIENT" = x86 ]; then
     lwarn "client exited after applying its update; starting it again"
   done
 fi
+# Client window process (steamwebhelper) missing host library: warning names library and its package.
+WHLOG="$S/logs/steamwebhelper.log"
+wh_libhint(){
+  l=$(grep -ao 'error while loading shared libraries: [^:]*' "$WHLOG" 2>/dev/null | tail -n 1 | sed 's/.*: //')
+  [ -n "$l" ] || return 0
+  PATH="$PATH:/usr/sbin:/sbin" ldconfig -p 2>/dev/null | grep -q "[[:space:]]$l (" && return 0
+  case $l in
+    libibus-1.0.so.5) p=libibus-1.0-5;; libnm.so.0) p=libnm0;; libpipewire-0.3.so.0) p=libpipewire-0.3-0t64;;
+    libXtst.so.6) p=libxtst6;; libnss3.so|libnssutil3.so|libsmime3.so) p=libnss3;; libcups.so.2) p=libcups2t64;; *) p=;;
+  esac
+  if [ -n "$p" ]; then f="Fix: sudo apt install $p, then start Steam ARM again."
+  else f="Install distribution package that provides $l, then start Steam ARM again."; fi
+  lnote "Steam window stays empty: steamwebhelper cannot load $l. $f" "Steam ARM: library missing"
+}
+# Log of this start: checked while client starts (90 s).
+wh_watch(){
+  t0=$(date +%s); n=0
+  while [ "$n" -lt 90 ]; do
+    sleep 3; n=$((n + 3))
+    [ "$(stat -c %Y "$WHLOG" 2>/dev/null || echo 0)" -ge "$t0" ] && grep -aq 'error while loading shared libraries' "$WHLOG" 2>/dev/null \
+      && { wh_libhint; return 0; }
+  done
+}
+wh_libhint
+wh_watch </dev/null >/dev/null &
 # First start must verify files (downloads the rest of the package, SDK dir appears) then exits; start again skipping verification.
 # Bootstrap restart after its own update: started once more; files still missing: stop with a message.
 # Switch back from x86 client (marker from setup): one start with file check, as a first start.

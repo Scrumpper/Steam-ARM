@@ -66,6 +66,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Driver archive recipe: library check in verify step read no library inside build roots (`/dev/fd` missing there) and reported pass. Build roots get `/dev/fd`; check that reads no library fails.
 - Repeated starts during first start (menu entry, desktop icon, tray) stopped client still downloading its files and began first start again on each click, so first start never finished. Launcher runs one client start at once: lock held through first start and normal start until client window process runs; start meanwhile shows notice with progress (`Steam ARM is still setting up: downloading client files (40% of 648 MB)`; dialog with `zenity` without notification service, text on terminal) and exits without touching client. Tray Open items greyed meanwhile.
 - Menu and desktop icons redrawn during first start stayed plain disc in running KDE session until next login. Launcher sends KDE icon change signal (`org.kde.KIconLoader.iconChanged`) after drawing, and draws once client's icon file keeps its size over one poll.
+- Raspberry Pi OS: Steam window stayed empty; `steamwebhelper` needs `libibus-1.0-5`, which setup now installs (host package check and removal summary include it). `error while loading shared libraries` in `steamwebhelper.log` gives launcher warning naming library and its package; hardware report shows such lines.
 
 ### Known issues
 

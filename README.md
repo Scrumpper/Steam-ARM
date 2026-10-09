@@ -115,6 +115,8 @@ replaced, and only when it is missing or damaged.
     `EDB98BFE8A2310DC9C4A376E76DBFEBEA206F5AC` (Launchpad's key for this PPA) before
     writing `/etc/apt/keyrings/steam-arm-fex.gpg`. Earlier FEX source naming Debian
     release (from `add-apt-repository` on Debian) is renamed to `.disabled`.
+    Raspberry Pi OS desktop lacks `libibus-1.0-5`, which client window process
+    (`steamwebhelper`) loads; setup installs it with other host packages.
   - Debian 12 (bookworm): host package check stops setup before any change, since
     Debian 12 has no SDL3 packages and no `libgtk2.0-0t64`. Upgrade to Debian 13.
   - Debian 11 and older: host package check stops setup before any change (no SDL3
@@ -1382,6 +1384,11 @@ to repository.
   Add account to group of `/dev/dri/renderD*` (warning names it, usually `render`), then log
   out and back in. No render node and `/dev/mali0` present: Arm's closed `kbase` driver;
   warning names fix (kernel with Mesa's `panfrost` or `panthor` driver).
+- Steam window stays empty, desktop notification "Steam ARM: library missing": client
+  window process (`steamwebhelper`) cannot load host library (`error while loading shared
+  libraries` in `logs/steamwebhelper.log` of client folder). Notification names library and
+  package, for example `sudo apt install libibus-1.0-5`; then start Steam ARM again.
+  Hardware report lists such lines.
 - `steam-arm` stops with "Steam client not installed": setup did not finish. Run it again with
   `sudo steam-arm-config`, Maintenance > Update / Repair. On Raspberry Pi 5, reboot first when
   setup switched to 4K page kernel.
