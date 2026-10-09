@@ -1,3 +1,22 @@
+steam-arm-setup (2.3.1) stable; urgency=low
+
+  * Hardware report: Steam IDs, Steam sign-in and persona names, public
+    IPv4, IPv6 and e-mail addresses and token values removed; account
+    named with common word no longer rewrites steam-arm-config and
+    Steam paths; account name matched literally; line still holding
+    account, host or sign-in name dropped.
+  * Handler logs in /tmp readable by game account only.
+  * Setup stops before any change without apt-get, apt-cache or dpkg,
+    or with package architecture other than arm64.
+  * x86 root filesystem and second graphics tree owned by root, without
+    set-user-ID files; earlier trees fixed on next setup run.
+  * Removal: no Kept line for file of root filesystem deleted in same
+    run; empty ~/.fex-emu and runtime files of tray and launcher
+    removed.
+  * Tray reaps programs it started (no defunct process).
+
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Fri, 09 Oct 2026 00:00:00 +0000
+
 steam-arm-setup (2.3) stable; urgency=low
 
   * x86 client on Armv8.0 CPUs without LSE atomics: Valve's x86 client

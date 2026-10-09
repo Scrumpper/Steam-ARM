@@ -1,5 +1,5 @@
 Package: steam-arm-setup
-Version: 2.3
+Version: 2.3.1
 Section: games
 Priority: optional
 Architecture: arm64
