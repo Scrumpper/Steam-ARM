@@ -1,3 +1,18 @@
+steam-arm-setup (2.3.2) stable; urgency=low
+
+  * Proton titles on Raspberry Pi GPUs use WineD3D by default; DXVK
+    cannot run on V3D. Title setting d3d=dxvk switches one title back.
+  * Raspberry Pi GPUs: OpenGL version report (glver) and experimental
+    Zink (gl=zink) per title, off by default; settings menu Graphics,
+    Route per game. Windows titles on ARM64 Proton get them as Steam
+    launch option, removed again with setting or at uninstall; own
+    launch options kept byte for byte.
+  * Setup refreshes header comment of /etc/steam-arm/titles.conf;
+    title lines kept.
+  * Raspberry Pi behaviour untested on Raspberry Pi hardware.
+
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Wed, 14 Oct 2026 00:00:00 +0000
+
 steam-arm-setup (2.3.1) stable; urgency=low
 
   * Hardware report: Steam IDs, Steam sign-in and persona names, public
