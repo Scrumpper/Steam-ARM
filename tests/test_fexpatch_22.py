@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """steam-arm-fexpatch.py (outline 2a item 22): patch / unpatch of Valve's FEX tool files, pre-2609 and 2609+.
 Extracted from installer under test; its other-flavour flag path (second /etc settings file) rewritten to a temp file in
-the extract only. Stock fex-compat-tool fixture in fixtures/fex-tool (Valve's two LD_PRELOAD lines). Internal."""
+the extract only. Synthetic fex-compat-tool stand-in in fixtures/fex-tool (stock two LD_PRELOAD lines). Internal."""
 import hashlib
 import json
 import os
