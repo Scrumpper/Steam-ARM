@@ -14,8 +14,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - OpenGL version report per title on Raspberry Pi GPUs: `glver=3.3` (also 3.2, 4.0 to 4.6) sets `MESA_GL_VERSION_OVERRIDE` with matching `MESA_GLSL_VERSION_OVERRIDE`; off by default. Titles that only check version start; titles using OpenGL 3.2 and newer features draw wrong. Title setting wins over engine rules (Unity GL 4.5, Godot 3.3 report). CPU drawing verdict and notice on these GPUs suggest it; nothing changes by itself.
 - Experimental Zink per title on Raspberry Pi GPUs: `gl=zink` sets `MESA_LOADER_DRIVER_OVERRIDE=zink` and `GALLIUM_DRIVER=zink`; off by default; unproven on Raspberry Pi.
-- Settings menu Graphics, Route per game: rows Direct3D, OpenGL version and OpenGL driver on Raspberry Pi GPUs; `steam-arm-config profile` accepts `d3d`, `glver` and `gl`, `--clear` removes them.
-- Raspberry Pi GPU title settings reach Windows titles on ARM64 Proton as Steam launch option: launcher writes `STEAM_ARM_LAUNCHOPTS=<names> NAME=value ... %command%` ahead of account's own launch options in each `localconfig.vdf` before client start, replaces or removes it when setting changes, and leaves variable to own launch options when they set it (GL and Zink variables as pairs); removal takes it out. x86 Linux titles and x86 Proton get same settings through launch handler (log lines `d3d:`, `pi gpu:`).
+- Settings menu Graphics, Route per game: rows Direct3D, OpenGL version and OpenGL driver on Raspberry Pi GPUs; game list column shows these settings (`DXVK, GL 3.3, Zink`) and Graphics intro names them in place of Mali route B; `steam-arm-config profile` accepts `d3d`, `glver` and `gl`, `--clear` removes them.
+- Raspberry Pi GPU title settings reach Windows titles on ARM64 Proton as Steam launch option: launcher writes `STEAM_ARM_LAUNCHOPTS=<names> NAME=value ... %command%` ahead of account's own launch options in each `localconfig.vdf` before client start, replaces or removes it when setting changes, and leaves variable to own launch options when they set it (GL and Zink variables as pairs); removal takes it out. Own launch options come back byte for byte: `%command%` added for options without it (marked `STEAM_ARM_LAUNCHOPTS=+<names>`) goes again with own part. x86 Linux titles and x86 Proton get same settings through launch handler (log lines `d3d:`, `pi gpu:`).
+
+### Changed
+
+- Setup refreshes header comment of existing `/etc/steam-arm/titles.conf` to current key list (Raspberry Pi keys included); title lines and other comments kept byte for byte, file without Steam ARM header left as is.
 
 ### Known issues
 

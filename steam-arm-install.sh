@@ -1580,6 +1580,15 @@ SA_GL_VERSIONS="3.2 3.3 4.0 4.1 4.2 4.3 4.4 4.5 4.6"
 d3d_label(){ case "$1" in dxvk) echo "DXVK (stops at start)";; *) echo "WineD3D";; esac; }
 glver_label(){ if [ -n "$1" ]; then echo "$1 report"; else echo "off (driver: 3.1)"; fi; }
 zink_label(){ case "$1" in zink) echo "Zink (experimental)";; *) echo "v3d";; esac; }
+# Raspberry Pi title settings of appid, short (list column): "DXVK, GL 3.3, Zink"; empty when none.
+pi_summary(){
+  local d g z ps=()
+  d=$(tc_get "$1" d3d); g=$(tc_get "$1" glver); z=$(tc_get "$1" gl)
+  case "$d" in dxvk) ps+=(DXVK);; wined3d) ps+=(WineD3D);; esac
+  [ -n "$g" ] && ps+=("GL $g")
+  [ "$z" = zink ] && ps+=(Zink)
+  local IFS=,; printf '%s' "${ps[*]}" | sed 's/,/, /g'
+}
 client_type(){ case "$(conf_get CLIENT)" in x86) echo x86;; *) echo arm64;; esac; }
 auto_build(){ case "$(conf_get AUTO_BUILD)" in off) echo off;; *) echo on;; esac; }
 cpu_notice(){ case "$(conf_get CPU_NOTICE)" in on) echo on;; *) echo off;; esac; }
@@ -3452,9 +3461,9 @@ graphics_default(){
 }
 # Pick an installed game; prints appid. $1 = title, $2 = key to show (gfx or profile), $3 = appid to start on.
 pick_game(){
-  local title=$1 show=$2 def=${3:-} id name dir items=() r maps="" autos="" cpus
+  local title=$1 show=$2 def=${3:-} id name dir items=() r maps="" autos="" cpus pis="" p
   if ! is_installed; then offer_install; return 1; fi
-  [ "$show" = gfx ] && { maps=$(compat_map); autos=$(ab_list | awk -F'\t' '$1 == "app" && $3 == "auto" { print $2 }'); }
+  [ "$show" = gfx ] && { maps=$(compat_map); autos=$(ab_list | awk -F'\t' '$1 == "app" && $3 == "auto" { print $2 }'); pi_family && pis=1; }
   cpus=" $(cpu_apps | tr '\n' ' ')"
   while IFS=$'\t' read -r id name dir; do
     [ -n "$id" ] || continue
@@ -3463,7 +3472,11 @@ pick_game(){
            # GE label shortened to fit 24 columns
            case "$r" in "Windows build (GE-"*) r="Windows, ${r#Windows build (}"; r=${r%)};; esac
            grep -qx "$id" <<<"$autos" && r="Windows (auto)"
-           [ -n "$r" ] || r=$(gfx_label "$(tc_get "$id" gfx)");;
+           [ -n "$r" ] || r=$(gfx_label "$(tc_get "$id" gfx)")
+           if [ -n "$pis" ] && p=$(pi_summary "$id") && [ -n "$p" ]; then
+             # route A/B means nothing here (forwarding only): build kept, settings shown
+             case "$r" in Windows*) r="Win, $p";; Linux*) r="Linux, $p";; *) r=$p;; esac
+           fi;;
       *)   r=$(tc_effective "$id" | grep -v '^gfx=' | tr '\n' ' ' | trim); r=${r:-default};;
     esac
     [[ "$cpus" == *" $id "* ]] && r="${r:0:19} CPU!"
@@ -3616,7 +3629,9 @@ in their video options."
 menu_graphics(){
   local c=""
   is_installed || { offer_install; return; }
-  while c=$(ui_menu "Graphics" "How x86 games reach the GPU. A: forwarding to host drivers. B: Mali drivers inside emulation." --default "$c" \
+  local intro="How x86 games reach the GPU. A: forwarding to host drivers. B: Mali drivers inside emulation."
+  pi_family && intro="How games reach the GPU. A: forwarding to host drivers. Raspberry Pi GPU: Direct3D, OpenGL version and driver per game in Route per game."
+  while c=$(ui_menu "Graphics" "$intro" --default "$c" \
       1 "Default route (now: $(gfx_default_label "$(gfx_default)"))" 2 "Route per game" \
       3 "Automatic Windows build (now: $(auto_build))" 4 "CPU drawing notice (now: $(cpu_notice))"); do
     case "$c" in 1) graphics_default;; 2) graphics_game;; 3) graphics_auto_build;; 4) graphics_cpu_notice;; esac
@@ -8425,7 +8440,7 @@ def keep_env(k, want):
 APPID = os.environ.get("SteamAppId") or os.environ.get("SteamGameId") or ""
 # Environment before any rule; names in STEAM_ARM_LAUNCHOPTS came from title settings (launcher), not from account.
 LAUNCH_ENV = dict(os.environ)
-SYNCED = set(os.environ.get("STEAM_ARM_LAUNCHOPTS", "").split(","))
+SYNCED = set(os.environ.get("STEAM_ARM_LAUNCHOPTS", "").lstrip("+").split(","))
 # x86 client: handler entered through steam-arm-run.py (launch wrapper stand-in), which sets this flag.
 CLIENT_X86 = globals().get("CLIENT_X86", False)
 PROFILE_FILES = ("/usr/local/share/steam-arm/titles.conf", "/etc/steam-arm/titles.conf",
@@ -9712,7 +9727,9 @@ cat > /usr/local/share/steam-arm/titles.conf <<'TITLES'
 # Included title profiles; local overrides belong in /etc/steam-arm/titles.conf or ~/.config/steam-arm/titles.conf.
 248570 overlay=off      # custom OpenGL engine: stops when Steam overlay attaches
 TITLES
-[ -f /etc/steam-arm/titles.conf ] || cat > /etc/steam-arm/titles.conf <<'TITLES'
+# Header comment of system titles.conf: this version's text; every other line kept byte for byte.
+tmp=$(mktemp)
+cat > "$tmp" <<'TITLES'
 # Local title profiles; override /usr/local/share/steam-arm/titles.conf. One line per title: <appid> key=value ...
 #   overlay=x86|vulkan|off  mangohud=on|off  godot=gl|vulkan  env=A=1;B=2  args=-x;-y   (example: <appid> overlay=off)
 #   gl32=off (32-bit title on emulated x86 Mesa, no GL thunk)  vk32=keep (32-bit title keeps -vulkan)
@@ -9722,6 +9739,20 @@ TITLES
 #   Raspberry Pi GPU only: d3d=dxvk|wined3d (Proton titles; unset = wined3d)  glver=3.3 (GL version report,
 #   GLSL version to match)  gl=zink (OpenGL through Zink, experimental)
 TITLES
+if [ ! -f /etc/steam-arm/titles.conf ]; then
+  install -m 644 "$tmp" /etc/steam-arm/titles.conf
+else
+  # header = first line '# Local title profiles;' plus following '#   ' lines; other files left alone
+  t=$(mktemp /etc/steam-arm/titles.conf.XXXXXX) && awk -v hf="$tmp" '
+    NR == 1 && /^# Local title profiles;/ { while ((getline l < hf) > 0) print l; skip = 1; next }
+    skip && /^#   / { next }
+    { skip = 0; print }' /etc/steam-arm/titles.conf > "$t" \
+    && { [ -z "$(tail -c 1 /etc/steam-arm/titles.conf)" ] || truncate -s -1 "$t"; } \
+    && if cmp -s "$t" /etc/steam-arm/titles.conf; then rm -f "$t"
+       else chmod --reference=/etc/steam-arm/titles.conf "$t" && mv -f "$t" /etc/steam-arm/titles.conf; fi \
+    || { rm -f "$t"; warn "/etc/steam-arm/titles.conf: header comment not refreshed"; }
+fi
+rm -f "$tmp"
 
 # FEX tool edit, shared by the launcher's start and its watcher (see the launcher).
 cat > /usr/local/lib/steam-arm-fexpatch.py <<'FEXPY'
@@ -11556,7 +11587,8 @@ Windows titles on ARM64 Proton start without launch handler, so title settings d
 glver=<version> and gl=zink (titles.conf, Raspberry Pi GPU families only) reach them as
 Steam launch options in each localconfig.vdf of client. Own part leads launch options:
   STEAM_ARM_LAUNCHOPTS=<names> NAME=value ... %command% <own launch options of account>
-and is replaced or removed on each run; rest stays. Name that own launch options set
+and is replaced or removed on each run; rest stays. Leading + in <names>: %command% added here
+(own launch options had none), removed again with own part. Name that own launch options set
 already is left to them. Client must be closed (it rewrites file on exit); launcher runs
 `sync` before each client start, removal runs `restore`.
 
@@ -11613,14 +11645,16 @@ def wanted(prof, family):
 
 def strip_own(opt):
     """Launch options without own leading part."""
-    m = re.match(r"\s*%s=([A-Z0-9_,]*)(\s+|$)" % MARK, opt)
+    m = re.match(r"\s*%s=(\+?)([A-Z0-9_,]*)(\s+|$)" % MARK, opt)
     if not m:
         return opt
     rest = opt[m.end():]
-    for n in [n for n in m.group(1).split(",") if n]:
+    for n in [n for n in m.group(2).split(",") if n]:
         m2 = re.match(r"%s=\S*(\s+|$)" % re.escape(n), rest)
         if m2:
             rest = rest[m2.end():]
+    if m.group(1) and rest.startswith("%command% "):
+        return rest[len("%command% "):]
     return "" if rest.strip() == "%command%" else rest
 
 
@@ -11646,8 +11680,10 @@ def compose(opt, want):
     want = [(n, v) for n, v in want if n not in mine]
     if not want:
         return rest, kept
-    head = "%s=%s %s" % (MARK, ",".join(n for n, _ in want), " ".join("%s=%s" % nv for nv in want))
-    tail = rest if "%command%" in rest else "%command%" + (" " + rest.strip() if rest.strip() else "")
+    added = "%command%" not in rest
+    head = "%s=%s%s %s" % (MARK, "+" if added and rest else "", ",".join(n for n, _ in want),
+                           " ".join("%s=%s" % nv for nv in want))
+    tail = "%command% " + rest if added and rest else rest or "%command%"
     return head + " " + tail, kept
 
 
