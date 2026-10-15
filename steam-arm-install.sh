@@ -1,7 +1,7 @@
 #!/bin/bash
 # steam-arm-setup: installs Valve's native ARM64 Steam client (x86 client through FEX on CPUs without Armv8.1 atomics), with host packages, RootFS, launcher, optional components; run as root, then launch via steam-arm. See --help.
 set -u
-SA_VERSION=2.3.1
+SA_VERSION=2.3.2
 # Banner: self-contained (no board helper needed); TTY-gated, honours NO_COLOR.
 steam_banner() {
     [ -t 1 ] || return 0
@@ -987,7 +987,7 @@ gpu_defaults(){
     adreno-a702) GPU_DEF="0 0 1"; GPU_NOTE="Adreno 702: entry-level GPU, Vulkan too limited for most Windows titles";;
     adreno-legacy) GPU_DEF="0 0 1"; GPU_NOTE="Adreno 5xx or older: no Vulkan driver; native OpenGL titles only";;
     apple-agx) GPU_DEF="0 0 1"; GPU_NOTE="Apple GPU: 16K-page kernel not supported; setup does not set up 4K VM (muvm)";;
-    broadcom-v3d71|broadcom-v3d42) GPU_DEF="0 0 1"; GPU_NOTE="Raspberry Pi GPU: Vulkan too limited for most Windows titles";;
+    broadcom-v3d71|broadcom-v3d42) GPU_DEF="0 0 1"; GPU_NOTE="Raspberry Pi GPU: OpenGL 3.1; Windows titles through WineD3D (DXVK cannot run on V3D)";;
     broadcom-vc4) GPU_DEF="0 0 1"; GPU_NOTE="VideoCore IV (Raspberry Pi 0-3): not supported";;
     vivante) GPU_DEF="0 0 1"; GPU_NOTE="Vivante GPU: no Vulkan driver, OpenGL ES class; most titles do not run";;
     img-powervr) GPU_DEF="0 0 0"; GPU_NOTE="PowerVR: Vulkan driver in development; OpenGL through Zink; glx-lax not applicable";;
@@ -1073,7 +1073,7 @@ menu_app(){ cat <<'STEAMARMCONFIG'
 # steam-arm-config: menu-driven settings for Steam ARM (built-in screens, dialog, whiptail or plain prompts). See --help.
 set -u
 
-SA_VERSION=2.3.1
+SA_VERSION=2.3.2
 SA_DOCS=https://github.com/Scrumpper/Steam-ARM
 SA_CONF=/etc/steam-arm/steam-arm.conf
 SA_TITLES_SHARE=/usr/local/share/steam-arm/titles.conf
@@ -1573,6 +1573,13 @@ route_family(){ local f; f=$(conf_get GPU_FAMILY); echo "${f:-$(gpu_family)}"; }
 mali_family(){ case " $SA_MALI_FAMILIES " in *" $(route_family) "*) return 0;; esac; return 1; }
 # Route B offered on a Mali GPU, or with a custom driver tree in place (handler applies it there too).
 route_b_ok(){ mali_family || { mali_ready && mali_custom; }; }
+# Raspberry Pi GPU families: title settings d3d, glver, gl apply there only (PI_FAMILIES of launch handler).
+SA_PI_FAMILIES="broadcom-v3d71 broadcom-v3d42 broadcom-vc4"
+pi_family(){ case " $SA_PI_FAMILIES " in *" $(route_family) "*) return 0;; esac; return 1; }
+SA_GL_VERSIONS="3.2 3.3 4.0 4.1 4.2 4.3 4.4 4.5 4.6"
+d3d_label(){ case "$1" in dxvk) echo "DXVK (stops at start)";; *) echo "WineD3D";; esac; }
+glver_label(){ if [ -n "$1" ]; then echo "$1 report"; else echo "off (driver: 3.1)"; fi; }
+zink_label(){ case "$1" in zink) echo "Zink (experimental)";; *) echo "v3d";; esac; }
 client_type(){ case "$(conf_get CLIENT)" in x86) echo x86;; *) echo arm64;; esac; }
 auto_build(){ case "$(conf_get AUTO_BUILD)" in off) echo off;; *) echo on;; esac; }
 cpu_notice(){ case "$(conf_get CPU_NOTICE)" in on) echo on;; *) echo off;; esac; }
@@ -2969,7 +2976,7 @@ info_notes_builtin(){
     mali-utgard) echo "- Mali-400/450: too old for Steam games.";;
     mali-*)     echo "- Mali GPU on open drivers: Mali-only parts can be used.";;
     adreno*)    echo "- Adreno GPU: Windows games through DXVK expected to work. Mali-only parts stay off.";;
-    broadcom-*) echo "- Raspberry Pi GPU: OpenGL games fit best; Vulkan is too limited for most Windows games.";;
+    broadcom-*) echo "- Raspberry Pi GPU: OpenGL 3.1. Windows games use WineD3D (DXVK cannot run on V3D); OpenGL version and Zink per game in Graphics.";;
     apple-agx)  echo "- Apple GPU: 16K-page kernel not supported; setup does not set up a 4K-page VM (muvm).";;
     amd-*|nvidia-*|intel) echo "- PC graphics card: forwarding covers it. Mali-only parts stay off.";;
     virtio-gpu) echo "- Virtual machine: expect software drawing unless the VM passes the GPU through.";;
@@ -3491,11 +3498,18 @@ Note: the client home file sets this game; it wins over this menu."
   fi
   local ge; ge=$(ge_newest)
   local -a gi=(); [ -n "$ge" ] && gi=(ge "Force Windows build, ${ge%-aarch64} (needs Steam closed)$(case "$map" in GE-Proton*) echo " *";; esac)")
+  local -a pi=()
+  pi_family && pi=(d3d "Direct3D, Windows build: $(d3d_label "$(tc_get "$id" d3d)")" \
+                   glver "OpenGL version: $(glver_label "$(tc_get "$id" glver)")" \
+                   gl "OpenGL driver: $(zink_label "$(tc_get "$id" gl)")")
   c=$(ui_menu "Graphics: ${name:0:40}" "App $id. Route now: $now.$note" "${items[@]}" \
       linux "Force Linux build (needs Steam closed)$([ "$(compat_label "$map")" = "Linux build" ] && echo " *")" \
       windows "Force Windows build, Proton (needs Steam closed)$sug$([ "$(compat_label "$map")" = "Windows build (Proton)" ] && echo " *")" \
-      "${gi[@]}") || return
+      "${gi[@]}" "${pi[@]}") || return
   case "$c" in
+    d3d)   pi_d3d "$id" "$name";;
+    glver) pi_glver "$id" "$name";;
+    gl)    pi_zink "$id" "$name";;
     auto|a|b) self_root gfx "$id" "$c" || return
               # auto also drops a forced build
               if [ "$c" = auto ] && [ -n "$map" ]; then graphics_compat "$id" clear "$name"; return; fi
@@ -3503,6 +3517,42 @@ Note: the client home file sets this game; it wins over this menu."
                 n=$(route_b_note "$c"); [ -n "$n" ] && printf '\n\n%s' "$n")";;
     linux|windows|ge) graphics_compat "$id" "$c" "$name";;
   esac
+}
+# Applies-when text for Raspberry Pi GPU title settings (handler for x86 games, launch options for ARM64 Proton).
+SA_PI_APPLY="Linux games and x86 Proton: next start of game. Windows games on ARM64 Proton: next start of Steam ARM (Steam launch option, kept apart from own launch options)."
+pi_d3d(){
+  local id=$1 name=$2 cur c
+  cur=$(tc_get "$id" d3d)
+  c=$(ui_menu "Direct3D: ${name:0:40}" "Windows games on Raspberry Pi GPU run Direct3D 8 to 11 through WineD3D (OpenGL). DXVK (Vulkan) needs Vulkan features this GPU lacks: game stops at start. Direct3D 12 does not run.
+Now: $(d3d_label "$cur")." --default "${cur:-default}" \
+      wined3d "WineD3D (OpenGL)" dxvk "DXVK (Vulkan), stops at start on this GPU" default "Default: WineD3D (remove this setting)") || return
+  [ "$c" = default ] && c=""
+  game_set "$id" d3d "$c" && ui_msg "Graphics" "${name}: Direct3D through $(d3d_label "$c").
+
+$SA_PI_APPLY"
+}
+pi_glver(){
+  local id=$1 name=$2 cur c v
+  local -a items=()
+  cur=$(tc_get "$id" glver)
+  for v in 3.2 3.3 4.5; do items+=("$v" "Report OpenGL $v$([ "$cur" = "$v" ] && echo " *")"); done
+  c=$(ui_menu "OpenGL version: ${name:0:40}" "Raspberry Pi GPU driver offers OpenGL 3.1. Games that only check version start with newer version reported (3.3 fits most). Games that use newer OpenGL features then draw wrong or stop: remove setting again.
+Now: $(glver_label "$cur")." --default "${cur:-off}" "${items[@]}" off "Off (remove this setting)") || return
+  [ "$c" = off ] && c=""
+  game_set "$id" glver "$c" && ui_msg "Graphics" "${name}: OpenGL version $(glver_label "$c").
+
+$SA_PI_APPLY"
+}
+pi_zink(){
+  local id=$1 name=$2 cur c
+  cur=$(tc_get "$id" gl)
+  c=$(ui_menu "OpenGL driver: ${name:0:40}" "Zink runs OpenGL on Vulkan driver of this GPU. Experimental: untested on Raspberry Pi, slower than v3d driver in published tests. Can help games that need geometry shaders. Pair with OpenGL version 3.3.
+Now: $(zink_label "$cur")." --default "${cur:-default}" \
+      zink "Zink (experimental)" default "v3d driver (remove this setting)") || return
+  [ "$c" = default ] && c=""
+  game_set "$id" gl "$c" && ui_msg "Graphics" "${name}: OpenGL driver $(zink_label "$c").
+
+$SA_PI_APPLY"
 }
 graphics_compat(){
   local id=$1 how=$2 name=$3 out
@@ -3652,7 +3702,7 @@ game_menu(){
   while :; do
     # profiles reach Linux games only (emulation handler); Proton reads Steam launch options
     if [ "$win" = 1 ]; then
-      c=$(ui_menu "Game: ${name:0:50}" "App $id. Windows game (Proton): these settings apply to Linux games only. Use Steam launch options."$'\n'"$deck" \
+      c=$(ui_menu "Game: ${name:0:50}" "App $id. Windows game (Proton): these settings apply to Linux games only. Use Steam launch options.$(pi_family && printf '\n%s' "Raspberry Pi GPU: Direct3D, OpenGL version and driver in Graphics > Route per game.")"$'\n'"$deck" \
           --default "$c" rules "Rules used at last start" clear "Remove all settings for this game") || break
     else
       c=$(ui_menu "Game: ${name:0:50}" "App $id. Settings apply from the next start of the game."$'\n'"$deck" --default "$c" \
@@ -5106,7 +5156,7 @@ What works
   Launch options), for example:
     PROTON_USE_WINED3D=1 %command%
         Windows game: OpenGL (WineD3D) in place of
-        Vulkan (DXVK)
+        Vulkan (DXVK); default on Raspberry Pi GPU
     -vulkan
         game's own Vulkan switch, where it has one
     MESA_GL_VERSION_OVERRIDE=4.5 %command%
@@ -5122,6 +5172,12 @@ What works
 - Graphics > Route per game: A (forwarding to host
   drivers) or B (Mali drivers inside the emulation),
   for x86 Linux games.
+- Raspberry Pi GPU, Graphics > Route per game:
+  Direct3D (WineD3D default; DXVK stops at start on
+  this GPU), OpenGL version (driver has 3.1; 3.3
+  starts games that only check version, games using
+  newer features draw wrong), OpenGL driver Zink
+  (experimental, untested on Raspberry Pi).
 - Videos in Windows games show colour bars: turn on
   the shader-cache part (Components). It downloads
   several GB and processes caches on all cores after
@@ -5234,6 +5290,8 @@ Commands
                             game profile keys (overlay, mangohud, env,
                             args, gl32, vk32, godot, unity, gfx,
                             multiblock, diskcache);
+                            Raspberry Pi GPU keys d3d=dxvk|wined3d,
+                            glver=3.2..4.6, gl=zink;
                             key= removes one, --clear removes all
   compat <appid> linux|windows|ge|clear
                             force Linux build or Windows build (Proton;
@@ -5343,6 +5401,8 @@ profile_ok(){ case "$1=$2" in
   overlay=|overlay=x86|overlay=vulkan|overlay=off|mangohud=|mangohud=on|mangohud=off|gfx=|gfx=a|gfx=b) return 0;;
   gl32=|gl32=off|vk32=|vk32=keep|godot=|godot=gl|godot=vulkan|unity=|unity=vulkan|unity=gl) return 0;;
   multiblock=|multiblock=on|multiblock=off|diskcache=|diskcache=on|diskcache=off) return 0;;
+  d3d=|d3d=dxvk|d3d=wined3d|gl=|gl=zink|glver=) return 0;;
+  glver=*) case " $SA_GL_VERSIONS " in *" $2 "*) return 0;; esac; return 1;;
   env=*|args=*) valid_value "$2";;
   *) return 1;;
 esac; }
@@ -5351,7 +5411,7 @@ cli_profile(){
   valid_appid "$id" || { echo "usage: steam-arm-config profile <appid> key=value ..." >&2; return 2; }
   shift
   if [ "${1:-}" = --clear ]; then
-    for k in overlay mangohud env args gl32 vk32 godot unity gfx multiblock diskcache; do tc_set "$SA_TITLES_ETC" "$id" "$k" "" || return 1; done
+    for k in overlay mangohud env args gl32 vk32 godot unity gfx multiblock diskcache d3d glver gl; do tc_set "$SA_TITLES_ETC" "$id" "$k" "" || return 1; done
     echo "app $id: profile removed"; return 0
   fi
   for kv in "$@"; do
@@ -6285,6 +6345,12 @@ remove_all(){
       warn "  busctl --user call $KDE_PS_CALL DeletePermission sss kde-authorized remote-desktop \"\""
     fi
   fi
+  # launch options set from title settings (Raspberry Pi GPU); needs its helper, so before it goes
+  if [ -n "$armhome" ] && [ -f /usr/local/lib/steam-arm-launchopts.py ] && [ -d "$armhome/.local/share/Steam/userdata" ]; then
+    x=$(as_user python3 /usr/local/lib/steam-arm-launchopts.py restore "$armhome/.local/share/Steam" 2>&1)
+    case "$x" in *": launch options "*)
+      restored="${restored:+$restored, }Steam launch options set from title settings";; esac
+  fi
   say "programs, rules, menu entries, settings"
   # Profiles written by hand or by steam-arm-config: saved before /etc/steam-arm goes.
   if grep -qsv -e '^[[:space:]]*#' -e '^[[:space:]]*$' /etc/steam-arm/titles.conf; then
@@ -6294,7 +6360,7 @@ remove_all(){
   rm -f /usr/local/bin/steam-arm /usr/local/bin/steam-arm-remoteplay /usr/local/bin/steam-arm-compatmap \
         /usr/local/bin/steam-arm-icon /usr/local/bin/steam-arm-tray /usr/local/bin/steam-arm-config \
         /usr/local/lib/steam-arm-handler.py /usr/local/lib/steam-arm-fexpatch.py /usr/local/lib/steam-arm-compatmap.py \
-        /usr/local/lib/steam-arm-physx.py /usr/local/lib/steam-arm-kde-input \
+        /usr/local/lib/steam-arm-physx.py /usr/local/lib/steam-arm-kde-input /usr/local/lib/steam-arm-launchopts.py \
         /usr/local/lib/steam-arm-autobuild.py /usr/local/lib/steam-arm-appinfo.py /usr/local/lib/steam-arm-geproton.py \
         /usr/local/lib/steam-arm-x86client.py /usr/local/lib/steam-arm-run.py /usr/local/lib/steam-arm-pv-bwrap \
         /usr/local/lib/steam-arm-python3 \
@@ -8283,6 +8349,11 @@ on the tool's os.environ and sys.argv and decides per title:
   x86 client      On CPUs without Armv8.1 atomics Valve's x86 client runs through system FEX; its launch
                   wrapper stand-in enters this handler through steam-arm-run.py (CLIENT_X86 set): same
                   rules, forwarding only (gfx=b falls back with a log line), no FEX code cache.
+  Raspberry Pi    GPU families broadcom-v3d71, broadcom-v3d42, broadcom-vc4. x86 Proton: WineD3D (OpenGL)
+                  by default (DXVK cannot start on V3D); d3d=dxvk per title. glver=<version>: GL and GLSL
+                  version report pair; gl=zink: OpenGL through Zink (experimental). Same keys reach Windows
+                  titles on ARM64 Proton as Steam launch options (steam-arm-launchopts.py, launcher).
+                  CPU drawing verdict there names GL version setting.
   GoldSrc titles  note only: renderer picked in the title's video options (Software draws on CPU).
   Compat check    note when Steam's saved tool for the title (config.vdf CompatToolMapping) names a
                   Proton build but this Linux build started; never writes that file.
@@ -8302,6 +8373,7 @@ Line: <appid> key=value ...   keys: overlay=x86|vulkan|off  mangohud=on|off
       gfx=a (forwarding)  gfx=b (Mali drivers inside the emulation)
       multiblock=on|off (FEX Multiblock; launch-option FEX_APP_CONFIG and Steam's FEX setting win)
       diskcache=on|off (FEX code cache, FEX tool 2609.1+; launch-option FEX_DISKCACHE / FEX_APP_CONFIG win)
+      d3d=dxvk|wined3d  glver=3.2|3.3|4.0..4.6  gl=zink (Raspberry Pi GPU only)
 Per-title launch options override profiles: STEAM_ARM_OVERLAY=x86|vulkan|off, and
 STEAM_ARM_PRELOAD_KEEP=a,b (keep exactly LD_PRELOAD entries containing these substrings).
 Every decision is printed to the tool's log, /tmp/fex-compat-tool-<pid>.log, readable by game account only."""
@@ -8351,6 +8423,9 @@ def keep_env(k, want):
 
 
 APPID = os.environ.get("SteamAppId") or os.environ.get("SteamGameId") or ""
+# Environment before any rule; names in STEAM_ARM_LAUNCHOPTS came from title settings (launcher), not from account.
+LAUNCH_ENV = dict(os.environ)
+SYNCED = set(os.environ.get("STEAM_ARM_LAUNCHOPTS", "").split(","))
 # x86 client: handler entered through steam-arm-run.py (launch wrapper stand-in), which sets this flag.
 CLIENT_X86 = globals().get("CLIENT_X86", False)
 PROFILE_FILES = ("/usr/local/share/steam-arm/titles.conf", "/etc/steam-arm/titles.conf",
@@ -8759,6 +8834,51 @@ def set_env(k, want, why, default=()):
     os.environ[k] = want
 
 
+# Raspberry Pi GPUs: desktop GL 3.1, Vulkan driver without features DXVK requires.
+PI_FAMILIES = ("broadcom-v3d71", "broadcom-v3d42", "broadcom-vc4")
+GL_VERSIONS = {"3.2": "150", "3.3": "330", "4.0": "400", "4.1": "410", "4.2": "420", "4.3": "430",
+               "4.4": "440", "4.5": "450", "4.6": "460"}
+
+
+def own_launch(k):
+    """Value of k from own launch options of account or environment, else None."""
+    v = LAUNCH_ENV.get(k)
+    if v is None or k in SYNCED or (k == "PROTON_USE_WINED3D" and v == "1"
+                                     and LAUNCH_ENV.get("STEAM_ARM_D3D_DEFAULT") == "wined3d"):
+        return None
+    return v
+
+
+def pi_env(prof):
+    """[(name, value, setting)] for glver and gl of title profile; unknown values logged."""
+    out = []
+    v = prof.get("glver")
+    if v in GL_VERSIONS:
+        out += [("MESA_GL_VERSION_OVERRIDE", v, "glver=" + v), ("MESA_GLSL_VERSION_OVERRIDE", GL_VERSIONS[v], "glver=" + v)]
+    elif v:
+        log("pi gpu: title setting glver=%s unknown (values: %s)" % (v, ", ".join(GL_VERSIONS)))
+    g = prof.get("gl")
+    if g == "zink":
+        out += [("MESA_LOADER_DRIVER_OVERRIDE", "zink", "gl=zink"), ("GALLIUM_DRIVER", "zink", "gl=zink")]
+    elif g:
+        log("pi gpu: title setting gl=%s unknown (value: zink)" % g)
+    return out
+
+
+def title_env(k, want, why):
+    """Title setting over rules; account's own launch option wins."""
+    mine = own_launch(k)
+    if mine is not None:
+        if mine != want:
+            log("launch option kept: %s=%s (title setting %s)" % (k, mine, why))
+        os.environ[k] = mine
+        return
+    cur = os.environ.get(k)
+    if cur is not None and cur != want and cur != LAUNCH_ENV.get(k):
+        log("title setting kept: %s (rule wanted %s=%s)" % (why, k, cur))
+    os.environ[k] = want
+
+
 def gfx_default():
     """GFX_DEFAULT from /etc/steam-arm/steam-arm.conf: 'auto' (auto or empty: rules decide), 'a' (a or forward:
     every title on forwarding) or 'b' (every title on the second tree); other values: rules, logged."""
@@ -8951,10 +9071,20 @@ def notify_cpu():
     if goldsrc():
         log("notice: not shown (GoldSrc title: Software renderer is a video option)")
         return False
+    pi = pi_hint()
     return desktop_notice("Game draws on CPU",
                           "GPU forwarding is not active for this game (llvmpipe); frame rate stays low. "
-                          "Cause: game log line \"renderer:\". Help: steam-arm-config, Help > Fixing a game.",
-                          urgency=2, timeout=0)
+                          "Cause: game log line \"renderer:\". Help: steam-arm-config, Help > Fixing a game."
+                          + (" " + pi if pi else ""), urgency=2, timeout=0)
+
+
+def pi_hint():
+    """Raspberry Pi GPU without glver: suggestion to try GL version report (no change made)."""
+    p = globals().get("prof") or {}
+    if gpu_family() not in PI_FAMILIES or p.get("glver") or p.get("gl"):
+        return None
+    return ("Raspberry Pi GPU reports OpenGL 3.1; game may need newer GL. Try OpenGL version 3.3 for this game: "
+            "steam-arm-config, Graphics, Route per game.")
 
 
 AUTOBUILD = "/usr/local/lib/steam-arm-autobuild.py"
@@ -9088,6 +9218,9 @@ def renderer_watch(root, limit=180, step=2):
             if v:
                 log(v)
                 if v.startswith("renderer: warning:"):
+                    pi = pi_hint()
+                    if pi:
+                        log("renderer: " + pi)
                     notify_cpu()
                 return
     log("renderer: not detected within %d s (no GL or Vulkan library loaded, or title still loading)" % limit)
@@ -9123,6 +9256,23 @@ elif x86_proton:
 elif tool and "proton" in tool.lower():
     log("compat: warning: Steam's saved setting names %s for this title, but its Linux build started; "
         "Steam's current choice differs from its saved one (Properties > Compatibility)" % tool)
+# Raspberry Pi GPU, x86 Proton: WineD3D unless title setting d3d=dxvk; own launch option wins.
+d3d = prof.get("d3d")
+if d3d not in (None, "dxvk", "wined3d"):
+    log("pi gpu: title setting d3d=%s unknown (values: dxvk, wined3d)" % d3d)
+    d3d = None
+if gpu_family() in PI_FAMILIES:
+    if x86_proton:
+        want = "0" if d3d == "dxvk" else "1"
+        mine = own_launch("PROTON_USE_WINED3D")
+        if mine is not None and mine != want:
+            log("launch option kept: PROTON_USE_WINED3D=%s (title setting d3d=%s)" % (mine, d3d or "wined3d"))
+        else:
+            os.environ["PROTON_USE_WINED3D"] = want
+            log("d3d: DXVK (title setting d3d=dxvk); Vulkan driver of this GPU lacks features DXVK requires, start may fail"
+                if want == "0" else "d3d: WineD3D (OpenGL): Raspberry Pi GPU, DXVK cannot start on V3D")
+elif d3d or prof.get("glver") or prof.get("gl"):
+    log("pi gpu: title settings d3d, glver, gl not applied: Raspberry Pi GPU only (GPU family %s)" % gpu_family())
 # Automatic Windows build: a start the launcher has not switched yet is skipped (SystemExit passes the tool's handler try).
 AB = None if x86_proton else auto_build(tool, bits)
 if AB:
@@ -9249,6 +9399,24 @@ elif engine == "unity" and not unity_legacy_gl():
         log("unity: Vulkan renderer (launch option -force-vulkan)")
     else:
         log("unity: OpenGL core, GL %s report" % os.environ["MESA_GL_VERSION_OVERRIDE"])
+
+# Raspberry Pi GPU: GL version report (glver) and Zink (gl=zink) from title settings, over engine rules.
+if gpu_family() in PI_FAMILIES:
+    pe = pi_env(prof)
+    # pairs work only together: one set in own launch options leaves both to them
+    for pair in (("MESA_GL_VERSION_OVERRIDE", "MESA_GLSL_VERSION_OVERRIDE"), ("MESA_LOADER_DRIVER_OVERRIDE", "GALLIUM_DRIVER")):
+        mine = ["%s=%s" % (k, own_launch(k)) for k in pair if own_launch(k) is not None]
+        hit = [why for k, _, why in pe if k in pair]
+        if mine and hit:
+            log("launch option kept: %s (title setting %s)" % (" ".join(mine), hit[0]))
+            pe = [x for x in pe if x[0] not in pair]
+    for k, v, why in pe:
+        title_env(k, v, why)
+    if any(k == "MESA_GL_VERSION_OVERRIDE" for k, _, _ in pe):
+        log("pi gpu: GL %s report, GLSL %s (title setting glver); driver has GL 3.1, titles using newer GL features may "
+            "misrender" % (os.environ["MESA_GL_VERSION_OVERRIDE"], os.environ.get("MESA_GLSL_VERSION_OVERRIDE", "?")))
+    if any(k == "MESA_LOADER_DRIVER_OVERRIDE" for k, _, _ in pe):
+        log("pi gpu: OpenGL through Zink (title setting gl=zink), experimental, untested on this GPU")
 
 # profile extras
 for kv in [x for x in prof.get("env", "").split(";") if "=" in x]:
@@ -9551,6 +9719,8 @@ TITLES
 #   gfx=b (Mali drivers inside emulation)  gfx=a (forwarding); unset = automatic
 #   multiblock=on|off (FEX Multiblock for the title; unset = Valve's per-title default)
 #   diskcache=on|off (FEX code cache for the title, FEX tool 2609.1 or newer; unset = off)
+#   Raspberry Pi GPU only: d3d=dxvk|wined3d (Proton titles; unset = wined3d)  glver=3.3 (GL version report,
+#   GLSL version to match)  gl=zink (OpenGL through Zink, experimental)
 TITLES
 
 # FEX tool edit, shared by the launcher's start and its watcher (see the launcher).
@@ -10503,8 +10673,16 @@ if [ -n "${COMPONENTS_ON+x}" ] && comp_on shader-cache; then
 fi
 # Proton titles use host Vulkan.
 comp_on vk-spoof && [ -f /usr/share/vulkan/implicit_layer.d/VkLayer_steam_arm_spoof.json ] && export STEAM_ARM_VK_SPOOF=1
-# PROTON_DXVK_D3D8=1: use DXVK's d3d8 (wined3d's GL path misrenders on Mali); launch option can override.
-export PROTON_DXVK_D3D8="${PROTON_DXVK_D3D8:-1}"
+case "${GPU_FAMILY:-}" in
+  # Raspberry Pi GPU: DXVK cannot start on V3D's Vulkan driver, so Proton titles use WineD3D; d3d=dxvk per title.
+  broadcom-v3d71|broadcom-v3d42|broadcom-vc4)
+    if [ -z "${PROTON_USE_WINED3D+x}" ]; then
+      export PROTON_USE_WINED3D=1 STEAM_ARM_D3D_DEFAULT=wined3d
+      printf '%s %s\n' "$(date '+%F %T')" "Raspberry Pi GPU: Proton titles use WineD3D (PROTON_USE_WINED3D=1)" >> "$LOG" 2>/dev/null
+    fi;;
+  # PROTON_DXVK_D3D8=1: use DXVK's d3d8 (wined3d's GL path misrenders on Mali); launch option can override.
+  *) export PROTON_DXVK_D3D8="${PROTON_DXVK_D3D8:-1}";;
+esac
 
 BOOTLOG="$S/logs/bootstrap_log.txt"
 FIRST_MSG="Downloading client files, this takes a few minutes. Steam opens when done."
@@ -10862,6 +11040,11 @@ fi
 # --- Remote Play settings: pin hardware decode + HEVC off before start (client rewrites the file on exit) ---
 if command -v steam-arm-remoteplay >/dev/null 2>&1 && ! client_running; then
   steam-arm-remoteplay >/dev/null 2>&1
+fi
+# --- Raspberry Pi GPU title settings (d3d, glver, gl) as Steam launch options; client rewrites file on exit ---
+if [ -f /usr/local/lib/steam-arm-launchopts.py ] && ! client_running; then
+  python3 /usr/local/lib/steam-arm-launchopts.py sync "$S" "${GPU_FAMILY:-}" </dev/null 2>&1 | while IFS= read -r l; do
+    printf '%s %s\n' "$(date '+%F %T')" "$l" >> "$LOG" 2>/dev/null; done
 fi
 
 # --- interface: Deck (gamepadui) by default; -gamepadui off shows the client's own tray icon via xembedsniproxy ---
@@ -11365,6 +11548,310 @@ if __name__ == "__main__":
     sys.exit(main())
 RPPY
 chmod 755 /usr/local/bin/steam-arm-remoteplay
+cat > /usr/local/lib/steam-arm-launchopts.py <<'LOPY'
+#!/usr/bin/env python3
+"""steam-arm-launchopts: Raspberry Pi GPU title settings as Steam launch options.
+
+Windows titles on ARM64 Proton start without launch handler, so title settings d3d=dxvk,
+glver=<version> and gl=zink (titles.conf, Raspberry Pi GPU families only) reach them as
+Steam launch options in each localconfig.vdf of client. Own part leads launch options:
+  STEAM_ARM_LAUNCHOPTS=<names> NAME=value ... %command% <own launch options of account>
+and is replaced or removed on each run; rest stays. Name that own launch options set
+already is left to them. Client must be closed (it rewrites file on exit); launcher runs
+`sync` before each client start, removal runs `restore`.
+
+usage: steam-arm-launchopts.py sync <Steam folder> <GPU family>
+       steam-arm-launchopts.py restore <Steam folder>"""
+import glob
+import os
+import re
+import sys
+import tempfile
+
+PI_FAMILIES = ("broadcom-v3d71", "broadcom-v3d42", "broadcom-vc4")
+# GL version report and matching GLSL version (Mesa needs both to agree)
+GL_VERSIONS = {"3.2": "150", "3.3": "330", "4.0": "400", "4.1": "410", "4.2": "420", "4.3": "430",
+               "4.4": "440", "4.5": "450", "4.6": "460"}
+MARK = "STEAM_ARM_LAUNCHOPTS"
+PROFILE_FILES = ("/usr/local/share/steam-arm/titles.conf", "/etc/steam-arm/titles.conf",
+                 os.path.join(os.path.expanduser("~"), ".config/steam-arm/titles.conf"))
+APPS_PATH = ("UserLocalConfigStore", "Software", "Valve", "Steam", "apps")
+
+
+def profiles(files=PROFILE_FILES):
+    """{appid: {key: value}} over all profile files, later files win."""
+    out = {}
+    for path in files:
+        try:
+            lines = open(path).read().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            words = line.split("#", 1)[0].split()
+            if len(words) > 1 and re.fullmatch(r"[0-9]{1,10}", words[0]):
+                for kv in words[1:]:
+                    if "=" in kv:
+                        k, v = kv.split("=", 1)
+                        out.setdefault(words[0], {})[k] = v
+    return out
+
+
+def wanted(prof, family):
+    """[(name, value)] for profile; empty on other GPU families."""
+    if family not in PI_FAMILIES:
+        return []
+    w = []
+    if prof.get("d3d") == "dxvk":
+        w.append(("PROTON_USE_WINED3D", "0"))
+    v = prof.get("glver")
+    if v in GL_VERSIONS:
+        w += [("MESA_GL_VERSION_OVERRIDE", v), ("MESA_GLSL_VERSION_OVERRIDE", GL_VERSIONS[v])]
+    if prof.get("gl") == "zink":
+        w += [("MESA_LOADER_DRIVER_OVERRIDE", "zink"), ("GALLIUM_DRIVER", "zink")]
+    return w
+
+
+def strip_own(opt):
+    """Launch options without own leading part."""
+    m = re.match(r"\s*%s=([A-Z0-9_,]*)(\s+|$)" % MARK, opt)
+    if not m:
+        return opt
+    rest = opt[m.end():]
+    for n in [n for n in m.group(1).split(",") if n]:
+        m2 = re.match(r"%s=\S*(\s+|$)" % re.escape(n), rest)
+        if m2:
+            rest = rest[m2.end():]
+    return "" if rest.strip() == "%command%" else rest
+
+
+def user_names(rest):
+    """Variables own launch options of account set before %command%."""
+    if "%command%" not in rest:
+        return set()
+    return set(re.findall(r"(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=", rest.split("%command%", 1)[0]))
+
+
+# pair variables work only together: one set by account leaves both to it
+PAIRS = (("MESA_GL_VERSION_OVERRIDE", "MESA_GLSL_VERSION_OVERRIDE"), ("MESA_LOADER_DRIVER_OVERRIDE", "GALLIUM_DRIVER"))
+
+
+def compose(opt, want):
+    """(new launch options, names left to account's own launch options)."""
+    rest = strip_own(opt)
+    mine = user_names(rest)
+    for pair in PAIRS:
+        if mine & set(pair):
+            mine |= set(pair)
+    kept = [n for n, _ in want if n in mine]
+    want = [(n, v) for n, v in want if n not in mine]
+    if not want:
+        return rest, kept
+    head = "%s=%s %s" % (MARK, ",".join(n for n, _ in want), " ".join("%s=%s" % nv for nv in want))
+    tail = rest if "%command%" in rest else "%command%" + (" " + rest.strip() if rest.strip() else "")
+    return head + " " + tail, kept
+
+
+# --- localconfig.vdf: text outside edited value kept byte for byte ---
+TOK = re.compile(r'"((?:[^"\\]|\\.)*)"|([{}])|//[^\n]*|\s+', re.S)
+
+
+class Layout(Exception):
+    pass
+
+
+def unesc(s):
+    return re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t"}.get(m.group(1), m.group(1)), s, flags=re.S)
+
+
+def esc(s):
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def tokens(text):
+    i, out = 0, []
+    while i < len(text):
+        m = TOK.match(text, i)
+        if not m:
+            raise Layout("unexpected text at byte %d" % i)
+        if m.group(1) is not None:
+            out.append(("s", unesc(m.group(1)), m.start(1), m.end(1)))
+        elif m.group(2):
+            out.append((m.group(2), None, m.start(), m.end()))
+        i = m.end()
+    return out
+
+
+def parse(text):
+    """Nodes: dict key, value (str) or kids (list), span (value text) or open/close brace offsets."""
+    toks = tokens(text)
+
+    def block(i, top):
+        kids = []
+        while i < len(toks):
+            t = toks[i]
+            if t[0] == "}":
+                if top:
+                    raise Layout("unbalanced braces")
+                return kids, i
+            if t[0] != "s" or i + 1 >= len(toks):
+                raise Layout("key expected at byte %d" % t[2])
+            n = toks[i + 1]
+            if n[0] == "s":
+                kids.append({"key": t[1], "value": n[1], "span": (n[2], n[3])})
+                i += 2
+            elif n[0] == "{":
+                sub, j = block(i + 2, False)
+                kids.append({"key": t[1], "kids": sub, "open": n[2], "close": toks[j][2]})
+                i = j + 1
+            else:
+                raise Layout("value expected at byte %d" % n[2])
+        if not top:
+            raise Layout("unbalanced braces")
+        return kids, i
+
+    return block(0, True)[0]
+
+
+def child(kids, key):
+    for k in kids:
+        if k["key"].lower() == key.lower() and "kids" in k:
+            return k
+    return None
+
+
+def apps_block(text):
+    node, kids = None, parse(text)
+    for key in APPS_PATH:
+        node = child(kids, key)
+        if node is None:
+            return None, key
+        kids = node["kids"]
+    return node, None
+
+
+def indent_at(text, pos):
+    ls = text.rfind("\n", 0, pos) + 1
+    if text[ls:pos].strip():
+        raise Layout("closing brace shares its line")
+    return ls, text[ls:pos]
+
+
+def set_option(text, appid, value):
+    """Text with LaunchOptions of appid set to value (block or key added when missing)."""
+    apps, _ = apps_block(text)
+    app = child(apps["kids"], appid)
+    if app is None:
+        if value == "":
+            return text
+        ls, ind = indent_at(text, apps["close"])
+        add = '%s\t"%s"\n%s\t{\n%s\t\t"LaunchOptions"\t\t"%s"\n%s\t}\n' % (ind, appid, ind, ind, esc(value), ind)
+        return text[:ls] + add + text[ls:]
+    for k in app["kids"]:
+        if k["key"] == "LaunchOptions" and "value" in k:
+            a, b = k["span"]
+            return text[:a] + esc(value) + text[b:]
+    if value == "":
+        return text
+    ls, ind = indent_at(text, app["close"])
+    return text[:ls] + '%s\t"LaunchOptions"\t\t"%s"\n' % (ind, esc(value)) + text[ls:]
+
+
+def options(text):
+    """{appid: launch options} of apps block."""
+    apps, _ = apps_block(text)
+    out = {}
+    for a in apps["kids"] if apps else ():
+        if "kids" in a:
+            for k in a["kids"]:
+                if k["key"] == "LaunchOptions" and "value" in k:
+                    out[a["key"]] = k["value"]
+    return out
+
+
+def client_running():
+    for p in glob.glob("/proc/[0-9]*"):
+        try:
+            if os.stat(p).st_uid == os.getuid() and open(p + "/comm").read().strip() == "steam":
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def write_atomic(path, data):
+    mode = os.stat(path).st_mode & 0o7777
+    fd, t = tempfile.mkstemp(prefix=".steam-arm-", dir=os.path.dirname(os.path.abspath(path)))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
+            f.write(data)
+        os.chmod(t, mode)
+        os.replace(t, path)
+    except BaseException:
+        try:
+            os.unlink(t)
+        except OSError:
+            pass
+        raise
+
+
+def update(path, want_by_app, profs):
+    """Lines for log; writes file when anything changed."""
+    text = open(path, encoding="utf-8", errors="surrogateescape").read()
+    acct = path.split(os.sep)[-3]
+    try:
+        apps, missing = apps_block(text)
+        if apps is None:
+            if any(want_by_app.values()):
+                return ["account %s: launch options not set (no %s block in localconfig.vdf yet; start game once)" % (acct, missing)]
+            return []
+        cur = options(text)
+        out, new = [], text
+        for appid in sorted(set(want_by_app) | {a for a, o in cur.items() if strip_own(o) != o}, key=int):
+            old = cur.get(appid, "")
+            val, kept = compose(old, want_by_app.get(appid, []))
+            for n in kept:
+                out.append("account %s: app %s: %s left to own launch options" % (acct, appid, n))
+            if val == old:
+                continue
+            new = set_option(new, appid, val)
+            p = " ".join("%s=%s" % kv for kv in sorted(profs.get(appid, {}).items()) if kv[0] in ("d3d", "glver", "gl"))
+            out.append("account %s: app %s: launch options %s%s" % (acct, appid, val or "(empty)", " (%s)" % p if p else ""))
+        if new != text:
+            if not set(cur) <= set(options(new)):
+                raise Layout("entries lost")
+            write_atomic(path, new)
+        return out
+    except Layout as e:
+        return ["account %s: localconfig.vdf left unchanged (%s)" % (acct, e)]
+
+
+def main(argv):
+    if len(argv) < 3 or argv[1] not in ("sync", "restore") or (argv[1] == "sync" and len(argv) != 4):
+        print(__doc__.rsplit("\n\n", 1)[1], file=sys.stderr)
+        return 2
+    steam = argv[2]
+    files = sorted(glob.glob(os.path.join(glob.escape(steam), "userdata/*/config/localconfig.vdf")))
+    profs = profiles()
+    want = {}
+    if argv[1] == "sync":
+        want = {a: w for a, w in ((a, wanted(p, argv[3])) for a, p in profs.items()) if w}
+        if not want and not any(MARK in open(f, errors="replace").read() for f in files):
+            return 0
+    elif not any(MARK in open(f, errors="replace").read() for f in files):
+        return 0
+    if client_running():
+        print("steam-arm-launchopts: client is running; launch options apply at its next start")
+        return 1
+    for f in files:
+        for line in update(f, want, profs):
+            print("launch options: " + line)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+LOPY
+chmod 644 /usr/local/lib/steam-arm-launchopts.py
 chmod 755 /usr/local/bin/steam-arm
 # Launcher pauses the pad-xbox service while it runs; the sudo rule exists only with that component.
 if opt pad-xbox; then

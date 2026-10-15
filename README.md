@@ -32,6 +32,7 @@ Other routes to Steam on ARM64, and where each one runs: `COMPARISON.md`.
     - PhysX install step
     - Linux build installed as Windows build
     - Title profiles and launch options
+    - Raspberry Pi GPU settings
 13. Fixing games
 14. Remote Play
 15. Updating
@@ -355,9 +356,12 @@ Notes installer prints per family:
 - `mali-utgard`: not suitable for Steam games. `mali-kbase`: warning; install needs
   Mesa's Panfrost or Panthor kernel driver.
 - Adreno 6xx to 8xx: Windows titles through DXVK expected to work; x86 Adreno drivers for
-  32-bit titles not included. `adreno-a702`, Raspberry Pi 4 and 5: Vulkan too limited for
-  most Windows titles. `adreno-legacy`: no Vulkan driver, native OpenGL titles only.
-  Raspberry Pi 4: x86 client through emulation (Armv8.0 CPU, see x86 client).
+  32-bit titles not included. `adreno-a702`: Vulkan too limited for most Windows titles.
+  `adreno-legacy`: no Vulkan driver, native OpenGL titles only.
+- Raspberry Pi 4 and 5 (`broadcom-v3d42`, `broadcom-v3d71`): OpenGL 3.1; Windows titles
+  through WineD3D by default, since DXVK cannot run on V3D; OpenGL version report and Zink
+  per title (Raspberry Pi GPU settings). Raspberry Pi 4: x86 client through emulation
+  (Armv8.0 CPU, see x86 client). Untested on Raspberry Pi hardware.
 - `apple-agx`: not supported on 16K page kernel; setup stops and does not set up `muvm`
   (4K page virtual machine). `broadcom-vc4`: not supported.
   `vivante`: no Vulkan driver, most titles do not run.
@@ -839,19 +843,22 @@ Title profiles, one Steam app id per line, later files override earlier ones:
 (system; `steam-arm-config` writes here) and `~/.config/steam-arm/titles.conf` in client
 home. Line: `<appid> key=value ...`.
 
-| Key          | Values                 | Effect                                           |
-|--------------|------------------------|--------------------------------------------------|
-| `overlay`    | `x86`, `vulkan`, `off` | Steam overlay kind for title                     |
-| `mangohud`   | `on`, `off`            | MangoHud for title                               |
-| `godot`      | `gl`, `vulkan`         | Godot renderer and GL report (`vulkan`: as is)   |
-| `unity`      | `vulkan`, `gl`         | Unity renderer                                   |
-| `env`        | `NAME=VALUE;...`       | Extra environment                                |
-| `args`       | `ARG;ARG`              | Extra arguments                                  |
-| `gl32`       | `off`                  | x86 Mesa in emulation, no GL forwarding (32-bit) |
-| `vk32`       | `keep`                 | 32-bit title keeps `-vulkan`                     |
-| `gfx`        | `a`, `b`               | Graphics route: forwarding or Mali drivers       |
-| `multiblock` | `on`, `off`            | FEX Multiblock for title                         |
-| `diskcache`  | `on`, `off`            | FEX code cache for title (FEX 2609.1 or newer)   |
+| Key          | Values                       | Effect                                                               |
+|--------------|------------------------------|----------------------------------------------------------------------|
+| `overlay`    | `x86`, `vulkan`, `off`       | Steam overlay kind for title                                         |
+| `mangohud`   | `on`, `off`                  | MangoHud for title                                                   |
+| `godot`      | `gl`, `vulkan`               | Godot renderer and GL report (`vulkan`: as is)                       |
+| `unity`      | `vulkan`, `gl`               | Unity renderer                                                       |
+| `env`        | `NAME=VALUE;...`             | Extra environment                                                    |
+| `args`       | `ARG;ARG`                    | Extra arguments                                                      |
+| `gl32`       | `off`                        | x86 Mesa in emulation, no GL forwarding (32-bit)                     |
+| `vk32`       | `keep`                       | 32-bit title keeps `-vulkan`                                         |
+| `gfx`        | `a`, `b`                     | Graphics route: forwarding or Mali drivers                           |
+| `multiblock` | `on`, `off`                  | FEX Multiblock for title                                             |
+| `diskcache`  | `on`, `off`                  | FEX code cache for title (FEX 2609.1 or newer)                       |
+| `d3d`        | `dxvk`, `wined3d`            | Raspberry Pi GPU: Direct3D route of Proton title (default `wined3d`) |
+| `glver`      | `3.2`, `3.3`, `4.0` to `4.6` | Raspberry Pi GPU: OpenGL version report, GLSL to match               |
+| `gl`         | `zink`                       | Raspberry Pi GPU: OpenGL through Zink (experimental)                 |
 
 Without `multiblock`, title keeps Valve's per-title FEX default. Launch option
 `FEX_APP_CONFIG` with `Multiblock`, and Steam's own FEX setting (`STEAM_COMPAT_FEX_CONFIG`),
@@ -881,6 +888,28 @@ turns `vk-spoof` layer off for one title.
 Compatibility by game type, and tested titles: `GAMES.md`. Researched, untested settings
 per GPU family, engine and title, with what to change: `RESEARCH.md`.
 
+### Raspberry Pi GPU settings
+
+On `broadcom-v3d71` (Pi 5), `broadcom-v3d42` (Pi 4) and `broadcom-vc4`. Driver offers desktop
+OpenGL 3.1, and its Vulkan driver lacks features DXVK requires (`COMPATIBILITY.md`,
+Raspberry Pi). Untested on Raspberry Pi hardware.
+
+- Windows titles: launcher sets `PROTON_USE_WINED3D=1`, so Proton draws Direct3D 8 to 11
+  through WineD3D on OpenGL. Own launch option `PROTON_USE_WINED3D=0` wins. `d3d=dxvk`
+  switches one title back to DXVK, for tests only: it stops at start on these GPUs.
+- `glver=3.3`: `MESA_GL_VERSION_OVERRIDE=3.3` and `MESA_GLSL_VERSION_OVERRIDE=330`. Titles
+  that only check OpenGL version start; titles that use newer features draw wrong or stop.
+  Off by default, per title only. Game log line `renderer:` with CPU drawing names it.
+- `gl=zink`: `MESA_LOADER_DRIVER_OVERRIDE=zink` and `GALLIUM_DRIVER=zink`, OpenGL on V3DV.
+  Experimental and unproven on Raspberry Pi; pair with `glver=3.3`.
+- Settings menu: Graphics, Route per game, rows Direct3D, OpenGL version, OpenGL driver.
+- x86 Linux titles and x86 Proton get settings through launch handler (game log lines `d3d:`
+  and `pi gpu:`). Windows titles on ARM64 Proton get them as Steam launch option: launcher
+  writes `STEAM_ARM_LAUNCHOPTS=<names> NAME=value ... %command%` ahead of own launch options
+  in each `localconfig.vdf` before client start, with client closed. Change applies at next
+  start of Steam ARM; removed setting takes its part out again; uninstall removes it.
+  Variable own launch options set already stays theirs.
+
 ## Fixing games
 
 Same text as Help page `Fixing a game` in `steam-arm-config` (`steam-arm-config help
@@ -890,7 +919,7 @@ What works:
 
 - Steam launch options (game Properties, General, Launch options), for example:
   - `PROTON_USE_WINED3D=1 %command%`: Windows game on OpenGL (WineD3D) in place of
-    Vulkan (DXVK).
+    Vulkan (DXVK); default on Raspberry Pi GPU.
   - `-vulkan`: game's own Vulkan switch, where it has one.
   - `MESA_GL_VERSION_OVERRIDE=4.5 %command%`: reports newer OpenGL version to game.
   Launch option wins over automatic rules; game log then says "launch option kept".
@@ -1093,10 +1122,11 @@ second graphics tree `/opt/fex-rootfs/Ubuntu_24_04-mali`, GE-Proton builds insta
 settings menu (games set to them go back to Steam's choice: Linux build where game has
 one, else default Proton; Proton prefixes stay), x86
 client helpers (`steam-arm-x86client.py`, `steam-arm-run.py`, `steam-arm-pv-bwrap`,
-package-tool stubs).
+package-tool stubs), launch option helper `steam-arm-launchopts.py`.
 
 Restored: `vm.max_map_count` value from before setup; Raspberry Pi `config.txt` (block
-removed, then its `config.txt.steam-arm.bak` backup deleted); Valve's FEX tool files,
+removed, then its `config.txt.steam-arm.bak` backup deleted); Steam launch options without
+part Raspberry Pi GPU title settings added; Valve's FEX tool files,
 with `<file>.steam-arm-orig` and `<file>.steam-arm-sha` records removed (Steam also
 restores them at tool's next update); Valve's streaming client in kept client
 folder; with x86 client, Valve's launch wrapper and webhelper start script in kept

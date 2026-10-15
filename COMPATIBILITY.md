@@ -103,7 +103,7 @@ GPU detection.
 | `adreno-a702`                                         | Adreno 702                      | off        | off                | on        | untested | Vulkan too limited for most Windows titles                                                      |
 | `adreno-legacy`                                       | Adreno 5xx and older            | off        | off                | on        | untested | no Vulkan driver; native OpenGL titles only                                                     |
 | `apple-agx`                                           | Apple GPU (Asahi)               | off        | off                | on        | untested | not supported on 16K page kernel; setup does not set up `muvm`                                  |
-| `broadcom-v3d71`, `broadcom-v3d42`                    | Raspberry Pi 5, 4               | off        | off                | on        | untested | Vulkan too limited for most Windows titles; Pi 4: x86 client through emulation                  |
+| `broadcom-v3d71`, `broadcom-v3d42`                    | Raspberry Pi 5, 4               | off        | off                | on        | untested | OpenGL 3.1; Windows titles through WineD3D, not DXVK; Pi 4: x86 client through emulation        |
 | `broadcom-vc4`                                        | Raspberry Pi 0 to 3             | off        | off                | on        | untested | not supported                                                                                   |
 | `vivante`                                             | Vivante (etnaviv)               | off        | off                | on        | untested | no Vulkan driver; most titles do not run                                                        |
 | `img-powervr`                                         | PowerVR                         | off        | off                | off       | untested | Vulkan driver in development; OpenGL through Zink                                               |
@@ -252,7 +252,8 @@ RK3588 boards running same stack are expected to work.
 
 **Raspberry Pi 5.** Vulkan 1.3 through V3DV, but firmware loads 16K page kernel by
 default and emulation layer needs 4K. Add `kernel=kernel8.img` to `config.txt`, described
-below.
+below. Desktop OpenGL stops at 3.1 and DXVK cannot run, so Windows titles use WineD3D
+(Raspberry Pi, Graphics).
 
 ### Titles built for Linux, but not Windows titles
 
@@ -365,18 +366,65 @@ Ubuntu 24.04 build (see Debian systems). Raspberry Pi OS built on Debian 12 (boo
 lacks SDL3 packages client needs; host package check stops setup there before any change. Ubuntu for Raspberry
 Pi fits installer's tested path.
 
-**Graphics.** Mesa drives Pi GPU with V3D (OpenGL) and V3DV (Vulkan); V3DV is Vulkan 1.3
-conformant on Pi 4 and Pi 5 since Mesa 24.3
-<https://9to5linux.com/mesa-24-3-open-source-graphics-stack-adds-vulkan-1-3-conformance-for-v3dv>.
-OpenGL titles see version 3.1 at most: V3D caps GLSL at 1.40 for compatibility contexts
-(Mesa source, `src/gallium/drivers/v3d/v3d_screen.c`). `glxinfo -B` shows values on
-system; `steam-arm-config` Information shows them as `OpenGL` line. GPU family detection
-names Pi 5 GPU `broadcom-v3d71` and Pi 4 GPU `broadcom-v3d42`, and leaves Mali-only parts
-off. Whether `vk-spoof` helps on V3DV is unknown, since it was written against different
-driver. Titles built for Linux against OpenGL 3.1 or older are best fit; Windows titles
-through DXVK do not start (table in `GAMES.md`, Raspberry Pi 5).
+**Graphics.** Mesa drives Pi GPU with v3d (OpenGL) and V3DV (Vulkan). GPU family detection
+names Pi 5 GPU `broadcom-v3d71`, Pi 4 GPU `broadcom-v3d42` and Pi 0 to 3 GPU `broadcom-vc4`,
+and leaves Mali-only parts off. `glxinfo -B` shows OpenGL values on system;
+`steam-arm-config` Information shows them as `OpenGL` line. Driver facts, from Mesa source
+(`src/gallium/drivers/v3d/v3d_screen.c`, `src/broadcom/vulkan/v3dv_device.c`, checked
+2026-10-14) and community reports:
 
-Status: untested on test system; community reports in `GAMES.md`.
+- Desktop OpenGL 3.1, not conformant (GLSL 1.40 for compatibility contexts); OpenGL ES 3.1
+  conformant. Shader compiler accepts GLSL 3.30, but desktop geometry shaders and seamless
+  cube maps are missing, so driver stops at 3.1. Same on Pi 5 (V3D 7.1) and Pi 4 (V3D 4.2).
+- V3DV is Vulkan 1.3 conformant on Pi 4 and Pi 5 since Mesa 24.3
+  <https://9to5linux.com/mesa-24-3-open-source-graphics-stack-adds-vulkan-1-3-conformance-for-v3dv>,
+  but lacks about twelve features DXVK requires: BC texture compression, `shaderInt64`,
+  `multiDrawIndirect`, more than one viewport, `shaderCullDistance`, `shaderDrawParameters`,
+  descriptor indexing, `robustBufferAccess2` and others. These are hardware and compiler gaps;
+  feature layer `vk-spoof` cannot fill them, so it stays off. VKD3D-Proton (Direct3D 12)
+  needs more than DXVK.
+- GPU throughput about quarter of RK3588's Mali-G610 (third-party FP32 estimates; no
+  like-for-like benchmark exists). GPU memory: 4 GiB address space, 1 GiB per allocation.
+
+What Steam ARM does on `broadcom-v3d71`, `broadcom-v3d42` and `broadcom-vc4`:
+
+- **Windows titles: WineD3D by default.** Launcher sets `PROTON_USE_WINED3D=1` for Proton,
+  so Direct3D 8 to 11 run through WineD3D on OpenGL in place of DXVK, which stops at device
+  creation on V3DV. `PROTON_DXVK_D3D8=1` (DXVK for Direct3D 8, set on other GPUs) stays
+  unset here. Own launch option `PROTON_USE_WINED3D=0` wins. Title setting `d3d=dxvk`
+  (`steam-arm-config`, Graphics, Route per game, Direct3D) switches one title back to DXVK,
+  for tests only.
+- **OpenGL version report per title, off by default.** `glver=3.3` sets
+  `MESA_GL_VERSION_OVERRIDE=3.3` with matching `MESA_GLSL_VERSION_OVERRIDE=330` (Graphics,
+  Route per game, OpenGL version; values 3.2, 3.3 and 4.0 to 4.6, GLSL version follows).
+  Titles that only check version at start then start. Titles that use OpenGL 3.2 and newer
+  features (geometry shaders, seamless cube maps, GLSL 3.30 paths) draw wrong or stop:
+  remove setting again. Never global, since titles that run today would take paths v3d
+  cannot draw. Game log line `renderer:` with CPU drawing, and CPU drawing notice, name this
+  setting on these GPUs; nothing changes by itself.
+- **Zink per title, experimental.** `gl=zink` sets `MESA_LOADER_DRIVER_OVERRIDE=zink` and
+  `GALLIUM_DRIVER=zink`: OpenGL on V3DV (Graphics, Route per game, OpenGL driver). Unproven
+  on Raspberry Pi: published Pi 4 tests show about half frame rate of v3d and blank or
+  single-colour windows in some programs; no Pi 5 measurements exist. Zink can offer
+  geometry shaders v3d lacks, so title whose only need beyond 3.1 is geometry shaders may
+  draw under Zink; pair with `glver=3.3`.
+- **How settings reach title.** x86 Linux titles and x86 Proton: launch handler (game log
+  lines `d3d:` and `pi gpu:`). Windows titles on ARM64 Proton start without launch
+  handler: launcher writes settings as Steam launch option before client start
+  (`STEAM_ARM_LAUNCHOPTS=<names> NAME=value ... %command%` ahead of own launch options),
+  replaces or removes that part when setting changes, and removal takes it out. Variable
+  own launch options set already stays theirs (GL pair and Zink pair as whole).
+
+Expectations: older and lighter titles. 2D and indie titles fit; Source-era 3D runs at 720p
+on low settings; Direct3D 9 era 3D through WineD3D mostly runs slow. Direct3D 11 titles
+that need feature level 11_0 or newer, Direct3D 12 titles, Vulkan-only Windows titles and
+OpenGL 4.5-class titles (newer Unity OpenGL builds included) do not run. Frame rates from
+RK3588 test device in `GAMES.md` divide by about 3 to 4 for Pi 5, then need checking on
+hardware.
+
+Status: Raspberry Pi behaviour above is untested on Raspberry Pi hardware (no Pi on hand);
+it follows from Mesa source and community reports. Reports welcome; table in `GAMES.md`,
+Raspberry Pi 5.
 
 ### Raspberry Pi 5 performance tips
 
