@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+
+import os
+import argparse
+import subprocess
+import sys
+import functools
+import atexit
+import signal
+import json
+import unshare
+
+# OS provided fex + mesa combined arch linux install (the FEX-Emu/rootfs dir ends up not being needed at all in this case)
+g_fex_rootfs_with_mesa = '/usr/share/guestos/fex-mesa'
+
+print = functools.partial(print, flush=True)
+
+def personalize_config(rootfs_path):
+    """
+    FEX needs many absolute paths. Relative paths in configs are relative to the _current directory_
+    of all things.
+    """
+    template_path = os.path.join(g_fex_path, "ConfigTemplate.json")
+    config_path = os.path.join(g_config_location, "Config.json")
+
+    # Ensure directory is created.
+    os.makedirs(g_config_location, exist_ok=True)
+
+    try:
+        os.unlink(config_path) # in case it was created by root
+    except FileNotFoundError:
+        pass
+    with open(template_path, 'r') as src:
+        with open(config_path, 'w') as dst:
+            print("fex compat fixups")
+            data = src.read()
+            data = data.replace('@FEX_COMPAT_TOOL@', g_fex_path)
+            data = data.replace('@FEX_ROOTFS_PATH@', rootfs_path)
+            dst.write(data)
+
+def generate_app_config():
+    """
+    Translate some environment variables into FEX config which is in files.
+    """
+    app_config = {
+        "Config": {},
+        "ThunksDB": {}
+    }
+
+    # appinfo based environment variable as default
+    try:
+        app_config["Config"]["TSOEnabled"] = bool(int(os.environ['STEAM_FEX_TSOENABLED']))
+    except (KeyError, ValueError):
+        pass
+    try:
+        app_config["Config"]["Multiblock"] = bool(int(os.environ['STEAM_FEX_MULTIBLOCK']))
+    except (KeyError, ValueError):
+        pass
+
+    # if user has specified an override, take those values
+    try:
+        config_env = os.environ['STEAM_COMPAT_FEX_CONFIG']
+        if config_env:
+            app_config["Config"]["TSOEnabled"] = "1" if ("TSOEnabled:1" in config_env) else "0"
+            app_config["Config"]["Multiblock"] = "1" if ("Multiblock:1" in config_env) else "0"
+            app_config["ThunksDB"]["GL"] = "1" if ("ThunksDB_GL:1" in config_env) else "0"
+            app_config["ThunksDB"]["Vulkan"] = "1" if ("ThunksDB_Vulkan:1" in config_env) else "0"
+    except KeyError:
+        pass
+
+    return app_config
+
+def setup_rootfs():
+    if 'STEAM_COMPAT_GRAPHICS_PROVIDER' not in os.environ:
+        # If graphics provider is not provided, acquire from the OS install.
+        provider_path = os.path.join(g_fex_rootfs_with_mesa, 'graphics_provider.json')
+        if os.path.exists(provider_path):
+            os.environ["STEAM_COMPAT_GRAPHICS_PROVIDER"] = provider_path
+        else:
+            print("graphics_provider '{}' didn't provide graphics_provider.json".format(provider_path))
+        return g_fex_rootfs_with_mesa
+
+    print("Graphics provider overwritten with: '{}'".format(os.environ["STEAM_COMPAT_GRAPHICS_PROVIDER"]))
+
+    # User provided graphics provider currently overrides the rootfs mountpoint.
+    # Strip the `/graphics_provider.json` off the path for the FEX rootfs option.
+    if not os.path.exists(os.environ["STEAM_COMPAT_GRAPHICS_PROVIDER"]):
+        print("graphics_provider '{}' didn't provide graphics_provider.json".format(os.environ["STEAM_COMPAT_GRAPHICS_PROVIDER"]))
+
+    return os.path.split(os.environ["STEAM_COMPAT_GRAPHICS_PROVIDER"])[0]
+
+def cmd_run(args):
+    cmd_waitforexitandrun(args)
+
+def cmd_waitforexitandrun(args):
+    if 'FEX_APP_CONFIG' not in os.environ:
+        # custom per-app config driven by Steam env vars
+        app_config = generate_app_config()
+        app_config_path = f"/tmp/fex-app-config-{os.getpid()}.json"
+        with open(app_config_path, 'w') as f:
+            f.write(json.dumps(app_config, indent=2))
+        os.environ['FEX_APP_CONFIG'] = app_config_path
+        atexit.register(lambda: os.unlink(app_config_path))
+
+    strace = [] # ['strace', '-f', '-e', 'openat']
+    subprocess.call(strace + [os.path.join(g_fex_path, 'usr/bin/FEX')] + args.args,
+        stdout=g_original_stdout_fd, stderr=g_original_stderr_fd)
+
+parser = argparse.ArgumentParser(description="Launch apps in a FEX-Emu environment")
+parser.set_defaults(func=lambda x: parser.print_usage())
+subparsers = parser.add_subparsers(help="Available commands")
+
+parser_run = subparsers.add_parser('run', help='Run an app')
+parser_run.add_argument('args', nargs=argparse.REMAINDER, help='Original launch command line')
+parser_run.set_defaults(func=cmd_run)
+
+parser_waitforexitandrun = subparsers.add_parser('waitforexitandrun', help='Wait for prior FEX to exit, then run an app')
+parser_waitforexitandrun.add_argument('args', nargs=argparse.REMAINDER, help='Original launch command line')
+parser_waitforexitandrun.set_defaults(func=cmd_waitforexitandrun)
+
+if __name__ == "__main__":
+    if "STEAM_COMPAT_DATA_PATH" not in os.environ:
+        print(f"No compat data path?")
+        sys.exit(1)
+
+    g_fex_path = os.path.dirname(os.path.abspath(sys.argv[0]))
+    g_config_location = os.path.join(os.environ['STEAM_COMPAT_DATA_PATH'], 'fex-emu')
+
+    # Relatively new option to prevent FEX from checking system directories like /usr/share/fex-emu
+    os.environ["FEX_PORTABLE"] = '1'
+
+    # Turnip override.
+    if 'tu_override_uncached_as_cache_coherent' not in os.environ:
+        os.environ["tu_override_uncached_as_cache_coherent"] = "true"
+
+    # Tell PV that we are an AArch64 machine.
+    os.environ["STEAM_COMPAT_MACHINE_ARCHITECTURE"] = 'aarch64-linux-gnu'
+
+    # Tell PV where to find the description file.
+    os.environ["STEAM_COMPAT_EMULATOR"] = os.path.join(g_fex_path, "emulator.json")
+
+    g_original_stdout_fd = os.dup(sys.stdout.fileno())
+    g_original_stderr_fd = os.dup(sys.stderr.fileno())
+    try:
+        g_log_fd = os.open(f'/tmp/fex-compat-tool-{os.getpid()}.log', os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+        os.dup2(g_log_fd, sys.stdout.fileno())
+        os.dup2(g_log_fd, sys.stderr.fileno())
+    except:
+        pass
+
+    # Avoid annoying spew
+    if 'LD_PRELOAD' in os.environ:
+        del os.environ['LD_PRELOAD']
+
+    subprocess.call(['/usr/bin/printenv'])
+
+    rootfs_path = setup_rootfs()
+    personalize_config(rootfs_path)
+
+    args = parser.parse_args()
+    try:
+        if args.args[0] == '--':
+            del args.args[0]
+    except:
+        pass
+
+    # Make atexit work if we're killed
+    def just_exit(signum, frame): sys.exit(0)
+    signal.signal(signal.SIGTERM, just_exit)
+    signal.signal(signal.SIGINT, just_exit)
+
+    args.func(args)
