@@ -48,7 +48,7 @@ check "cache list: linked folders (9001 link, 9002/fex-emu link) not listed" "! 
 check "cache list: size of one folder equals du -sk" "[ \"\$(row 312520 linux)\" = \"\$(du -sk \"$S/steamapps/shadercache/312520/fex-emu\" | cut -f1)\" ]"
 check "cache list: fozpipelinesv6 and mesa cache not listed" "[ -n \"\$(row 312520 linux)\" ] && ! grep -qE 'fozpipelines|mesa_shader' <<<\"\$LIST\""
 cli cache
-check "cache: summary rows, counts per kind" "[ $RC = 0 ] && grep -qE '^FEX code cache, Linux games +[0-9.]+M +2 games\$' <<<\"\$OUT\" && grep -qE '^FEX code cache, Windows games +[0-9.]+K +2 games \\(Proton prefixes\\)\$' <<<\"\$OUT\" && grep -qE '^FEX code cache, shared folder +128K\$' <<<\"\$OUT\""
+check "cache: summary rows, counts per kind" "[ $RC = 0 ] && grep -qE '^FEX code cache, Linux games +[0-9.]+M +2 games\$' <<<\"\$OUT\" && grep -qE '^FEX code cache, Windows games +[0-9.]+K +2 games \\(Proton prefixes\\)\$' <<<\"\$OUT\" && grep -qE \"^FEX code cache, shared folder +\$(du -sk \"$A/.cache/fex-emu\" | cut -f1)K\$\" <<<\"\$OUT\""
 check "cache: Steam shader cache row read only, FEX caches not counted twice" "grep -qE '^Steam shader cache +[0-9.]+K +Steam.s own, not cleared here\$' <<<\"\$OUT\""
 check "cache: per game list with game name, largest first" "grep -A1 '^Per game, largest first:' <<<\"\$OUT\" | grep -qE 'linux +1036240 +Jelly Brawl'"
 check "cache: diskcache=on count and FEX tool line" "grep -qx 'Code cache on (diskcache=on): 0 games. FEX tool: FEX-2609.1.' <<<\"\$OUT\""

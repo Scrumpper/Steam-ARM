@@ -30,7 +30,9 @@ printf '#!/bin/sh\necho "unknown option: $1" >&2; exit 1\n' > $R/bin/old-install
 out=$(STEAM_ARM_INSTALLER_OLD=1 bash -c ". $T/harness.sh --help >/dev/null; STEAM_ARM_INSTALLER=$R/bin/old-installer.sh; DETECT_DONE=0; main info")
 check "info: fallback detection (installer without --detect, RK3588 panthor = mali-csf-v10)" "grep -q 'Kernel driver  panthor' <<<\"\$out\" && grep -q 'Mali (mali-csf-v10)' <<<\"\$out\" && grep -q 'open drivers' <<<\"\$out\""
 out=$(HARNESS_REAL_INSTALLER=1 $H info)
-check "info: real 1.3 installer --detect parsed" "grep -q 'GPU family     ' <<<\"\$out\" && ! grep -q 'GPU family     no GPU' <<<\"\$out\""
+check "info: real installer --detect parsed (GPU family line)" "grep -q 'GPU family     ' <<<\"\$out\""
+if ls /dev/dri/renderD* >/dev/null 2>&1; then check "info: real installer --detect finds GPU of this host" "! grep -q 'GPU family     no GPU' <<<\"\$out\""
+else echo "SKIP info: real installer GPU detection: no /dev/dri render node on this host"; fi
 # family ids offered by the app are all known to the installer
 ids=$(grep -oE '(mali|adreno|broadcom|apple|amd|nvidia|intel|virtio|vivante|img)[a-z0-9-]*' $APP | sort -u)
 known=$(sed -n '/^GPU_FAMILIES="/,/"$/p' "$SARM_INST" | tr -d '"' | sed 's/GPU_FAMILIES=//' | tr ' ' '\n' | grep -v '^$')
