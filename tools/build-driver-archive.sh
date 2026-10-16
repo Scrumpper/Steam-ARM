@@ -12,7 +12,7 @@ Defaults reproduce the published archive (Mesa 26.1.8, panfrost and panvk, CPU f
 
 Options
   --mesa VERSION       Mesa release from archive.mesa3d.org (default 26.1.8)
-  --mesa-sha256 SHA    sha256 of that release tarball (known for 26.1.8 and 26.2.3)
+  --mesa-sha256 SHA    sha256 of that release tarball (known for 26.1.8, 26.2.3, 26.2.4)
   --mesa-ref REF       Mesa git tag, branch or commit from gitlab.freedesktop.org in
                        place of a release
   --gallium LIST       Gallium drivers, comma separated
@@ -86,6 +86,7 @@ known_sha(){
   case $1 in
     26.1.8) echo b320f65874fd9653ac6c0bd1616605387344e1247411a50c797b5f3fb9dc0b55;;
     26.2.3) echo 1628058a8d2c0615975de5a15ab7bbb9638c50000b5bed9456ff423ea034a81f;;
+    26.2.4) echo bce5f7fbebb934373b86c999a064d52fb5065878dc57f287f95346648ec832e9;;
   esac
 }
 [ "$SHA_SET" = 1 ] || MESA_SHA=$(known_sha "$MESA_VER")

@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        This project is tested on one device only, an RK3588 board with a Mali-G610 GPU on an Armbian based image. Fill in every field below so the report can be reproduced.
+        This project is tested on one device only, an RK3588 board with a Mali-G610 GPU on an Armbian based image. Steam ARM report below holds hardware, versions and settings, so no hand-typed system details are needed.
   - type: textarea
     id: what-happened
     attributes:
@@ -26,50 +26,17 @@ body:
     id: command
     attributes:
       label: Exact command run
-      description: Paste the exact command line, including any --select, --skip, or --defaults flags.
+      description: Paste the exact command line, including any --select, --skip, or --defaults flags. Leave empty when no command was involved.
       placeholder: sudo steam-arm-setup --defaults
     validations:
-      required: true
-  - type: input
-    id: board
-    attributes:
-      label: Board or machine
-      description: The board or machine model.
-    validations:
-      required: true
-  - type: input
-    id: distro
-    attributes:
-      label: Distribution and version
-      description: For example, Debian 13 or Ubuntu 25.10.
-    validations:
-      required: true
-  - type: input
-    id: uname
-    attributes:
-      label: uname -m and uname -r output
-      description: Run "uname -m; uname -r" and paste the output.
-    validations:
-      required: true
+      required: false
   - type: textarea
-    id: gpu
+    id: steam-arm-report
     attributes:
-      label: GPU and driver
-      description: Run "glxinfo -B | head" or "vulkaninfo --summary | head" and paste the output.
-    validations:
-      required: true
-  - type: input
-    id: pagesize
-    attributes:
-      label: Page size
-      description: Run "getconf PAGESIZE" and paste the output.
-    validations:
-      required: true
-  - type: textarea
-    id: component-list
-    attributes:
-      label: steam-arm-setup --list output
-      description: Run "steam-arm-setup --list" and paste the output.
+      label: Steam ARM report
+      description: |
+        Problem with a game: run "steam-arm-config report run" (or menu: Maintenance, Report how last game ran) right after the game start, then paste the saved file. Problem without a game: run "steam-arm-config report" and paste ~/steam-arm-report.txt.
+        Reports contain no account names, host names, addresses or Steam IDs; read before posting.
     validations:
       required: true
   - type: checkboxes

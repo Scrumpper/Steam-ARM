@@ -1,0 +1,10 @@
+usr/lib/x86_64-linux-gnu/libgallium-26.1.8.so
+usr/lib/x86_64-linux-gnu/dri/panfrost_dri.so
+usr/lib/x86_64-linux-gnu/dri/libdril_dri.so
+usr/lib/x86_64-linux-gnu/libvulkan_panfrost.so
+usr/lib/i386-linux-gnu/libgallium-26.1.8.so
+usr/lib/i386-linux-gnu/dri/panfrost_dri.so
+usr/lib/i386-linux-gnu/dri/libdril_dri.so
+usr/lib/i386-linux-gnu/libvulkan_panfrost.so
+usr/share/vulkan/icd.d/panfrost_icd.x86_64.json
+usr/share/vulkan/icd.d/panfrost_icd.i686.json

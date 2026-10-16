@@ -220,6 +220,20 @@ check("G5 no temp folder left; lock file only", leftovers(C) == [], os.listdir(C
 check("G21 install: lock file unlinked at end (box re-test B4)", not os.path.exists(os.path.join(C, ".steam-arm-ge.lock")), os.listdir(C))
 check("G5 SLR line when appmanifest_4185400.acf absent", "Steam Linux Runtime 4.0 (Arm64): absent" in out, out)
 
+# ---------- G22 umask 002 (Ubuntu default for private-group accounts): folders unpack() creates ----------
+S22 = steam("s22")
+f22, _ = dl(TOP)
+um = os.umask(0o002)
+try:
+    rc22, out22 = run("install", "--file", f22, S22)
+finally:
+    os.umask(um)
+T22 = os.path.join(S22, "compatibilitytools.d", TOP)
+m22 = lambda p: stat.S_IMODE(os.lstat(os.path.join(T22, p)).st_mode)
+check("G22 umask 002: status 0, folders . files files/lib 0755 (files is an implicit folder), lib 644",
+      rc22 == 0 and all(m22(p) == 0o755 for p in (".", "files", "files/lib")) and m22("files/lib/x.so") == 0o644,
+      [oct(m22(p)) for p in (".", "files", "files/lib")] if rc22 == 0 else out22)
+
 # ---------- G6 sha512 mismatch ----------
 S6 = steam("s6")
 f6, _ = dl(TOP)

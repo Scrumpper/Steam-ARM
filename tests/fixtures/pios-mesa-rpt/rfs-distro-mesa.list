@@ -1,0 +1,8 @@
+usr/lib/x86_64-linux-gnu/libgallium-25.0.7-0ubuntu0.24.04.2.so
+usr/lib/x86_64-linux-gnu/dri/libdril_dri.so
+usr/lib/x86_64-linux-gnu/dri/swrast_dri.so
+usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+usr/lib/i386-linux-gnu/libgallium-25.0.7-0ubuntu0.24.04.2.so
+usr/lib/i386-linux-gnu/dri/libdril_dri.so
+usr/lib/i386-linux-gnu/dri/swrast_dri.so
+usr/share/vulkan/icd.d/lvp_icd.x86_64.json

@@ -17,15 +17,19 @@ Other routes to Steam on ARM64, and where each one runs: `COMPARISON.md`.
 3. Requirements
 4. Install
 5. Setup menu (steam-arm-config)
+    - Run report and run history
+    - Automatic tuning
 6. GPU detection
 7. First start
 8. Component selection
 9. Graphics route per title
+    - Extra Mesa versions (route B)
     - Automatic Windows build
 10. Page size
 11. x86 client (Armv8.0 CPUs)
 12. Playing games
     - Linux x86 titles
+    - Game environment file
     - Windows titles
     - GE-Proton (optional)
     - Shader pre-caching
@@ -239,7 +243,8 @@ Sections:
 7. Remote Play: settings state, how pairing works, apply settings now.
 8. Maintenance: Update / Repair (setup again with same parts), view logs, hardware
    report, free `/dev/shm` now, back up settings, restore settings (see Settings backup
-   and restore), check for new version (see Updating), caches. Hardware report holds
+   and restore), check for new version (see Updating), caches, report how last game ran
+   and run history (see Run report and run history). Hardware report holds
    system, status, notes, detection, profiles, renderer lines, last game start, last 20
    launcher log lines, start, update and error lines of client's bootstrap log, closing
    block of newest setup log, and groups of game account next to groups of its running
@@ -270,14 +275,16 @@ Command line, same settings from scripts:
 |----------------------------------------|---------------------------------------------------------|
 | `info`                                 | System, Steam ARM status and hardware notes             |
 | `report`                               | Hardware report to `~/steam-arm-report.txt`             |
+| `report run [APPID\|last]`             | Report of one game start (see Run report)               |
 | `gfx <appid> auto\|a\|b`               | Graphics route of one game                              |
 | `gfx-default auto\|a\|b`               | Route for games without their own setting               |
 | `profile <appid> key=value ...`        | Profile keys; `key=` removes one, `--clear` all         |
 | `compat <appid> linux\|windows\|ge\|clear` | Force Linux, Windows or GE-Proton build, or clear it; Steam closed |
 | `auto-build [on\|off]`                  | Automatic Windows build; no value: state, rules, titles |
 | `cpu-notice [on\|off]`                  | CPU drawing notice; no value: state                     |
+| `run-history [on\|off]`                 | Run history; no value: state                            |
 | `components a,b,...`                   | Install exactly these parts (runs setup)                |
-| `driver-archive status\|download`      | Driver archive source; `download` clears saved file     |
+| `driver-archive status\|download`      | Archive source, extra Mesa; `download` clears saved file |
 | `driver-archive local FILE`            | Local copy of published archive (runs setup)            |
 | `driver-archive custom FILE SHA256`    | Custom driver archive (runs setup)                      |
 | `backup [DIR] [options]`               | Settings backup file in DIR (default: home)             |
@@ -296,6 +303,114 @@ runs started from menu: `~/.cache/steam-arm/`. `STEAM_ARM_INSTALLER=file` names 
 script menu runs (default: `steam-arm-setup`, else
 `/usr/local/share/steam-arm/steam-arm-install.sh`, which setup writes, else
 `steam-arm-install.sh` beside menu app).
+
+### Run report and run history
+
+Maintenance, Report how last game ran (or `steam-arm-config report run [APPID|last]`)
+writes report of one game start for issue or forum post. Choose last game started or
+pick game from list. Report holds:
+
+- Summary: App ID, game name, route (x86 Linux build through FEX, x86 Proton through
+  FEX, Windows build on ARM64 Proton, native ARM64 build), graphics route, renderer
+  verdict, result (run time and exit status of launch chain, still running, or end
+  without record).
+- Upstream fields: system, GPU, kernel driver, Mesa, Vulkan, page size, memory, Steam
+  client build, FEX tool, system FEX, root filesystem, engine and bitness, Proton tool;
+  same fields FEX, Proton and Steam client issue forms ask for.
+- Settings in effect at that start (launch handler lines: profile, overlay, graphics,
+  FEX settings, launch options kept), kernel GPU, memory and crash lines of run window
+  (needs `systemd-journal` group or administrator rights), core dump signal and first
+  frames of game or FEX programs when `systemd-coredump` is installed, `/dev/shm` use,
+  `vm.max_map_count`, free memory, hottest thermal zone.
+- Earlier starts of same game from run history; earlier starts of other games (their
+  App IDs) only when ticked (`--history`).
+- Folded blocks: handler lines of that start, error lines of Valve's FEX tool log,
+  hardware report.
+
+Report only reads: handler logs in `/tmp`, run history, start and end lines of Steam's
+`logs/console_log.txt` (values only, never whole lines) and system state; never
+`steam.token`, `ssfn*` or `userdata/`. Same filter as hardware report removes home
+folders, account and full names, host name, Steam sign-in and persona names, Steam IDs,
+network, MAC and e-mail addresses and token values, plus machine-id, board serial and
+Wi-Fi name; line still holding any of these or Steam ID after that reads `(line removed:
+personal data)`. Steam sign-in file present but unreadable: no report. Menu shows report
+first, then asks before saving; terminal command opens it in pager, then asks (`--save`
+saves without asking; without terminal, report is printed and not saved). File:
+`~/steam-arm-report-<appid>-<YYYYMMDD>-<HHMM>.md`, readable by owner only, at most 30 KB
+(oldest log lines left out first). Nothing leaves this machine.
+
+Exit status 0 of launch chain does not prove clean end: game crash inside runtime
+container can end with 0 too (seen on test system). Windows games on ARM64 Proton and
+native ARM64 games never pass launch handler; their report holds route, Steam start and
+end time and hardware only (`run record: not available for this route`).
+
+Run history (Maintenance, Run history, or `steam-arm-config run-history on|off`; off by
+default): launch handler writes one line per start, launch wrapper stand-in one line per
+end (FEX tool edit fallback: start lines only), into client folder,
+`.local/state/steam-arm/runs.log`: time, App ID, entry, client, graphics route, overlay,
+engine, bitness, FEX tool version and kind, Mesa version, Proton tool, Multiblock, code
+cache, profile key names (never values), exit status, run time, renderer verdict. No
+paths or names; newest 200 lines; readable by game account only. Not part of settings
+backups; turning off deletes it. x86 games through emulation only.
+
+### Automatic tuning
+
+Off by default, per game: Games, game, Automatic tuning, or `steam-arm-config tune
+<appid> on|fix|off|reset|show` (`on` and `fix` same). x86 Linux games through emulation
+only, launch wrapper entry of native or x86 client; Windows games on ARM64 Proton and
+native games never pass launch handler.
+
+With tuning on, launch handler judges each start of that game:
+
+| Verdict     | Seen as                                                                |
+|-------------|------------------------------------------------------------------------|
+| crash       | launch chain ended within 60 s, before renderer check saw GPU memory   |
+| hang        | under 0.02 s CPU per s for 90 s, no GPU memory in whole start          |
+| CPU drawing | renderer check: graphics library loaded, no GPU device, game busy      |
+| no graphics | no renderer verdict within 300 s                                       |
+| good        | game drew on GPU and ran 60 s or longer                                |
+
+Exit status of launch chain stays 0 after crash (seen on test system), so verdicts use
+time, CPU use and renderer, never exit status. Start that ends on GPU within 60 s, or ends
+after 60 s without renderer verdict, gives no verdict.
+
+After bad verdict, next start tries one changed setting, counted from best setting found
+so far: graphics route flip (`gfx`, needs route B: Mali GPU or custom driver archive,
+native client), FEX Multiblock flip (`multiblock`), then GL forwarding off for 32-bit
+games on route A (`gl32=off`). Good start keeps trial setting; bad start undoes it and
+picks next one. At most 4 trials per stamp (FEX tool version, game build, Mesa version,
+GPU family, client type); new stamp allows trials again. Never TSO, x87 precision,
+self-modifying code checks or other settings that fail as wrong output, not as crash or
+hang; Windows or Linux build and Proton version stay manual.
+
+Settings found go into `~/.config/steam-arm/tuned.conf` in client home (title profile
+syntax, evidence after `#`), loaded below `/etc/steam-arm/titles.conf` and personal
+`titles.conf`: key set there always wins and is never tried. Key removed from
+`tuned.conf` by hand is never tried again. Line with tuning evidence (`# autotune ...`)
+but no decision state, as after restore of backup without state file, counts as tuning
+result, not as hand edit. Decision state:
+`~/.config/steam-arm/autotune/state.json`, owner only. Off keeps settings found and drops
+pending trial; Reset removes both. Settings backup part `personal-tuning` carries both
+files.
+
+Tuning never sends signal to game. Hang verdict raises one desktop notice: stop game with
+Steam's Stop (Steam ends it with SIGTERM); next start tries next setting. At most one
+tuning notice per start. Handler log lines start with `autotune:`; tuning on also turns
+run history on for that game.
+
+Calibration on test system, six x86 Linux game classes (64-bit SDL OpenGL, 32-bit
+GameMaker with own launcher window, 64-bit Java on Mali drivers route, 32-bit Source
+engine, 32-bit Unity, 64-bit SDL game that asks for OpenGL 3.2), normal starts plus
+forced failures: good starts held GPU memory at 18 to 36 s; display that does not exist
+ended starts at 16 to 38 s (crash verdict), except one game that kept running without
+window and drew on CPU (CPU verdict); display that never answers gave hang verdict at
+about 110 s in every class, CPU of stuck game tree near 0 once loading ended;
+`LIBGL_ALWAYS_SOFTWARE=1` gave CPU verdict at 42 to 69 s where game honoured it (game
+drawing on CPU used 0.7 to 2.9 s CPU per s). No class showed pause over 4 s before GPU
+memory during normal loading. Known limit: game that waits for input in own launcher
+window without GPU memory for 90 s gets hang verdict (one notice; next start tries next
+setting), unless game then draws on GPU in same start, which clears it. x86 client
+untested.
 
 ## GPU detection
 
@@ -376,8 +491,16 @@ Notes installer prints per family:
 Vulkan driver, features `vk-spoof` reports split into `vulkan features native:` and
 `vulkan features missing:` (driver's own answer, layer off; full `vulkaninfo` run, in
 `--detect` only), driver archive, CPU cores with Armv8 level (`cpu:`), client type
-(`client:`), page size, distribution, state of each component, and family note or
-warning. Installs nothing, needs no root. Installer and component checklist show same
+(`client:`), Valve's FEX tool type and handler entry, one `patch <name>: active|retired|off
+(reason)` line per own fix of Steam ARM (`thunk-paths`, `tool-edit`, `server-socket`,
+`code-cache`, `glx-lax`, `vk-spoof`, `x86-client`, `guestos-link`), extra Mesa versions
+installer knows (`mesa extra:` version, SHA-256, address or `-` for local file only,
+archive MB, disk MB), signs of official ARM64 Linux client from Valve (`official client:
+none` or `found (...)`: arm64 package owning `/usr/bin/steam`, Steam folder with ARM64
+client parts and no Steam ARM mark, running client started without `-deckard`; detection
+only, nothing changes), page size, distribution, state of each component, and family note
+or warning. Launcher reads same
+probes at each start (logged in `steam-arm.log`); retired fix is not applied. Installs nothing, needs no root. Installer and component checklist show same
 GPU line.
 
 `GPU_FAMILY=id` in environment uses that family in place of detection, and setup keeps
@@ -578,6 +701,40 @@ per title:
 
 Results per game type and frame rates on both routes: `GAMES.md`.
 
+### Extra Mesa versions (route B)
+
+Route B games (Mali drivers inside emulation: Java games, 32-bit Vulkan games, `gfx=b`)
+run on Mesa of driver archive. Extra Mesa versions sit beside it, one tree each, and each
+game picks one. None is installed by default.
+
+1. Components, Driver archive, Extra versions lists versions this installer knows, with
+   archive and disk size. Picking one shows sizes and free disk before anything is built.
+   Version not published for download takes local copy of its archive
+   (`steam-arm-fex-mesa-<version>-x86_64-i386.tar.zst`), checked against SHA-256 pinned in
+   installer. Setup then builds `/opt/fex-rootfs/Ubuntu_24_04-mali-<version>`: hard-link
+   copy of root filesystem with that version's Mesa (about 330 MB extra disk).
+2. Games, game, Mesa version, picks version for that game (title key `mesa=<version>`).
+
+Command line: `sudo bash steam-arm-install.sh --keep --mesa-extra=<version>[,<version>]`,
+plus `--mesa-extra-file=<archive>` for local copy (version read from its SHA-256, added to
+list); `--mesa-extra=` removes every extra tree. Version list is fixed in installer and
+pinned by SHA-256; no online list.
+
+Rules at game start (handler log line `mesa:` or `graphics: Mesa <version> drivers in
+emulation`):
+
+- `mesa=` applies on route B only. On forwarding (route A) it changes nothing and logs
+  that.
+- Version not installed, or tree incomplete: game starts on driver archive's Mesa, with
+  log line.
+- Run record (`steam-arm-config report run`) names Mesa version in use.
+
+Extra trees need `gpu-in-emulation`; deselecting it or uninstalling deletes them. Setup
+saves version choice (`MESA_EXTRA`) and archive path (`MESA_EXTRA_FILE_<version>`) for
+rebuilds after root filesystem changes; settings restore leaves both out (state of this
+machine), while `mesa=` lines travel with game profiles. When archive is gone at such
+rebuild, tree built before stays in use with warning.
+
 ### Automatic Windows build
 
 Launcher sets Windows build (Proton ARM64) for 32-bit Source engine titles before client
@@ -733,9 +890,12 @@ Renderer check: once title loads OpenGL or Vulkan library, handler logs which GP
 its processes use: `renderer: GPU (v3d renderD128), forwarding to host driver, process
 <name>`, or `drivers inside emulation` on Mali drivers route. Device counts as used once
 title holds GPU memory on it (CPU renderer opens device only to probe it). Title that uses
-no GPU device within 30 s draws on CPU, and log says `renderer: warning: GPU forwarding not
-active: rendering on CPU (llvmpipe)`, with reason: x86 Mesa inside emulation loaded
-(forwarding bypassed), or no GPU device in use. Hardware report lists
+no GPU device within 30 s and stays busy (0.1 s CPU per s or more over last 30 s and last
+10 s) draws on CPU, and log says `renderer: warning: GPU forwarding not active: rendering
+on CPU (llvmpipe)`, with reason: x86 Mesa inside emulation loaded (forwarding bypassed), or
+no GPU device in use. Idle title without GPU memory (loading, waiting for input in own
+launcher window, or stuck) gets no CPU verdict; check that ends without verdict logs
+`renderer: not detected` and names idle process. Hardware report lists
 renderer lines of five newest starts. Launch option `STEAM_ARM_RENDERER_CHECK=0 %command%`
 turns check off for one title.
 
@@ -749,6 +909,25 @@ Other log lines: `goldsrc:` for GoldSrc titles (Half-Life engine), whose video o
 pick OpenGL or Software renderer (Software draws on CPU); `compat: warning:` when Steam's
 saved compatibility tool for title names Proton build but Linux build started. Handler
 only reads Steam's `config.vdf`; it never writes it.
+
+### Game environment file
+
+Native client: Valve's launch wrapper reads `~/.config/steam/env/gfx.txt` of client home
+(`~/.local/share/steam-arm/.config/steam/env/gfx.txt`) at every game start, Windows and
+x86 Linux titles alike, and sets each `NAME=VALUE` line for game; later line wins.
+Launcher writes game-only settings there as block at top of file, between
+`# Steam ARM begin` and `# Steam ARM end`, rewritten at each start:
+`STEAM_ARM_VK_SPOOF=1` (component `vk-spoof`) and
+`DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1` (component `shader-cache`). Client process
+itself no longer carries them. Lines written by hand go below block and win over it;
+uninstall removes block only, file too when nothing else is in it.
+
+Lines of this file win over Steam launch options (seen on test system), so settings that
+launch options override per title stay in launcher environment: `PROTON_DXVK_D3D8=1`,
+and `PROTON_USE_WINED3D=1` on Raspberry Pi GPUs. x86 client, whose launch wrapper reads
+no such file, and launch wrapper without file support get all settings through launcher
+environment. `--detect` line `game environment file:` lists block lines and number of
+other lines.
 
 ### Windows titles
 
@@ -785,8 +964,9 @@ x86 client or page size other than 4K. Install log: `~/.cache/steam-arm/geproton
 Windows titles that play in-game videos through Proton show colour bars in place of videos
 while Steam's shader pre-caching is off, since client then downloads no transcoded videos.
 Component `shader-cache` turns it on: launcher starts client without `-noshaders`, and
-sets `DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1`, because Steam's ARM64 pipeline caching
-layer stops Proton titles at Vulkan device creation.
+sets `DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1` for games (game environment file, see
+Playing games), because Steam's ARM64 pipeline caching layer stops Proton titles at
+Vulkan device creation.
 
 Costs, from test run on RK3588 board:
 
@@ -839,9 +1019,10 @@ that copy.
 ### Title profiles and launch options
 
 Title profiles, one Steam app id per line, later files override earlier ones:
-`/usr/local/share/steam-arm/titles.conf` (included), `/etc/steam-arm/titles.conf`
-(system; `steam-arm-config` writes here) and `~/.config/steam-arm/titles.conf` in client
-home. Line: `<appid> key=value ...`.
+`/usr/local/share/steam-arm/titles.conf` (included), `~/.config/steam-arm/tuned.conf` in
+client home (automatic tuning results), `/etc/steam-arm/titles.conf` (system;
+`steam-arm-config` writes here) and `~/.config/steam-arm/titles.conf` in client home.
+Line: `<appid> key=value ...`.
 
 | Key          | Values                       | Effect                                                               |
 |--------------|------------------------------|----------------------------------------------------------------------|
@@ -854,8 +1035,10 @@ home. Line: `<appid> key=value ...`.
 | `gl32`       | `off`                        | x86 Mesa in emulation, no GL forwarding (32-bit)                     |
 | `vk32`       | `keep`                       | 32-bit title keeps `-vulkan`                                         |
 | `gfx`        | `a`, `b`                     | Graphics route: forwarding or Mali drivers                           |
+| `mesa`       | version, such as `26.2.4`    | Extra Mesa version, route B only (see Extra Mesa versions)           |
 | `multiblock` | `on`, `off`                  | FEX Multiblock for title                                             |
 | `diskcache`  | `on`, `off`                  | FEX code cache for title (FEX 2609.1 or newer)                       |
+| `autotune`   | `fix`, `off`                 | Automatic tuning for title (default `off`)                           |
 | `d3d`        | `dxvk`, `wined3d`            | Raspberry Pi GPU: Direct3D route of Proton title (default `wined3d`) |
 | `glver`      | `3.2`, `3.3`, `4.0` to `4.6` | Raspberry Pi GPU: OpenGL version report, GLSL to match               |
 | `gl`         | `zink`                       | Raspberry Pi GPU: OpenGL through Zink (experimental)                 |
@@ -875,7 +1058,10 @@ changes. Titles with own JIT compiler (Java, Mono, .NET, LuaJIT, CEF) keep file-
 code only. Launch option `FEX_DISKCACHE`, or `FEX_APP_CONFIG` with `DiskCache`, wins over
 profile (`launch option kept`); Steam's own FEX setting does not block it. After game
 update or FEX tool update, launch handler deletes that title's cache once before start.
-FEX sets no size limit; Maintenance, Caches shows sizes and clears them. Effect on frame
+FEX tool before FEX-2610 sets no size limit; Maintenance, Caches shows sizes and clears
+them. FEX-2610 and newer turn code cache on for every title (1 GB cap, entries of older
+FEX versions pruned): `diskcache=on` then adds nothing, cache is deleted only after game
+update, and `diskcache=off` is per-title off switch. Effect on frame
 times not measured yet. Setting covers every emulated process of title start, runtime
 helper scripts included: on test device 2 of 11 starts with empty cache (FEX-2609.1) hung
 in runtime helper before game started (Steam shows game running; Stop in Steam ends it).
@@ -1038,16 +1224,17 @@ sign-in data, Steam files, accounts or passwords.
 
 Checklist picks parts; all are ticked:
 
-| Part                   | Contents                                                    |
-|------------------------|-------------------------------------------------------------|
-| Setup choices          | `/etc/steam-arm/steam-arm.conf`                             |
-| System game profiles   | `/etc/steam-arm/titles.conf`                                |
-| Personal game profiles | `.config/steam-arm/titles.conf` in client folder of account |
-| Proton/tool per game   | App id and tool name of each `CompatToolMapping` entry      |
-| FEX per-game settings  | `.fex-emu/AppConfig/*.json` in client folder, valid JSON    |
-| MangoHud settings      | `.config/MangoHud/*.conf` in client folder                  |
+| Part                     | Contents                                                    |
+|--------------------------|-------------------------------------------------------------|
+| Setup choices            | `/etc/steam-arm/steam-arm.conf`                             |
+| System game profiles     | `/etc/steam-arm/titles.conf`                                |
+| Personal game profiles   | `.config/steam-arm/titles.conf` in client folder of account |
+| Proton/tool per game     | App id and tool name of each `CompatToolMapping` entry      |
+| FEX per-game settings    | `.fex-emu/AppConfig/*.json` in client folder, valid JSON    |
+| MangoHud settings        | `.config/MangoHud/*.conf` in client folder                  |
+| Automatic tuning results | `.config/steam-arm/tuned.conf`, `autotune/state.json` there |
 
-Last four parts belong to one account. When one of them is ticked, account list follows:
+Last five parts belong to one account. When one of them is ticked, account list follows:
 existing normal accounts only, cursor on current account, else game account. Archive
 stores these parts without account name, so restore can put them into any account.
 
@@ -1059,7 +1246,8 @@ again. Summary of every change comes before Restore / Back. Restore needs admini
 rights and refuses while Steam ARM runs.
 
 - Setup choices: `COMPONENTS_ON`, `COMPONENTS_OFF`, `COMPONENTS_USER_SET`, `GFX_DEFAULT`,
-  `AUTO_BUILD`, `CPU_NOTICE`, and `GPU_FAMILY` when set by hand (`GPU_FAMILY_SET=user`).
+  `AUTO_BUILD`, `CPU_NOTICE`, `RUN_HISTORY`, and `GPU_FAMILY` when set by hand
+  (`GPU_FAMILY_SET=user`); run history itself (`runs.log`) is not backed up.
   State of this machine
   (`GAMEUSER`, `ARMHOME_DIR`, `VERSION`, `FSTAB_ADDED`, `RFS_CREATED`, `ACCOUNT_CREATED`,
   `LINGER_SET`, `COMPONENTS_FAMILY`, `PROVIDER_CUSTOM_*`, `PROVIDER_LOCAL_FILE`, `CLIENT`,
@@ -1092,7 +1280,8 @@ steam-arm-config restore FILE [--account NAME] [--parts a,b,...] [--merge|--repl
 ```
 
 Part names: `setup`, `system-profiles`, `personal-profiles`, `compat-tools`, `fex`,
-`mangohud` (default: all). `--account` takes existing normal account only. Restore
+`mangohud`, `personal-tuning` (default: all). Tuning results restore by merge: games
+tuned on this machine keep their own results, games only in backup are added. `--account` takes existing normal account only. Restore
 merges by default and keeps current lines on conflict, listed in summary;
 `--take-system` and `--take-personal` let backup win for named app ids or `all`. Without
 terminal, restore needs `--yes`.
@@ -1100,8 +1289,10 @@ terminal, restore needs `--yes`.
 Archive format 1: members under `steam-arm-settings/`: `manifest` (`FORMAT=1`,
 `VERSION`, `DATE`, `GPU_FAMILY`, `PARTS`), `system/steam-arm.conf`, `system/titles.conf`,
 `personal/titles.conf`, `personal/compattools.txt` (`appid tool` per line),
-`personal/fex-appconfig/*.json`, `personal/mangohud/*.conf`. Every later version reads
-every earlier format.
+`personal/fex-appconfig/*.json`, `personal/mangohud/*.conf`; part `personal-tuning` as
+manifest keys `TUNED_CONF` and `TUNED_STATE` (base64), since versions before 3.0 refuse
+unknown member names but skip unknown manifest keys: they restore every other part of
+3.0 backup. Every later version reads every earlier format.
 
 ## Uninstall
 
@@ -1118,7 +1309,8 @@ Removed: launcher, helpers, settings menu `steam-arm-config`, installer copy in
 `/usr/local/share/steam-arm`, menu and desktop entries, icons, controller rules,
 services, sudo rule, window rule, apt hook, settings in `/etc/steam-arm`, setup logs,
 runtime files of tray and launcher in `/run/user/<uid>`,
-second graphics tree `/opt/fex-rootfs/Ubuntu_24_04-mali`, GE-Proton builds installed from
+second graphics tree `/opt/fex-rootfs/Ubuntu_24_04-mali` and extra Mesa trees
+`/opt/fex-rootfs/Ubuntu_24_04-mali-<version>`, GE-Proton builds installed from
 settings menu (games set to them go back to Steam's choice: Linux build where game has
 one, else default Proton; Proton prefixes stay), x86
 client helpers (`steam-arm-x86client.py`, `steam-arm-run.py`, `steam-arm-pv-bwrap`,
@@ -1223,6 +1415,7 @@ quotes (launcher reads it as shell):
 | `GFX_DEFAULT`            | setup, menu | Default graphics route (below)                   |
 | `AUTO_BUILD`             | menu        | `off`: no automatic Windows build (absent: on)   |
 | `CPU_NOTICE`             | menu        | `on`: notice on CPU drawing (absent: off)        |
+| `RUN_HISTORY`            | menu        | `on`: run history (absent: off)                  |
 | `VERSION`                | setup       | Installer version of last run                    |
 | `ACCOUNT_CREATED`        | setup       | `1` when setup created game account              |
 | `LINGER_SET`             | setup       | `1` when setup turned lingering on               |
@@ -1491,6 +1684,8 @@ to repository.
   started from other context (SSH, `runuser`, service) gets hold refused, and title does not
   start. Start Steam from desktop, or remove that launch option.
 - Hardware report for compatibility report: `steam-arm-config report`.
+- Report of one game start for issue: `steam-arm-config report run` (see Run report and
+  run history).
 
 ## What this does not do
 

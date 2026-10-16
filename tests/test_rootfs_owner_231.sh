@@ -54,7 +54,7 @@ fi
 # call site: every setup run (upgrade fixes earlier trees), after Mali tree step, before FEX user config
 ln_of(){ grep -n -m1 -F -- "$1" "$INST" | cut -d: -f1; }
 LC=$(ln_of '  rfs_root_own "$t" || warn'); LF=$((${LC:-1} - 1)); LB=$(ln_of '  mali_tree_build'); LU=$(ln_of 'as_user mkdir -p "$UHOME/.fex-emu"')
-check "R8 call for RootFS and Mali tree after Mali tree step, before FEX user config, not behind a component" "[ -n \"$LC\" ] && [ ${LB:-0} -lt $LF ] && [ $LC -lt ${LU:-0} ] && sed -n \"\${LF}p\" '$INST' | grep -qx 'for t in \"\$RFS\" \"\$MALI\"; do' && awk -v l=$LF 'NR==l-1' '$INST' | grep -q '^fi\$'"
+check "R8 call for RootFS and Mali tree after Mali tree step, before FEX user config, not behind a component" "[ -n \"$LC\" ] && [ ${LB:-0} -lt $LF ] && [ $LC -lt ${LU:-0} ] && sed -n \"\${LF}p\" '$INST' | grep -qxF 'for t in \"\$RFS\" \"\$MALI\" \$(mx_present | sed \"s#^#\$MALI-#\"); do' && awk -v l=$LF 'NR==l-1' '$INST' | grep -q '^fi\$'"
 # programs of the game account (launcher, handler, run helper, x86 client helper, tray) only read the trees
 BAD=$(python3 - "$INST" <<'EOF'
 import re, sys

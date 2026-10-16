@@ -1,7 +1,7 @@
 #!/bin/bash
 # steam-arm-setup: installs Valve's native ARM64 Steam client (x86 client through FEX on CPUs without Armv8.1 atomics), with host packages, RootFS, launcher, optional components; run as root, then launch via steam-arm. See --help.
 set -u
-SA_VERSION=2.3.2
+SA_VERSION=3.0
 # Banner: self-contained (no board helper needed); TTY-gated, honours NO_COLOR.
 steam_banner() {
     [ -t 1 ] || return 0
@@ -286,6 +286,12 @@ PROVIDER_DEFAULT=0
 # Second tree: hard-link copy of $RFS with the archive's Mesa; handler picks it per title (steam-arm-handler.py MALI_ROOT).
 MALI=/opt/fex-rootfs/Ubuntu_24_04-mali
 MALI_MARK="$MALI/.steam-arm-mali"
+# Extra Mesa trees $MALI-<version> for route B titles (title setting mesa=<version>); none until picked.
+# Fixed list, one line per version: version, archive sha256, address (- = not published: local file only),
+# archive MB, extra disk MB.
+MESA_EXTRA_LIST="26.2.4 6ba13959543df560d9df5db06f19d49055ddc2ec29529a10feb8f7f48037658a - 75 330"
+# --mesa-extra=LIST (versions to keep, comma separated; empty = none), --mesa-extra-file=FILE (archive of a listed version).
+MESA_EXTRA_SEL=""; MESA_EXTRA_SET=0; MESA_EXTRA_FILE=""
 # Pre-release builds laid the drivers over $RFS itself; state dir of that layout.
 PSTATE="$RFS/.steam-arm-fex-mesa"
 PROVIDER_MESA_PKGS="libgl1-mesa-dri libglx-mesa0 libegl-mesa0 libgbm1 mesa-vulkan-drivers mesa-libgallium mesa-va-drivers mesa-vdpau-drivers"
@@ -528,7 +534,7 @@ provider_layout_ok(){
 }
 # Second graphics tree $MALI: hard-link copy of $RFS, distro Mesa unlinked, archive Mesa unpacked as new files.
 mali_tree_build(){
-  local want pkg tmp="" p a f n t miss="" part="$MALI.part" av extra
+  local want pkg tmp="" part="$MALI.part" av extra
   provider_source
   want="archive $PSRC_SHA rootfs $(rfs_id)"
   [ "$PSRC_KIND" = custom ] && want="custom $PSRC_SHA rootfs $(rfs_id)"
@@ -586,6 +592,19 @@ mali_tree_build(){
     provider_layout_ok "$pkg" || { rm -f "$tmp"; die "$PSRC_FILE does not have the layout of a driver archive (above). Nothing changed."; }
   fi
   echo "  building second graphics tree $MALI (about 330 MB extra disk; unchanged files shared with $RFS)"
+  tree_part "$part" "$pkg" "$want" "$tmp"
+  steam_up && steam_up_die
+  [ -n "${DIE_NOTE:-}" ] && DIE_NOTE="Custom driver archive settings kept. Run this again with --provider-default."
+  { rm -rf "$MALI" && mv "$part" "$MALI"; } || die "could not move $part to $MALI; run this again"
+  [ "$PSRC_KIND" = custom ] && provider_custom_save
+  [ "$PSRC_KIND" = published ] && [ -n "$PSRC_FROM" ] && provider_local_save
+  extra=$(du -sm "$RFS" "$MALI" 2>/dev/null | awk 'NR==2 {print $1}')
+  echo "  Mali drivers inside the emulation ready: $MALI (${extra:-?} MB extra disk)"
+}
+# Graphics tree build in $1 (DEST.part): hard-link copy of $RFS, distro Mesa unlinked, archive $2 unpacked as new files,
+# marker $3 written last; $4 (copy of archive) deleted on the way.
+tree_part(){
+  local part=$1 pkg=$2 want=$3 tmp=$4 p a f n t miss=""
   rm -rf "$part"; CLEANUP+=("$part")
   if ! cp -al "$RFS" "$part"; then
     rm -rf "$part"; rm -f "$tmp"
@@ -625,13 +644,6 @@ mali_tree_build(){
   [ -z "$miss" ] || warn "x86-64 root filesystem lacks:$miss. Titles of that architecture may not start on the Mali drivers inside the emulation; gfx=a in their titles.conf line keeps them on forwarding."
   rfs_guard "$part" || die "could not guard package tools in $part. Free some space and run this again."
   printf '%s\n' "$want" > "$part/.steam-arm-mali"
-  steam_up && steam_up_die
-  [ -n "${DIE_NOTE:-}" ] && DIE_NOTE="Custom driver archive settings kept. Run this again with --provider-default."
-  { rm -rf "$MALI" && mv "$part" "$MALI"; } || die "could not move $part to $MALI; run this again"
-  [ "$PSRC_KIND" = custom ] && provider_custom_save
-  [ "$PSRC_KIND" = published ] && [ -n "$PSRC_FROM" ] && provider_local_save
-  extra=$(du -sm "$RFS" "$MALI" 2>/dev/null | awk 'NR==2 {print $1}')
-  echo "  Mali drivers inside the emulation ready: $MALI (${extra:-?} MB extra disk)"
 }
 # Custom archive recorded, so later runs keep it or stop instead of switching back to the published one.
 provider_custom_save(){
@@ -642,6 +654,103 @@ provider_custom_save(){
 mali_tree_remove(){
   { [ -e "$MALI" ] || [ -e "$MALI.part" ]; } || return 1
   rm -rf "$MALI" "$MALI.part"
+}
+# Fields of listed version $1: sha256 address archive-MB disk-MB; status 1 when not listed.
+mx_entry(){ awk -v v="$1" '$1 == v { print $2, $3, $4, $5; f = 1 } END { exit !f }' <<<"$MESA_EXTRA_LIST"; }
+mx_key(){ printf 'MESA_EXTRA_FILE_%s' "${1//./_}"; }
+mx_file_name(){ printf 'steam-arm-fex-mesa-%s-x86_64-i386.tar.zst' "$1"; }
+# Listed version whose sha256 matches file $1.
+mx_match(){
+  local h; h=$(sha256sum -- "$1" 2>/dev/null | cut -c1-64)
+  [ -n "$h" ] && awk -v h="$h" '$2 == h { print $1; f = 1; exit } END { exit !f }' <<<"$MESA_EXTRA_LIST"
+}
+# Versions with a complete or partial extra tree on disk.
+mx_present(){
+  local d v
+  for d in "$MALI"-*; do
+    [ -d "$d" ] || continue
+    v=${d#"$MALI"-}; v=${v%.part}
+    [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && { [ -f "$d/.steam-arm-mali" ] || [ "${d%.part}" != "$d" ]; } && echo "$v"
+  done | sort -u
+}
+mx_save(){
+  local p; p=$(readlink -f -- "$2" 2>/dev/null) || p=$2
+  if [[ "$p" =~ ^/[A-Za-z0-9._/+-]+$ ]]; then
+    [ "$(conf_get "$(mx_key "$1")")" = "$p" ] || conf_set "$(mx_key "$1")" "$p"
+  else
+    echo "  Mesa $1 archive path not saved (letters, digits and . _ - + / only); used for this run"
+  fi
+}
+# Extra tree of version $1; $2=1: asked for in this run (missing archive stops setup, else warning).
+mx_build(){
+  local v=$1 ask=$2 sha url amb dmb d part want f="" from="" tmp av msg
+  read -r sha url amb dmb <<<"$(mx_entry "$v")"
+  d=$MALI-$v; part=$d.part; want="archive $sha rootfs $(rfs_id)"
+  if [ -f "$d/graphics_provider.json" ] && [ "$(cat "$d/.steam-arm-mali" 2>/dev/null)" = "$want" ]; then
+    echo "  Mesa $v drivers inside the emulation already in place ($d)"
+    rfs_guard "$d" || warn "could not guard package tools in $d; run this again"
+    [ "${MX_FILE_VER:-}" = "$v" ] && mx_save "$v" "$MESA_EXTRA_FILE"
+    return 0
+  fi
+  # archive: file given in this run, saved file, file beside installer, release address
+  if [ "${MX_FILE_VER:-}" = "$v" ]; then f=$MESA_EXTRA_FILE; from=given
+  elif f=$(conf_get "$(mx_key "$v")") && [ -n "$f" ] && [ -f "$f" ]; then from=saved
+  elif [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/$(mx_file_name "$v")" ]; then f=$SELF_DIR/$(mx_file_name "$v"); from=beside
+  else f=""; fi
+  if [ -z "$f" ] && [ "$url" = - ]; then
+    msg="Mesa $v archive is not published for download; give setup a local copy: --mesa-extra-file=/path/to/$(mx_file_name "$v")"
+    if [ -f "$d/graphics_provider.json" ]; then warn "Mesa $v tree kept as built before (earlier root filesystem). $msg"; return 0; fi
+    [ "$ask" = 1 ] && die "$msg"
+    warn "Mesa $v tree not built. $msg"; return 0
+  fi
+  av=$(df -Pm "${MALI%/*}" 2>/dev/null | awk 'NR==2 {print $4}')
+  if ! [ "${av:-0}" -ge $((dmb + 70)) ] 2>/dev/null; then
+    msg="Mesa $v drivers need about $((dmb + 70)) MB free in ${MALI%/*} (${av:-?} MB free). Free some space and run this again."
+    [ "$ask" = 1 ] && die "$msg"; warn "$msg"; return 0
+  fi
+  tmp=$(mktemp /var/tmp/steam-arm-fex-mesa.XXXXXX) || die "could not create a file in /var/tmp; free some space and run this again"
+  CLEANUP+=("$tmp")
+  if [ -n "$f" ]; then
+    echo "  local copy of Mesa $v archive: $f"
+    cp -- "$f" "$tmp" || { rm -f "$tmp"; die "could not copy $f to /var/tmp. Free some space and run this again."; }
+  else
+    echo "  downloading Mesa $v drivers for the emulation (about $amb MB)"
+    env "${CURL_ENV[@]}" curl -fL --proto =https --proto-redir =https "${CURL_SHOW[@]}" -o "$tmp" "$url" \
+      || { rm -f "$tmp"; die "Mesa $v download failed. $NETHINT"; }
+  fi
+  if [ "$(sha256sum "$tmp" | cut -c1-64)" != "$sha" ]; then
+    rm -f "$tmp"
+    msg="${f:-downloaded Mesa $v archive} does not match the checksum this installer expects for Mesa $v."
+    [ "$from" = given ] || [ -z "$f" ] && die "$msg Nothing changed."
+    warn "$msg Tree not rebuilt."; return 0
+  fi
+  [ -e "$d" ] && echo "  driver archive or x86-64 root filesystem changed: rebuilding $d"
+  echo "  building Mesa $v tree $d (about $dmb MB extra disk; unchanged files shared with $RFS)"
+  tree_part "$part" "$tmp" "$want" "$tmp"
+  steam_up && steam_up_die
+  { rm -rf "$d" && mv "$part" "$d"; } || die "could not move $part to $d; run this again"
+  [ -n "$f" ] && mx_save "$v" "$f"
+  echo "  Mesa $v drivers inside the emulation ready: $d ($(du -sm "$RFS" "$MALI" "$d" 2>/dev/null | awk 'NR==3 {print $1}') MB extra disk)"
+}
+# Extra trees as selected (option, else saved choice); trees of other versions deleted.
+mx_sync(){
+  local sel v
+  if [ "$MESA_EXTRA_SET" = 1 ]; then sel=$MESA_EXTRA_SEL; else sel=$(conf_get MESA_EXTRA); fi
+  [ -n "${MX_FILE_VER:-}" ] && case ",$sel," in *",$MX_FILE_VER,"*) ;; *) sel="${sel:+$sel,}$MX_FILE_VER";; esac
+  for v in $(mx_present); do
+    case ",$sel," in *",$v,"*) ;; *) rm -rf "${MALI:?}-$v" "$MALI-$v.part"; conf_del "$(mx_key "$v")"; echo "  Mesa $v tree deleted (not selected)";; esac
+  done
+  for v in ${sel//,/ }; do
+    if mx_entry "$v" >/dev/null; then mx_build "$v" "$([ "$MESA_EXTRA_SET" = 1 ] || [ "${MX_FILE_VER:-}" = "$v" ] && echo 1)"
+    else warn "Mesa $v is not in this installer's list of extra versions; skipped"; fi
+  done
+  if [ -n "$sel" ]; then conf_set MESA_EXTRA "$sel"; else conf_del MESA_EXTRA; fi
+}
+# Delete every extra tree; prints the versions deleted.
+mx_drop_all(){
+  local v out=""
+  for v in $(mx_present); do rm -rf "${MALI:?}-$v" "$MALI-$v.part" && out="$out $v"; done
+  echo "${out# }"
 }
 # Package tools of an x86 tree ($1) replaced by a refusal: under emulation they write to the host system.
 # Original kept as <tool>.steam-arm-real (expert escape hatch); wrappers are new files, never written through a shared inode.
@@ -1032,6 +1141,32 @@ gpu_line(){
   GPU_LINE="GPU: $GPU_NAME ($d)"
   GPU_MSG=${GPU_WARN:-$GPU_NOTE}
 }
+# Steam folder $1 belongs to Steam ARM: client home above it carries the setup mark.
+sa_folder(){ local r; r=$(readlink -f -- "$1" 2>/dev/null) || r=$1; [ -f "${r%/.local/share/Steam}/.steam-arm-client" ]; }
+# Signs of an official ARM64 Linux client (detection only): "none" or "found (signs)"; no paths or names.
+official_client(){
+  local s="" p a h c pid x
+  # package for arm64 owning /usr/bin/steam
+  for p in $(dpkg-query -S /usr/bin/steam 2>/dev/null | sed -n 's#: /usr/bin/steam$##p' | tr ',' ' '); do
+    a=$(dpkg-query -W -f='${Architecture}' "$p" 2>/dev/null)
+    [ "${a:-${p##*:}}" = arm64 ] && { s="arm64 package"; break; }
+  done
+  # Steam folder with ARM64 client parts, without Steam ARM's mark
+  while IFS=: read -r _ _ x _ _ h _; do
+    { [ "$x" -ge 1000 ] 2>/dev/null && [ "$x" -lt 60000 ]; } || [ "$x" = 0 ] || continue
+    c=$h/.local/share/Steam
+    { [ -d "$c/linuxarm64" ] || [ -d "$c/steamrtarm64" ]; } && ! sa_folder "$c" && { s="${s:+$s, }Steam folder without Steam ARM mark"; break; }
+  done < <(getent passwd 2>/dev/null)
+  # running client started without -deckard, outside a Steam ARM folder
+  for pid in $(pgrep -x steam 2>/dev/null); do
+    tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -qx -- -deckard && continue
+    x=$(readlink "/proc/$pid/exe" 2>/dev/null) || x=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | head -1)
+    case "$x" in */linuxarm64/steam|*/steamrtarm64/steam) ;; *) continue;; esac
+    sa_folder "${x%/*/steam}" && continue
+    s="${s:+$s, }running client without -deckard"; break
+  done
+  if [ -n "$s" ]; then echo "found ($s)"; else echo none; fi
+}
 # --detect: one "key: value" per line.
 gpu_report(){
   local c v
@@ -1046,6 +1181,9 @@ gpu_report(){
   echo "vulkan: $v"
   gpu_vk_features
   echo "driver archive: $PROVIDER_FILE $PROVIDER_SHA256"
+  # version sha256 address(- = local file only) archive-MB disk-MB
+  while read -r v; do [ -n "$v" ] && echo "mesa extra: $v"; done <<<"$MESA_EXTRA_LIST"
+  echo "official client: $(official_client)"
   echo "cpu: $(cpu_line)"
   client_pick
   case "$CLIENT:$CLIENT_SET" in
@@ -1054,6 +1192,12 @@ gpu_report(){
     arm64:user) cpu_lse && echo "client: arm64" || echo "client: arm64 (chosen by hand on Armv8.0 CPU)";;
     *) echo "client: arm64";;
   esac
+  # native client: FEX tool type, own edits in it, handler entry; own patches (read only)
+  if [ -f /usr/local/lib/steam-arm-entry.py ] && armhome_ok "$ARMHOME_DIR"; then
+    c="$(getent passwd "$GAMEUSER" 2>/dev/null | cut -d: -f6)/$ARMHOME_DIR/.local/share/Steam"
+    if [ "$CLIENT" = arm64 ]; then [ -d "$c" ] && python3 /usr/local/lib/steam-arm-entry.py status "$c" 2>/dev/null
+    else python3 /usr/local/lib/steam-arm-entry.py patches "$c" 2>/dev/null; fi
+  fi
   echo "page size: $(getconf PAGESIZE 2>/dev/null || echo unknown)"
   v=$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null | tr -d '"')
   echo "distro: ${v:-unknown}"
@@ -1073,7 +1217,7 @@ menu_app(){ cat <<'STEAMARMCONFIG'
 # steam-arm-config: menu-driven settings for Steam ARM (built-in screens, dialog, whiptail or plain prompts). See --help.
 set -u
 
-SA_VERSION=2.3.2
+SA_VERSION=3.0
 SA_DOCS=https://github.com/Scrumpper/Steam-ARM
 SA_CONF=/etc/steam-arm/steam-arm.conf
 SA_TITLES_SHARE=/usr/local/share/steam-arm/titles.conf
@@ -1084,6 +1228,7 @@ SA_COMPATMAP_PY=/usr/local/lib/steam-arm-compatmap.py
 SA_AUTOBUILD_PY=/usr/local/lib/steam-arm-autobuild.py
 SA_APPINFO_PY=/usr/local/lib/steam-arm-appinfo.py
 SA_GE_PY=/usr/local/lib/steam-arm-geproton.py
+SA_AUTOTUNE_PY=/usr/local/lib/steam-arm-autotune.py
 SA_REMOTEPLAY=/usr/local/bin/steam-arm-remoteplay
 SA_SHARE_INSTALLER=/usr/local/share/steam-arm/steam-arm-install.sh
 SA_RFS=/opt/fex-rootfs/Ubuntu_24_04
@@ -1091,6 +1236,8 @@ SA_MALI=/opt/fex-rootfs/Ubuntu_24_04-mali
 # Published driver archive, for installers whose --detect prints no "driver archive:" line.
 SA_PROVIDER_FILE=steam-arm-fex-mesa-26.1.8-x86_64-i386.tar.zst
 SA_PROVIDER_SHA=3ba2c461bc069dc702af7f8ee81e7c5343604148977bdddde41b1d3826cb7495
+# Extra Mesa versions (installer's MESA_EXTRA_LIST), for installers whose --detect prints no "mesa extra:" line.
+SA_MESA_EXTRA="26.2.4 6ba13959543df560d9df5db06f19d49055ddc2ec29529a10feb8f7f48037658a - 75 330"
 # As root: root's own home and a private temp folder (sudo -E and su keep the caller's folders, which that account can change).
 SA_TMP=""
 if [ "$(id -u)" = 0 ]; then
@@ -1196,7 +1343,9 @@ armhome_rel(){
 arm_home(){ echo "$(game_home)/$(armhome_rel)"; }
 steam_dir(){ echo "$(arm_home)/.local/share/Steam"; }
 titles_user(){ echo "$(arm_home)/.config/steam-arm/titles.conf"; }
-titles_files(){ printf '%s\n' "$SA_TITLES_SHARE" "$SA_TITLES_ETC" "$(titles_user)"; }
+# Settings found by automatic tuning: layer below /etc and personal profiles (keys set there win).
+tuned_conf(){ echo "$(arm_home)/.config/steam-arm/tuned.conf"; }
+titles_files(){ printf '%s\n' "$SA_TITLES_SHARE" "$(tuned_conf)" "$SA_TITLES_ETC" "$(titles_user)"; }
 # Shorten home paths for display.
 tilde(){ local h; h=$(game_home); if [ -n "$h" ]; then sed "s#${h}#~#g"; else cat; fi; }
 
@@ -1511,6 +1660,11 @@ fex_cache_ok(){
   local v; v=$(fex_tool_ver); v=${v#FEX-}
   [[ "$v" =~ ^[0-9]{4}(\.[0-9]+)?$ ]] && [ "$(printf '%s\n' 2609.1 "$v" | sort -V | head -n 1)" = 2609.1 ]
 }
+# FEX tool turns the code cache on for every title itself (FEX-2610 or newer, 1 GB cap).
+fex_cache_all(){
+  local v; v=$(fex_tool_ver); v=${v#FEX-}
+  [[ "$v" =~ ^[0-9]{4}(\.[0-9]+)?$ ]] && [ "${v%%.*}" -ge 2610 ]
+}
 mali_tree(){
   local m e="..."
   if [ -f "$SA_MALI/.steam-arm-mali" ]; then
@@ -1522,6 +1676,20 @@ mali_tree(){
   else echo "not installed"; fi
 }
 mali_ready(){ [ -f "$SA_MALI/.steam-arm-mali" ] && [ -f "$SA_MALI/graphics_provider.json" ]; }
+# Extra Mesa versions, one "version sha256 address archive-MB disk-MB" line each: installer's --detect, else built-in.
+mx_list(){
+  local l
+  l=$(detect_raw | sed -n 's/^mesa extra: //p' | awk 'NF == 5 && $1 ~ /^[0-9]+\.[0-9]+\.[0-9]+$/ && $2 ~ /^[0-9a-f]+$/')
+  printf '%s\n' "${l:-$SA_MESA_EXTRA}"
+}
+mx_ready(){ [ -f "$SA_MALI-$1/.steam-arm-mali" ] && [ -f "$SA_MALI-$1/graphics_provider.json" ]; }
+# Disk the extra tree of $1 takes beyond root filesystem and second tree (shared files counted once).
+mx_size(){ du -shc "$SA_RFS" "$SA_MALI" "$SA_MALI-$1" 2>/dev/null | sed -n 3p | awk '{print $1}'; }
+mx_installed(){
+  local d v
+  for d in "$SA_MALI"-*; do v=${d#"$SA_MALI"-}; [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && mx_ready "$v" && echo "$v"; done | sort -V | paste -sd' ' -
+}
+mx_state(){ local i; i=$(mx_installed); echo "${i:-none}"; }
 # Published driver archive as "file sha256": installer's --detect line, else built-in constants.
 da_pub(){
   local f h
@@ -2971,6 +3139,7 @@ Client channel $(client_channel)
 FEX tool       $(fex_tool_row)
 Graphics       $(gfx_default_label "$(gfx_default)")
 Mali tree      $(mali_tree)
+Extra Mesa     $(mx_state)
 Driver archive $(da_status | wrap_row -h)
 Components on  ${on:-none}
 Components off ${off:-none}
@@ -3366,9 +3535,62 @@ Now: $(da_status)
 Published archive: $f, sha256 ${h:0:12}..." --default "$c" \
       dl "Download from project release (recommended)" \
       local "Local copy of published archive..." \
-      custom "Custom archive (own Mesa build)..."); do
-    case "$c" in dl) da_download;; local) da_local "$f" "$h";; custom) da_custom;; esac
+      custom "Custom archive (own Mesa build)..." \
+      extra "Extra versions, route B games (now: $(mx_state))..."); do
+    case "$c" in dl) da_download;; local) da_local "$f" "$h";; custom) da_custom;; extra) da_extra;; esac
   done
+}
+# Extra Mesa versions: list with state and size; pick one to install or remove.
+da_extra(){
+  local c="" v h u a d
+  while :; do
+    local -a items=()
+    while read -r v h u a d; do
+      [ -n "$v" ] || continue
+      if mx_ready "$v"; then items+=("$v" "Mesa $v: installed, $(mx_size "$v") disk")
+      else items+=("$v" "Mesa $v: not installed, ${d} MB disk$([ "$u" = - ] && echo ", local file")"); fi
+    done < <(mx_list)
+    c=$(ui_menu "Driver archive: extra versions" "Extra Mesa versions inside emulation, for route B games only (Mali drivers in emulation: Java games, 32-bit Vulkan games, gfx=b). Each game picks one in Games > game > Mesa version; others keep driver archive's Mesa. None installed by default.
+Disk now: $(disk_free /opt)." --default "$c" "${items[@]}") || return
+    da_extra_one "$c"
+  done
+}
+da_extra_one(){
+  local v=$1 h u a d cur n p="" e i
+  read -r _ h u a d <<<"$(mx_list | awk -v v="$v" '$1 == v')"
+  cur=$(conf_get MESA_EXTRA)
+  if mx_ready "$v"; then
+    n=$(awk -v v="mesa=$v" '{ sub(/#.*/, ""); for (i = 2; i <= NF; i++) if ($i == v) c++ } END { print c + 0 }' "$SA_TITLES_ETC" 2>/dev/null)
+    ui_yesno "Mesa $v" "Mesa $v installed: $(mx_size "$v") disk. Games set to it: ${n:-0}.
+
+Remove it? Those games go back to driver archive's Mesa; their setting stays and logs a line at start. Setup runs again." Remove Back defaultno || return 1
+    INST_ENV=(); run_installer "Mesa $v" --keep "--mesa-extra=$(tr ',' '\n' <<<"$cur" | grep -vx "$v" | paste -sd, -)"
+    return
+  fi
+  [[ " $(comps_effective) " == *" gpu-in-emulation "* ]] \
+    || { ui_msg "Mesa $v" "Extra versions sit next to Mali drivers in emulation: turn on gpu-in-emulation first (Components > Parts)."; return 1; }
+  ui_yesno "Mesa $v" "Install Mesa $v for route B games?
+
+Archive: about $a MB. Disk: about $d MB extra (files shared with root filesystem counted once).
+Disk now: $(disk_free /opt).
+$([ "$u" = - ] && echo "Not published for download yet: needs local copy of steam-arm-fex-mesa-$v-x86_64-i386.tar.zst (SHA-256 checked).")" Next Back || return 1
+  if [ "$u" = - ]; then
+    i=$(find_installer 2>/dev/null) && i=${i%/*}
+    for e in "$(conf_get "MESA_EXTRA_FILE_${v//./_}")" ${i:+"$i/steam-arm-fex-mesa-$v-x86_64-i386.tar.zst"} "$(owner_home)/Downloads/steam-arm-fex-mesa-$v-x86_64-i386.tar.zst"; do
+      case "$e" in /*) [ -f "$e" ] && { p=$e; break; };; esac
+    done
+    while :; do
+      p=$(ui_input "Mesa $v: local copy" "Path of steam-arm-fex-mesa-$v-x86_64-i386.tar.zst:" "$p") || return 1
+      e=$(da_path_err "$p")
+      [ -z "$e" ] || { ui_msg "Mesa $v: local copy" "$e"; continue; }
+      da_hash "$p" || continue
+      [ "$DA_SHA" = "$h" ] && break
+      ui_msg "Mesa $v: local copy" "File is not Mesa $v archive this installer lists (sha256 ${DA_SHA:0:12}..., expected ${h:0:12}...)."
+    done
+    INST_ENV=(); run_installer "Mesa $v" --keep "--mesa-extra=${cur:+$cur,}$v" "--mesa-extra-file=$p"
+  else
+    INST_ENV=(); run_installer "Mesa $v" --keep "--mesa-extra=${cur:+$cur,}$v"
+  fi
 }
 # Setup run with driver archive env $2...; turns gpu-in-emulation on after asking when it is off. $1: published|custom.
 da_apply(){
@@ -3703,12 +3925,43 @@ Separate items with ; (no spaces). Empty removes it." "$cur") || return
 game_diskcache(){
   local id=$1 cur v note c
   cur=$(tc_get "$id" diskcache); v=$(fex_tool_ver)
-  if fex_cache_ok; then note="FEX tool: $v."
+  if fex_cache_all; then note="FEX tool: $v turns code cache on for every game (1 GB cap). Off turns it off for this game; On adds nothing."
+  elif fex_cache_ok; then note="FEX tool: $v."
   else note="FEX tool: $v. Needs FEX-2609.1 or newer; setting is kept and applies once Steam updates tool."; fi
   c=$(ui_menu "FEX code cache" "Stores translated code of this game for its next start. Uses disk space (Maintenance > Caches shows it).
 Now: ${cur:-off}. $note" --default "${cur:-default}" on "On" off "Off" default "Default (remove this setting)") || return
   [ "$c" = default ] && c=""
   game_set "$id" diskcache "$c"
+}
+# Mesa version for a route B game: listed versions, installed or not (not installed: game starts on default).
+game_mesa(){
+  local id=$1 cur c v; local -a items=()
+  cur=$(tc_get "$id" mesa)
+  while read -r v _; do
+    [ -n "$v" ] && items+=("$v" "Mesa $v$(mx_ready "$v" || echo ", not installed")")
+  done < <(mx_list)
+  c=$(ui_menu "Mesa version" "Route B only (Mali drivers in emulation: Java games, 32-bit Vulkan games, gfx=b); on forwarding this setting does nothing. Default: Mesa of driver archive. Version not installed: game starts on default, log line names it. Install versions in Components > Driver archive > Extra versions.
+Now: ${cur:-default}. Route setting: $(gfx_label "$(tc_get "$id" gfx)")." \
+    --default "${cur:-default}" "${items[@]}" default "Default (remove this setting)") || return
+  [ "$c" = default ] && c=""
+  game_set "$id" mesa "$c"
+}
+game_autotune(){
+  local id=$1 name=$2 c="" st
+  while :; do
+    st=$(game_read python3 "$SA_AUTOTUNE_PY" show "$(arm_home)" "$id" 2>/dev/null </dev/null | head -3)
+    c=$(ui_menu "Automatic tuning" "Game: ${name:0:40}. Now: $(at_mode "$id").
+On: after a failed start (crash before graphics, hang, drawing on CPU, no graphics in 5 minutes) next start tries one changed setting: graphics route, FEX Multiblock or 32-bit GL thunk. Up to 4 tries; settings set by hand win; never stops a game.
+${st:-No tuning record yet.}" --default "$c" \
+        fix "On: fix problems" off "Off (settings found stay)" details "Details" reset "Reset (remove settings found)") || return
+    case "$c" in
+      fix) self_root tune "$id" fix;;
+      off) self_root tune "$id" off;;
+      details) ui_textstr "Automatic tuning: ${name:0:30}" "$(game_read python3 "$SA_AUTOTUNE_PY" show "$(arm_home)" "$id" 2>&1 </dev/null)";;
+      reset) ui_yesno "Automatic tuning" "Remove settings found and trial history of this game? Its mode stays $(at_mode "$id")." Reset Back defaultno \
+               && self_root tune "$id" reset;;
+    esac
+  done
 }
 game_menu(){
   local id=$1 name c="" win=0 deck; name=$(game_name "$id")
@@ -3726,6 +3979,8 @@ game_menu(){
           env "Extra environment    [$(tc_show "$id" env none)]" \
           args "Extra arguments      [$(tc_show "$id" args none)]" \
           diskcache "FEX code cache       [$(tc_show "$id" diskcache off)]" \
+          mesa "Mesa, route B        [$(tc_show "$id" mesa default)]" \
+          autotune "Automatic tuning     [$(at_mode "$id")]" \
           rules "Rules used at last start" \
           clear "Remove all settings for this game") || break
     fi
@@ -3735,6 +3990,8 @@ game_menu(){
       env)      game_text "$id" env "Extra environment" "Variables, for example: DXVK_HUD=fps;MESA_NO_ERROR=1";;
       args)     game_text "$id" args "Extra arguments" "Arguments, for example: -windowed;-nosound";;
       diskcache) game_diskcache "$id";;
+      mesa)     game_mesa "$id";;
+      autotune) game_autotune "$id" "$name";;
       rules)    ui_textstr "Rules: ${name:0:40}" "$(game_rules "$id")";;
       clear)    ui_yesno "Game: ${name:0:50}" "Remove every setting for this game from $SA_TITLES_ETC (route included)?" Remove Back defaultno \
                   && self_root profile "$id" --clear;;
@@ -3861,12 +4118,13 @@ menu_remoteplay(){
 # ===========================================================================
 # 8. Maintenance
 # ===========================================================================
-# Scrubber of sanitize: stdin to stdout. Arguments h=home u=account n=full name s=host v=loginusers.vdf.
+# Scrubber of sanitize: stdin to stdout. Arguments h=home u=account n=full name s=host v=loginusers.vdf m=other value
+# (machine-id, serial, network name); x=1 strict: every value of 4+ characters and any Steam ID left drops its line.
 san_py(){ cat <<'PY'
 import ipaddress, re, sys
 STOP = {"steam", "games", "game", "user", "users", "admin", "administrator", "pi", "root", "guest", "test", "ubuntu",
         "debian", "linux", "arm", "default", "video", "render", "input", "audio", "player", "home", "desktop", "localhost"}
-lit, homes, check = [], [], []
+lit, homes, check, strict = [], [], [], False
 def add(v, tag, ci=False, chk=True):
     v = v.strip()
     if v and len(v) <= 128:
@@ -3883,6 +4141,10 @@ for a in sys.argv[1:]:
     elif k == "s":
         add(v, "<host>", True)
         add(v.split(".")[0], "<host>", True)
+    elif k == "m":
+        add(v, "<removed>", True)
+    elif k == "x":
+        strict = v == "1"
     elif k == "v":
         try:
             t = open(v, encoding="utf-8", errors="replace").read()
@@ -3945,12 +4207,15 @@ def v6(m):
     except ValueError:
         return m.group(0)
     return "<ip6>"
+if strict:
+    check += [v.lower() for v, _, _ in lit if len(v) >= 4 and v.lower() not in STOP]
+LEFT = re.compile(r"7656119[0-9]{10}|\[U:[0-9]:[1-9][0-9]*\]|STEAM_[0-5]:[01]:[0-9]+|[Ss][Tt][Ee][Aa][Mm][Ii][Dd]=[1-9]")
 out = sys.stdout.buffer
 for line in sys.stdin.buffer.read().decode("utf-8", "surrogateescape").splitlines(True):
     for rx, rep in rules:
         line = rx.sub(rep, line)
     line = V6.sub(v6, V4.sub(v4, line))
-    if any(c in line.lower() for c in check):
+    if any(c in line.lower() for c in check) or (strict and LEFT.search(line)):
         line = "(line removed: personal data)\n"
     out.write(line.encode("utf-8", "surrogateescape"))
 PY
@@ -3967,7 +4232,7 @@ sanitize(){
     args+=("u=$u" "n=$g")
   done
   args+=("s=$(hostname 2>/dev/null)" "v=$(steam_dir)/config/loginusers.vdf")
-  python3 -c "$(san_py)" "${args[@]}"
+  python3 -c "$(san_py)" "${args[@]}" "$@"
 }
 report_text(){
   local d f
@@ -3980,8 +4245,8 @@ report_text(){
   echo "GPU drivers    $(gpu_drivers | tr '\n' ' ')"
   echo
   echo "== Steam ARM"; info_status
-  if is_installed && cache_readable; then echo "FEX code cache on for $(n_games "$(dc_on_count)"), $(kb_h "$(cache_scan | awk -F'\t' '{ s += $3 } END { print s + 0 }')") in caches"
-  elif is_installed; then echo "FEX code cache on for $(n_games "$(dc_on_count)"), cache sizes unknown (no read access to game account's folder)"; fi
+  if is_installed && cache_readable; then echo "FEX code cache on for $(dc_on_text), $(kb_h "$(cache_scan | awk -F'\t' '{ s += $3 } END { print s + 0 }')") in caches"
+  elif is_installed; then echo "FEX code cache on for $(dc_on_text), cache sizes unknown (no read access to game account's folder)"; fi
   is_installed && ab_list >/dev/null
   is_installed && echo "Automatic build $(auto_build), $(ab_list | awk -F'\t' '$1 == "app" && $3 == "auto"' | grep -c .) set, $(ab_list | awk -F'\t' '$1 == "app" && ($3 == "suggest" || $3 == "pending")' | grep -c .) suggested"
   echo
@@ -4070,6 +4335,360 @@ maint_report(){
 
 Home folders, account names, Steam sign-in names, Steam IDs, host name, network addresses and e-mail addresses are removed. Attach the file to a compatibility report at:
 $SA_DOCS/issues"
+}
+
+# Run report and run history (FEX-run titles; Windows titles on ARM64 Proton and native titles not covered).
+SA_RUNS_REL=.local/state/steam-arm/runs.log
+SA_RR_MAX=30720
+run_history(){ case "$(conf_get RUN_HISTORY)" in on) echo on;; *) echo off;; esac; }
+runs_log(){ echo "$(arm_home)/$SA_RUNS_REL"; }
+rr_read(){ acct_run "$(game_user)" "$@" 2>/dev/null; }
+# Collector, run as game account. Output lines: A appid, S key<TAB>value, K knob, L handler line, F FEX tool line,
+# E earlier run. Reads Steam's console log (values only), own /tmp handler logs, runs.log; never steam.token, ssfn*, userdata/.
+rr_py(){ cat <<'PY'
+import calendar, glob, os, re, sys, time
+steam, runs, want, hist = sys.argv[1:5]
+UID = os.getuid()
+def read(p, tail=4 << 20):
+    try:
+        st = os.lstat(p)
+        if st.st_uid != UID or not os.path.isfile(p) or os.path.islink(p):
+            return []
+        with open(p, "rb") as f:
+            f.seek(max(0, st.st_size - tail))
+            return f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+def utc(s):
+    try:
+        return calendar.timegm(time.strptime(s, "%Y-%m-%dT%H:%M:%SZ"))
+    except ValueError:
+        return 0
+def stamp(t):
+    return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(t))
+def S(k, v):
+    print("S %s\t%s" % (k, v))
+ev = []
+for n in ("console_log.previous.txt", "console_log.txt"):
+    for l in read(os.path.join(steam, "logs", n)):
+        m = re.match(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] Game process (added|removed)\s*: AppID (\d+) (.*)", l)
+        if m:
+            c = m.group(4).lower()
+            r = "fex" if "fex-compat-tool" in c else "proton" if "proton" in c else "native"
+            # Proton tool folder of this start (Steam's own choice: per title, default or forced)
+            pt = re.search(r"/(?:common|compatibilitytools\.d)/([^/'\"]+)'?/proton\b", m.group(4))
+            ev.append((time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")), m.group(2), m.group(3), r,
+                       pt.group(1) if pt else ""))
+rec = []
+for l in read(runs):
+    d = dict(w.split("=", 1) for w in l.split() if "=" in w)
+    if d.get("ev") in ("start", "exit") and d.get("app") and d.get("run"):
+        rec.append(d)
+H = []
+for p in glob.glob("/tmp/steam-arm-run-*.log") + glob.glob("/tmp/fex-compat-tool-*.log"):
+    ls = read(p, 1 << 20)
+    app = next((x.split("=", 1)[1] for x in ls if re.match(r"Steam(App|Game)Id=[0-9]+$", x)), "")
+    if app:
+        hl = [x[len("steam-arm: "):] for x in ls if x.startswith("steam-arm: ")]
+        H.append((os.lstat(p).st_mtime, p, app, hl, ls))
+H.sort(reverse=True)
+if want == "last":
+    c = [(t, a) for t, k, a, *_ in ev if k == "added"] + [(utc(d.get("t", "")), d["app"]) for d in rec if d["ev"] == "start"]
+    c += [(t, a) for t, _, a, hl, _ in H if hl]
+    want = max(c)[1] if c else ""
+elif not any(e[2] == want for e in ev) and not any(h[2] == want and h[3] for h in H) \
+        and not any(d["app"] == want for d in rec):
+    want = ""
+print("A", want)
+if not want:
+    sys.exit(0)
+adds = [e for e in ev if e[2] == want and e[1] == "added"]
+ts = 0
+if adds:
+    ts, route = adds[-1][0], adds[-1][3]
+    S("steam_start", stamp(ts))
+    S("steam_route", route)
+    if adds[-1][4]:
+        S("proton_tool", adds[-1][4])
+    ends = [e[0] for e in ev if e[2] == want and e[1] == "removed" and e[0] >= ts]
+    if ends:
+        S("steam_end", stamp(ends[0]))
+mine = [h for h in H if h[2] == want and h[3]]
+run, old = "", bool(mine)
+if mine:
+    mt, p, _, hl, pl = mine[0]
+    hs = next((utc(x[7:]) for x in hl if x.startswith("start: ")), 0)
+    if ts and (abs(hs - ts) > 120 if hs else mt < ts - 5):
+        # handler log of an earlier start: not this one's
+        mine = []
+if mine:
+    S("entry", "launch wrapper" if "/steam-arm-run-" in p else "FEX tool edit")
+    S("start_epoch", int(hs or ts or mt))
+    run = re.sub(r"\D", "", os.path.basename(p))
+    kn = [x for x in hl if not re.match(r"(client|entry|start|command|renderer|exit status|run time|run record):?", x)]
+    if len(kn) > 60:
+        kn = ["(%d earlier lines: see Logs)" % (len(kn) - 60)] + kn[-60:]
+    for x in kn:
+        print("K", x)
+    for x in hl[-200:]:
+        print("L", x)
+    # Valve's tool log: error lines only (rest is the environment)
+    tl = pl if "/fex-compat-tool-" in p else next((ls for t, q, a, _, ls in H
+                                                  if a == want and "/fex-compat-tool-" in q and t >= (hs or mt) - 5), [])
+    hits = {}
+    for x in tl:
+        if not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", x) and not x.startswith("steam-arm:") \
+                and re.search(r"(?i)sigill|sigbus|sigsegv|unhandled|error|assert|abort|fault|exception", x):
+            hits[x[:300]] = hits.get(x[:300], 0) + 1
+    for x, n in list(hits.items())[:30]:
+        print("F", x + (" (%d times)" % n if n > 1 else ""))
+elif ts:
+    S("handler", ("not reached at newest start" + (" (handler log only of an earlier start)" if old else ""))
+      if adds[-1][3] == "fex" else "none")
+    S("start_epoch", int(ts))
+ends = {d["run"]: d for d in rec if d["ev"] == "exit"}
+past = [d for d in rec if d["ev"] == "start"]
+if past:
+    S("record", "yes")
+keep = ("gfx", "overlay", "engine", "bits", "fex", "tool", "mesa", "proton", "multiblock", "diskcache", "profile")
+same = [d for d in past if d["app"] == want and d["run"] != run][-20:]
+other = [d for d in past if d["app"] != want][-40:] if hist == "1" else []
+for d in same + other:
+    e = ends.get(d["run"], {})
+    w = (["app=" + d["app"]] if d["app"] != want else []) + ["%s=%s" % (k, d[k]) for k in keep if k in d]
+    w += ["status=%s secs=%s renderer=%s" % (e.get("status"), e.get("secs"), e.get("renderer"))] if e else ["end not recorded"]
+    print("E", d.get("t", "?"), " ".join(w))
+if run and run in ends:
+    S("record_exit", "status=%s secs=%s renderer=%s" % (ends[run].get("status"), ends[run].get("secs"), ends[run].get("renderer")))
+PY
+}
+rr_row(){ printf '%-15s %s\n' "$1" "$2"; }
+# Proton tool of the reported start: Steam's start line, else saved per-title mapping; Linux build only when neither names one.
+rr_proton(){
+  local t m; t=$(rr_v proton_tool); m=$(compat_tool "$1")
+  if [ -n "$t" ]; then echo "$t (from Steam's start line)"
+  elif grep -q '^K compat: x86 Proton' <<<"$RR_RAW"; then echo "x86 Proton${m:+ ($m)} through FEX"
+  elif [ -n "$m" ]; then echo "$m (saved for title; start line not found)"
+  elif [ "$(rr_v steam_route)" = proton ]; then echo "Proton (tool name not in Steam's start line)"
+  elif [ -n "$(rr_v steam_route)" ]; then echo "none (Linux build)"
+  else echo "unknown (no start line in Steam's log)"; fi
+}
+# rr_upstream APPID ENGINE: fields of the FEX, Proton and Steam client issue templates.
+rr_upstream(){
+  local ch v; ch=$(client_channel)
+  # shellcheck disable=SC2016
+  v=$(rr_read sh -c 'sed -n "s/^[[:space:]]*\"version\"[[:space:]]*\"\([0-9]*\)\".*/\1/p" "$1"/package/steam_client_*.manifest' sh "$(steam_dir)" | head -1)
+  printf '%-15s %s\n' OS "$(distro)" Kernel "$(uname -r)" CPU "$(cpu_info)" GPU "$(gpu_name) ($(gpu_family))" \
+    "Kernel driver" "$(gpu_driver)" Mesa "$(mesa_ver)" Vulkan "$(vk_summary)" "Page size" "$(page_size)" \
+    Memory "$(awk '/^MemTotal/ { printf "%.1f GB\n", $2 / 1048576 }' /proc/meminfo 2>/dev/null)" \
+    "Steam client" "${v:-unknown} ($(client_label), $( [ "$ch" = stable ] && echo "stable" || echo "beta"))" \
+    "FEX tool" "$(fex_tool_row)" "FEX (system)" "$(fex_ver)" "RootFS" "$( [ -d "$SA_RFS" ] && basename "$SA_RFS" || echo none)" \
+    "Executable" "${2:-not detected}" "Proton" "$(rr_proton "$1")"
+}
+# rr_outcome START END: kernel lines, core dump lines, resources (read-only; never signals a process).
+rr_outcome(){
+  local s=$1 e=$2 k t
+  if [ -n "$s" ]; then
+    k=$(journalctl -k --since "@$s" --until "@$e" -o short-iso --no-pager -q 2>&1)
+    if grep -qi 'insufficient permissions\|no journal files' <<<"$k" || ! have journalctl; then
+      rr_row Kernel "log not readable by this account (journal group or administrator rights needed)"
+    else
+      k=$(grep -aiE 'panthor|panfrost|mali|v3d|vc4|msm|lima|etnaviv|job timeout|gpu fault|cs_fault|out of memory|oom-kill|killed process|segfault|unhandled|sigbus' <<<"$k" | tail -30)
+      if [ -n "$k" ]; then rr_row Kernel "GPU, memory or crash lines during run:"; printf '%s\n' "$k" | sed 's/^/  /'
+      else rr_row Kernel "no GPU, memory or crash lines during run"; fi
+    fi
+    if have coredumpctl; then
+      # game account's dumps of game or FEX programs only; signal, program, first 5 frames
+      t=$(coredumpctl list --since "@$s" --until "@$e" --no-pager --no-legend -q "COREDUMP_UID=$(id -u "$(game_user)" 2>/dev/null)" 2>/dev/null \
+          | awk '$(NF - 1) ~ /steamapps\/|FEX/ { print $5 }' | head -3 | while read -r k; do
+              coredumpctl info "$k" --no-pager 2>/dev/null | grep -aE '^ *(Signal|Executable):|^ *#[0-4] '; done)
+      if [ -n "$t" ]; then echo "Core dump:"; printf '%s\n' "$t" | sed 's/^ */  /'; else rr_row "Core dump" "none of this game during run"; fi
+    else
+      rr_row "Core dump" "not recorded (coredumpctl not installed)"
+    fi
+  fi
+  rr_row /dev/shm "$(df -h --output=used,size /dev/shm 2>/dev/null | tail -1 | awk '{ print $1 " used of " $2 }')"
+  rr_row max_map_count "$(cat /proc/sys/vm/max_map_count 2>/dev/null)"
+  awk '/^MemAvailable/ { a = $2 } /^SwapTotal/ { st = $2 } /^SwapFree/ { sf = $2 }
+       END { printf "%-15s %.1f GB, swap %.1f of %.1f GB free\n", "Memory free", a / 1048576, sf / 1048576, st / 1048576 }' /proc/meminfo 2>/dev/null
+  t=$(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1)
+  [ -n "$t" ] && rr_row "Hottest zone" "$((t / 1000)) C at report time"
+  return 0
+}
+# Values removed by literal match besides accounts and sign-in names: machine-id, serials, MACs, Wi-Fi name.
+rr_literals(){
+  local v f
+  for v in "$(cat /etc/machine-id 2>/dev/null)" "$(tr -d '\0' 2>/dev/null < /proc/device-tree/serial-number)" \
+           "$(awk -F': *' '/^Serial/ { print $2 }' /proc/cpuinfo 2>/dev/null)" \
+           "$(have iwgetid && iwgetid -r 2>/dev/null)" "$(have nmcli && nmcli -t -f active,ssid dev wifi 2>/dev/null | sed -n 's/^yes://p' | head -1)"; do
+    [ -n "$v" ] && [[ ! "$v" =~ ^0+$ ]] && printf 'm=%s\n' "$v"
+  done
+  for f in /sys/class/net/*/address; do v=$(cat "$f" 2>/dev/null); [ "$v" != 00:00:00:00:00:00 ] && [ -n "$v" ] && printf 'm=%s\n' "$v"; done
+  return 0
+}
+# Fenced blocks shrink oldest line first until the report fits SA_RR_MAX bytes.
+rr_cap(){ python3 -c '
+import sys
+lim, t = int(sys.argv[1]), sys.stdin.read().split("\n")
+size = len("\n".join(t).encode())
+cut = {}
+while size > lim:
+    b, s = [], None
+    for i, l in enumerate(t):
+        if l.startswith("```"):
+            if s is None:
+                s = i
+            else:
+                b.append((i - s - (2 if s in cut else 1), s))
+                s = None
+    if not b or max(b)[0] < 1:
+        break
+    n, s = max(b)
+    j = s + (2 if s in cut else 1)
+    size -= len(t[j].encode()) + 1
+    del t[j]
+    cut[s] = cut.get(s, 0) + 1
+    m = "(%d older lines left out: 30 KB report limit)" % cut[s]
+    if cut[s] == 1:
+        t.insert(s + 1, m)
+        size += len(m.encode()) + 1
+    else:
+        size += len(m.encode()) - len(t[s + 1].encode())
+        t[s + 1] = m
+    cut = {(k + 1 if k > s else k): v for k, v in cut.items()}
+out = "\n".join(t)
+if len(out.encode()) > lim:
+    out = out.encode()[:lim - 40].decode("utf-8", "ignore") + "\n(report cut at 30 KB)\n"
+sys.stdout.write(out)
+' "$SA_RR_MAX"; }
+# rr_make APPID|last HIST OUT: scrubbed, self-checked, capped report in OUT; RR_APP = title reported. Status 1: nothing to report.
+rr_v(){ sed -n "s/^S $1\t//p" <<<"$RR_RAW" | tail -1; }
+rr_h(){ sed -n "s/^L $1//p" <<<"$RR_RAW" | tail -1; }
+rr_running(){ pgrep -u "$(game_user)" -f "reaper SteamLaunch AppId=$1( |\$)" >/dev/null 2>&1; }
+rr_make(){
+  local want=$1 hist=$2 out=$3 raw app name eng route rec rs re vdf l
+  RR_APP=""
+  have python3 || { echo "Run report needs python3 (it removes personal details)." > "$out"; return 1; }
+  RR_RAW=$(rr_read python3 -c "$(rr_py)" "$(steam_dir)" "$(runs_log)" "$want" "$hist" </dev/null); raw=$RR_RAW
+  app=$(sed -n 's/^A //p' <<<"$raw")
+  [ -n "$app" ] || { echo "No game start found$([ "$want" = last ] || echo " for App ID $want"): start the game once, then make the report." > "$out"; return 1; }
+  RR_APP=$app
+  name=$(game_name "$app")
+  eng=$(rr_h 'engine: ')
+  case "$(rr_v steam_route)" in
+    proton) route="Windows build on ARM64 Proton";;
+    native) route="native ARM64 build";;
+    *) if grep -q '^K compat: x86 Proton' <<<"$raw"; then route="Windows build on x86 Proton through FEX"
+       elif grep -q '^L ' <<<"$raw" || [ "$(rr_v steam_route)" = fex ]; then route="x86 Linux build through FEX"
+       else route="unknown (no start line in Steam's log)"; fi;;
+  esac
+  if grep -q '^L client: x86' <<<"$raw"; then route="$route, x86 client"
+  elif grep -q '^L ' <<<"$raw"; then route="$route, native ARM64 client"; fi
+  [ -n "$(rr_v entry)" ] && route="$route, entry: $(rr_v entry)"
+  rec="off: handler logs since boot only"
+  [ "$(run_history)" = on ] && rec=on
+  [ "$(rr_v record)" = yes ] && [ "$rec" != on ] && rec="off (earlier lines present)"
+  case "$(rr_v steam_route)" in proton|native) grep -q '^L ' <<<"$raw" || rec="run record: not available for this route";; esac
+  rs=$(rr_v start_epoch); re=$(date +%s)
+  vdf=$(tmpf) || { echo "$TMP_FAIL" > "$out"; return 1; }
+  if rr_read test -e "$(steam_dir)/config/loginusers.vdf" && ! rr_read cat "$(steam_dir)/config/loginusers.vdf" > "$vdf"; then
+    rm -f "$vdf"; echo "Steam sign-in names could not be read to remove them; report not made." > "$out"; return 1
+  fi
+  {
+    echo "# Steam ARM run report"; echo
+    printf '%-15s %s\n' report-format 1 steam-arm-config "$SA_VERSION" date "$(date -u '+%Y-%m-%d %H:%M UTC')"
+    echo; echo "## Summary"; echo
+    printf '%-15s %s\n' AppID "$app" Title "${name:-unknown (no app manifest)}" Route "$route"
+    [ -n "$(rr_h 'graphics: ')" ] && printf '%-15s %s\n' Graphics "$(rr_h 'graphics: ')"
+    printf '%-15s %s\n' Renderer "$(rr_h 'renderer: ' | grep . || { grep -q '^L ' <<<"$raw" && echo "no verdict logged"; } || echo "not checked (no handler lines for this start)")"
+    if [ -n "$(rr_h 'exit status ')" ]; then
+      l="ended after $(rr_h 'run time: ' | grep . || echo '?'), launch chain exit status $(rr_h 'exit status ')"
+    elif [ -n "$(rr_v record_exit)" ]; then l="ended, run record: $(rr_v record_exit)"
+    elif [ -z "$(rr_v steam_end)" ] && rr_running "$app"; then l="still running at report time"
+    elif [ -n "$(rr_v steam_end)" ]; then l="ended (Steam's end line); exit status not recorded"
+    else l="end not recorded"; fi
+    printf '%-15s %s\n' Result "$l" "Run history" "$rec"
+    [ -n "$(rr_v handler)" ] && [ "$(rr_v handler)" != none ] && printf '%-15s %s\n' Handler "$(rr_v handler)"
+    echo; echo "## Upstream fields"; echo
+    rr_upstream "$app" "$eng"
+    echo; echo "## Knobs"; echo
+    sed -n 's/^K //p' <<<"$raw" | grep . || echo "(no handler lines for this start)"
+    echo; echo "## Outcome"; echo
+    [ -n "$(rr_v steam_start)" ] && printf '%-15s %s\n' "Steam start" "$(rr_v steam_start)"
+    [ -n "$(rr_v steam_end)" ] && printf '%-15s %s\n' "Steam end" "$(rr_v steam_end)"
+    [ -n "$(rr_h 'exit status ')" ] && printf '%-15s %s\n' "Exit status" "$(rr_h 'exit status ') (launch chain; a game crash inside the runtime container can also end with 0)"
+    rr_outcome "$rs" "$re"
+    if grep -q '^E ' <<<"$raw"; then
+      echo; echo "## Earlier runs"; echo
+      [ "$hist" = 1 ] || echo "(this title only)"
+      sed -n 's/^E //p' <<<"$raw"
+    fi
+    echo; echo "<details><summary>Logs</summary>"; echo
+    echo "Handler lines of this start:"; echo '```'; sed -n 's/^L //p' <<<"$raw" | grep . || echo "(none)"; echo '```'
+    if grep -q '^F ' <<<"$raw"; then echo; echo "FEX tool error lines:"; echo '```'; sed -n 's/^F //p' <<<"$raw"; echo '```'; fi
+    echo; echo "</details>"; echo
+    echo "<details><summary>Hardware report</summary>"; echo; echo '```'; report_text 2>/dev/null; echo '```'; echo; echo "</details>"
+    echo
+    echo "Removed before saving: home folders, account names, Steam sign-in and persona names, Steam IDs, host name,"
+    echo "network addresses, MAC addresses, e-mail addresses, machine and board serials, tokens."
+  } | { mapfile -t lits < <(rr_literals); sanitize x=1 "v=$vdf" "${lits[@]}"; } | rr_cap > "$out"
+  rm -f "$vdf"
+  [ -s "$out" ]
+}
+rr_dest(){ echo "${SA_REPORT%/*}/steam-arm-report-$1-$(date +%Y%m%d-%H%M).md"; }
+# Copy of report written by the account whose home gets it, readable by it only.
+rr_save(){
+  # shellcheck disable=SC2016
+  if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    runuser -u "$SUDO_USER" -- sh -c 'umask 077; cat > "$1"' sh "$2" < "$1"
+  else (umask 077; cat "$1" > "$2"); fi
+}
+maint_runreport(){
+  local c hist=0 app=last f dest
+  is_installed || { offer_install; return; }
+  c=$(ui_menu "Report how last game ran" "Report of one game start: route, settings, result, renderer, hardware. Personal details are removed; nothing leaves this machine. x86 games through emulation only: Windows games on ARM64 Proton and native games show route and hardware." \
+      1 "Last game started" 2 "Pick a game") || return
+  if [ "$c" = 2 ]; then app=$(pick_game "Report how a game ran" settings) || return; fi
+  if [ "$(run_history)" = on ]; then
+    ui_yesno "Earlier runs" "Run history lists earlier starts of this game. Add earlier starts of other games too (their App IDs show which games are installed)?" "Add" "This game only" defaultno && hist=1
+  fi
+  f=$(tmpf) || { ui_msg "Run report" "$TMP_FAIL"; return; }
+  ui_info "Run report" "Collecting details..."
+  if [ "$(id -u)" = 0 ] || [ "$(id -un)" = "$(game_user)" ]; then
+    rr_make "$app" "$hist" "$f"
+  else
+    local -a ha=(); [ "$hist" = 1 ] && ha=(--history)
+    need_root && as_root bash "$(self_path)" report run "$app" "${ha[@]}" > "$f" 2>/dev/null
+    RR_APP=$(sed -n 's/^AppID  *//p' "$f" | head -1)
+  fi
+  if [ -z "$RR_APP" ]; then ui_text "Run report" "$f"; rm -f "$f"; return; fi
+  ui_text "Run report: read before saving" "$f" Next
+  dest=$(rr_dest "$RR_APP")
+  if ui_yesno "Run report" "Save report to
+$dest ?
+
+Read it before posting: account names, host name, addresses and Steam IDs are removed; game name and hardware stay." Save Discard; then
+    if rr_save "$f" "$dest"; then ui_msg "Run report" "Saved to $dest (your home folder, readable by you only).
+
+Paste it into an issue at:
+$SA_DOCS/issues"
+    else ui_msg "Run report" "Could not write $dest."; fi
+  fi
+  rm -f "$f"
+}
+maint_runhistory(){
+  local st t; st=$(run_history)
+  t="Run history: $st
+
+Records start and end of each x86 game start through emulation: route, settings, versions, result, renderer. One line per event, newest 200 kept, in the client folder (.local/state/steam-arm/runs.log), readable by game account only. No paths or names. Never leaves this machine and is not part of backups. Report how last game ran shows earlier starts from it.
+Turning off deletes recorded lines."
+  if [ "$st" = on ]; then
+    ui_yesno "Run history" "$t" "Turn off" Back defaultno || return
+    self_root run-history off && ui_msg "Maintenance" "Run history: off. Recorded lines deleted."
+  else
+    ui_yesno "Run history" "$t" "Turn on" Back || return
+    self_root run-history on && ui_msg "Maintenance" "Run history: on. Applies from the next game start."
+  fi
 }
 maint_logs(){
   local c="" f
@@ -4349,13 +4968,15 @@ cache_scan(){
 # "1 game", "2 games"
 n_games(){ if [ "$1" = 1 ]; then echo "1 game"; else echo "$1 games"; fi; }
 kb_h(){ awk -v k="${1:-0}" 'BEGIN { if (k == 0) print "0"; else if (k < 1024) printf "%dK\n", k; else if (k < 1048576) printf "%.1fM\n", k / 1024; else printf "%.1fG\n", k / 1048576 }'; }
-# Games whose effective profile has diskcache=on.
+# Games whose effective profile has diskcache=$1 (default on).
 dc_on_count(){
   local f
   while IFS= read -r f; do cat "$f" 2>/dev/null; echo; done < <(titles_files) \
-    | awk '{ sub(/#.*/, ""); for (i = 2; i <= NF; i++) if ($i ~ /^diskcache=/) v[$1] = substr($i, 11) }
-           END { n = 0; for (k in v) if (v[k] == "on") n++; print n }'
+    | awk -v want="${1:-on}" '{ sub(/#.*/, ""); for (i = 2; i <= NF; i++) if ($i ~ /^diskcache=/) v[$1] = substr($i, 11) }
+           END { n = 0; for (k in v) if (v[k] == want) n++; print n }'
 }
+# Games with code cache on: "every game but N" (FEX tool 2610+), else "N games".
+dc_on_text(){ if fex_cache_all; then echo "every game but $(dc_on_count off)"; else n_games "$(dc_on_count)"; fi; }
 # Size of steamapps/shadercache of every library, in KB.
 shader_kb(){
   local lib t=0 k
@@ -4375,7 +4996,8 @@ cache_summary(){
   printf '%-29s %-6s %s (Proton prefixes)\n' "FEX code cache, Windows games" "$(kb_h "$wk")" "$(n_games "$wn")"
   printf '%-29s %s\n' "FEX code cache, shared folder" "$(kb_h "$sk")"
   printf '%-29s %-6s %s\n' "Steam shader cache" "$(kb_h "$n")" "Steam's own, not cleared here"
-  echo "Code cache on (diskcache=on): $(n_games "$(dc_on_count)"). FEX tool: $(fex_tool_ver)."
+  if fex_cache_all; then echo "Code cache on for every game, 1 GB cap (FEX tool $(fex_tool_ver)); off (diskcache=off): $(n_games "$(dc_on_count off)")."
+  else echo "Code cache on (diskcache=on): $(n_games "$(dc_on_count)"). FEX tool: $(fex_tool_ver)."; fi
 }
 # Per-folder list, largest first, with game names.
 cache_list(){
@@ -4454,21 +5076,26 @@ menu_caches(){
 # Archive steam-arm-settings-<date>-<time>.tar.gz, members under steam-arm-settings/: manifest (FORMAT, VERSION,
 # DATE, GPU_FAMILY, PARTS), system/steam-arm.conf, system/titles.conf, personal/titles.conf,
 # personal/compattools.txt ("appid tool"), personal/fex-appconfig/*.json, personal/mangohud/*.conf.
+# Part personal-tuning (3.0) travels as base64 manifest keys TUNED_CONF and TUNED_STATE: releases before 3.0 refuse
+# unknown member names but skip unknown manifest keys and parts, so they restore the other parts of such a backup.
 # Personal parts carry no account name; restore puts them into any chosen account. Accounts are never changed.
 SA_BK_FMT=1
 SA_BK_TOP=steam-arm-settings
 SA_BK_MAX=1048576
 SA_BK_TOTAL=8388608
 SA_BK_FILES=400
-SA_BK_PARTS="setup system-profiles personal-profiles compat-tools fex mangohud"
-SA_BK_PERSONAL="personal-profiles compat-tools fex mangohud"
+SA_BK_PARTS="setup system-profiles personal-profiles compat-tools fex mangohud personal-tuning"
+SA_BK_PERSONAL="personal-profiles compat-tools fex mangohud personal-tuning"
+# tuned.conf lines: comments, blank, or appid with tuning keys only
+SA_TUNED_RE='^([0-9]{1,10}( +(gfx=(a|b)|multiblock=(on|off)|gl32=off))*)? *(#.*)?$'
 # steam-arm.conf keys restored; every other key is machine state (GPU_FAMILY only when GPU_FAMILY_SET=user).
-SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE"
+SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY"
 SA_BK_NAME='[A-Za-z0-9_+-][A-Za-z0-9._+-]*'
 part_label(){ case "$1" in
   setup) echo "Setup choices";; system-profiles) echo "System game profiles";;
   personal-profiles) echo "Personal game profiles";; compat-tools) echo "Proton/tool per game";;
-  fex) echo "FEX per-game settings";; mangohud) echo "MangoHud settings";; *) echo "$1";;
+  fex) echo "FEX per-game settings";; mangohud) echo "MangoHud settings";;
+  personal-tuning) echo "Automatic tuning results";; *) echo "$1";;
 esac; }
 in_list(){ case ",$1," in *",$2,"*) return 0;; esac; return 1; }
 any_personal(){ local p; for p in $SA_BK_PERSONAL; do in_list "$1" "$p" && return 0; done; return 1; }
@@ -4510,6 +5137,8 @@ bk_path(){
     compat-tools) echo "$c/.local/share/Steam/config/config.vdf";;
     fex) echo "$c/.fex-emu/AppConfig";;
     mangohud) echo "$c/.config/MangoHud";;
+    personal-tuning) echo "$c/.config/steam-arm/tuned.conf";;
+    personal-tuning-state) echo "$c/.config/steam-arm/autotune/state.json";;
   esac
 }
 # CompatToolMapping of a config.vdf on stdin: "appid tool" lines.
@@ -4576,11 +5205,26 @@ bk_files(){
   BK_BAD=$bad; [ -n "$bad" ] && bk_note "$part" "left out (name, size or content not valid):$bad"
   [ "$k" -gt 0 ]
 }
+# Automatic tuning results of account $1 as base64 in BK_TUNED, BK_TSTATE (manifest keys); status 1 when none.
+bk_tuning(){
+  local t; BK_TUNED="" BK_TSTATE=""
+  t=$(tmpf -d) || return 1
+  if acct_run "$1" cat "$(bk_path "$1" personal-tuning)" > "$t/tuned.conf" 2>/dev/null && text_ok "$t/tuned.conf" \
+     && [ "$(wc -c < "$t/tuned.conf")" -le 65536 ] && ! grep -qEv "$SA_TUNED_RE" "$t/tuned.conf"; then
+    BK_TUNED=$(base64 -w0 < "$t/tuned.conf")
+  fi
+  if acct_run "$1" cat "$(bk_path "$1" personal-tuning-state)" > "$t/state.json" 2>/dev/null && json_ok "$t/state.json" \
+     && [ "$(wc -c < "$t/state.json")" -le 262144 ]; then
+    BK_TSTATE=$(base64 -w0 < "$t/state.json")
+  fi
+  rm -rf "$t"
+  [ -n "$BK_TUNED$BK_TSTATE" ]
+}
 # bk_make DIR PARTS ACCOUNT: archive written as the person who asked (mode 600). Sets BK_PATH, BK_NOTE, BK_ERR.
 bk_make(){
   local dir parts=$2 acct=$3 s m rc fam got="" name p
   local -a list=()
-  BK_PATH="" BK_NOTE="" BK_ERR="" BK_MEM=()
+  BK_PATH="" BK_NOTE="" BK_ERR="" BK_MEM=() BK_TUNED="" BK_TSTATE=""
   dir=$(bk_expand "$1"); case "$dir" in /*) ;; *) dir="$PWD/$dir";; esac
   bk_dir_ok "$dir"; rc=$?
   [ "$rc" = 2 ] && { BK_ERR="Folder $dir does not exist."; return 1; }
@@ -4609,16 +5253,21 @@ bk_make(){
            && [ -s "$m/personal/compattools.txt" ]; then BK_MEM+=(personal/compattools.txt); got+=,compat-tools
       else rm -f "$m/personal/compattools.txt"; bk_note compat-tools "none set, left out"; fi
     fi
+    if in_list "$parts" personal-tuning; then
+      if bk_tuning "$acct"; then got+=,personal-tuning; else bk_note personal-tuning "none yet, left out"; fi
+    fi
     for p in fex mangohud; do
       in_list "$parts" "$p" || continue
       if [ "$p" = fex ] && ! have python3; then bk_note fex "python3 not found, left out"; continue; fi
       if bk_files "$acct" "$p" "$m/personal"; then got+=",$p"; elif [ -z "$BK_BAD" ]; then bk_note "$p" "none found, left out"; fi
     done
   fi
-  if [ ${#BK_MEM[@]} -eq 0 ]; then rm -rf "$s"; BK_ERR="Nothing to back up in the chosen parts."; return 1; fi
+  if [ ${#BK_MEM[@]} -eq 0 ] && [ -z "$BK_TUNED$BK_TSTATE" ]; then rm -rf "$s"; BK_ERR="Nothing to back up in the chosen parts."; return 1; fi
   fam=$(conf_get GPU_FAMILY); [ -n "$fam" ] || fam=$(gpu_family)
   printf 'FORMAT=%s\nVERSION=%s\nDATE=%s\nGPU_FAMILY=%s\nPARTS=%s\n' "$SA_BK_FMT" "$(installed_version)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$fam" "${got#,}" > "$m/manifest"
+  [ -z "$BK_TUNED" ] || printf 'TUNED_CONF=%s\n' "$BK_TUNED" >> "$m/manifest"
+  [ -z "$BK_TSTATE" ] || printf 'TUNED_STATE=%s\n' "$BK_TSTATE" >> "$m/manifest"
   list=("$SA_BK_TOP/manifest"); for p in "${BK_MEM[@]}"; do list+=("$SA_BK_TOP/$p"); done
   name="steam-arm-settings-$(date +%Y%m%d-%H%M%S).tar.gz"
   if [ -e "$dir/$name" ]; then rm -rf "$s"; BK_ERR="$dir/$name already exists; try again."; return 1; fi
@@ -4638,7 +5287,7 @@ rs_val(){ sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -1 | sed "s/^[\"']//; s/[\"
 rs_norm(){ tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -; }
 rs_valid(){ case "$1" in
   GFX_DEFAULT) case "$2" in auto|a|b|forward) return 0;; esac; return 1;;
-  AUTO_BUILD|CPU_NOTICE) case "$2" in on|off|"") return 0;; esac; return 1;;
+  AUTO_BUILD|CPU_NOTICE|RUN_HISTORY) case "$2" in on|off|"") return 0;; esac; return 1;;
   GPU_FAMILY) [[ "$2" =~ ^[a-z0-9-]+$ ]];;
   *) [[ "$2" =~ ^[a-z0-9,-]*$ ]];;
 esac; }
@@ -4685,6 +5334,16 @@ rs_open(){
     RS_ERR="Refused: unexpected file type after unpacking."; rs_close; return 1
   fi
   g="$RS_D/$SA_BK_TOP"
+  if in_list "$(rs_val "$g/manifest" PARTS)" personal-tuning; then
+    mkdir -p "$g/tuning"
+    if ! { rs_val "$g/manifest" TUNED_CONF | base64 -d > "$g/tuning/tuned.conf" 2>/dev/null && [ -s "$g/tuning/tuned.conf" ] \
+           && text_ok "$g/tuning/tuned.conf" && ! grep -qEv "$SA_TUNED_RE" "$g/tuning/tuned.conf"; }; then
+      grep -q '^TUNED_CONF=' "$g/manifest" && RS_NOTE="$RS_NOTE tuned.conf"; rm -f "$g/tuning/tuned.conf"
+    fi
+    if ! { rs_val "$g/manifest" TUNED_STATE | base64 -d > "$g/tuning/state.json" 2>/dev/null && json_ok "$g/tuning/state.json"; }; then
+      grep -q '^TUNED_STATE=' "$g/manifest" && RS_NOTE="$RS_NOTE state.json"; rm -f "$g/tuning/state.json"
+    fi
+  fi
   for n in "$g"/personal/fex-appconfig/*.json "$g"/personal/mangohud/*.conf; do
     [ -f "$n" ] || continue
     if { [[ "$n" == *.json ]] && ! json_ok "$n"; } || ! text_ok "$n"; then
@@ -4700,6 +5359,7 @@ rs_open(){
       compat-tools) [ -f "$g/personal/compattools.txt" ];;
       fex) compgen -G "$g/personal/fex-appconfig/*.json" >/dev/null;;
       mangohud) compgen -G "$g/personal/mangohud/*.conf" >/dev/null;;
+      personal-tuning) [ -f "$g/tuning/tuned.conf" ] || [ -f "$g/tuning/state.json" ];;
     esac && RS_PARTS="$RS_PARTS${RS_PARTS:+,}$p"
   done
   [ -n "$RS_PARTS" ] || { RS_ERR="Refused: the backup holds no usable part."; rs_close; return 1; }
@@ -4750,8 +5410,8 @@ rs_line(){ printf '  %-20s %s\n' "$1" "$2"; }
 # rs_plan PARTS ACCOUNT SYS-MODE PERSONAL-MODE SYS-TAKE PERSONAL-TAKE: what restore changes, text in RS_SUM.
 rs_plan(){
   local parts=$1 acct=$2 c="$RS_D/$SA_BK_TOP" s k v cur keys skip="" fam_user=0 a r p sub dest add rep same n src
-  local vdf curmap bad="" miss="" shown=0 kept=0
-  RS_SET=(); RS_MAP=(); RS_COPY=(); RS_COMP=0; RS_SYS_OUT=""; RS_PERS_OUT=""; RS_ACCT=$acct
+  local vdf curmap bad="" miss="" shown=0 kept=0 o
+  RS_SET=(); RS_MAP=(); RS_COPY=(); RS_COMP=0; RS_SYS_OUT=""; RS_PERS_OUT=""; RS_TUNE=""; RS_ACCT=$acct
   mkdir -p "$RS_D/out"
   s="Backup of $(rs_val "$c/manifest" DATE), Steam ARM $(rs_val "$c/manifest" VERSION), GPU $(rs_val "$c/manifest" GPU_FAMILY)."$'\n'
   any_personal "$parts" && s+="Personal parts go to account $acct; accounts themselves are not changed."$'\n'
@@ -4835,6 +5495,22 @@ rs_plan(){
     done
     s+=$'\n'"$(part_label "$p") (account $acct)"$'\n'"  $add new, $rep replaced (current ones kept as .bak-restore), $same unchanged"$'\n'
   done
+  if in_list "$parts" personal-tuning; then
+    s+=$'\n'"Automatic tuning results (account $acct)"$'\n'
+    if ! have python3 || [ ! -f "$SA_AUTOTUNE_PY" ]; then s+="  tuning helper not found (run Update / Repair): left out"$'\n'
+    else
+      o="$RS_D/out"
+      acct_run "$acct" cat "$(bk_path "$acct" personal-tuning)" > "$o/cur-tuned.conf" 2>/dev/null || : > "$o/cur-tuned.conf"
+      acct_run "$acct" cat "$(bk_path "$acct" personal-tuning-state)" > "$o/cur-tstate.json" 2>/dev/null || : > "$o/cur-tstate.json"
+      [ -f "$c/tuning/tuned.conf" ] || : > "$c/tuning/tuned.conf"
+      [ -f "$c/tuning/state.json" ] || : > "$c/tuning/state.json"
+      if n=$(python3 "$SA_AUTOTUNE_PY" merge "$o/cur-tuned.conf" "$o/cur-tstate.json" "$c/tuning/tuned.conf" "$c/tuning/state.json" \
+               "$o/tuned.conf" "$o/tstate.json" 2>&1); then
+        s+="  $n (games tuned on this machine keep their own results)"$'\n'
+        case "$n" in "added 0,"*) ;; *) RS_TUNE=1;; esac
+      else s+="  not valid, left out"$'\n'; fi
+    fi
+  fi
   [ -n "$RS_NOTE" ] && s+=$'\n'"Left out (not valid):$RS_NOTE"$'\n'
   RS_SUM=$s
 }
@@ -4862,6 +5538,12 @@ rs_apply(){
   for e in "${RS_COPY[@]}"; do
     acct_put "$RS_ACCT" "${e#*$'\t'}" < "${e%%$'\t'*}" || { echo "steam-arm-config: could not write ${e#*$'\t'}" >&2; fail=1; }
   done
+  if [ -n "$RS_TUNE" ]; then
+    { acct_put "$RS_ACCT" "$(bk_path "$RS_ACCT" personal-tuning)" < "$RS_D/out/tuned.conf" \
+      && acct_put "$RS_ACCT" "$(bk_path "$RS_ACCT" personal-tuning-state)" < "$RS_D/out/tstate.json" \
+      && acct_run "$RS_ACCT" chmod 600 "$(bk_path "$RS_ACCT" personal-tuning-state)"; } \
+      || { echo "steam-arm-config: could not write automatic tuning results of $RS_ACCT" >&2; fail=1; }
+  fi
   return "$fail"
 }
 # Existing normal account for personal parts (no create item). Status 1 on Back, 2 when none exists.
@@ -5034,7 +5716,8 @@ menu_maintenance(){
       3 "Hardware report (for a compatibility report)" 4 "Free /dev/shm now" \
       5 "Back up settings" 6 "Restore settings" 7 "Check for new version" \
       8 "Caches (sizes, clear FEX code caches)" 9 "GE-Proton (ARM64), optional (now: $(ge_state))" \
-      10 "Client type (now: $([ "$(client_type)" = x86 ] && echo x86 || echo native ARM64))"); do
+      10 "Client type (now: $([ "$(client_type)" = x86 ] && echo x86 || echo native ARM64))" \
+      11 "Report how last game ran" 12 "Run history (now: $(run_history))"); do
     case "$c" in
       1) if is_installed; then
            ui_yesno "Update / Repair" "Run setup again with the parts chosen at last setup?
@@ -5051,6 +5734,8 @@ Setup reinstalls packages, launcher, helpers and rules for those parts. Games, s
       8) menu_caches;;
       9) menu_geproton;;
       10) maint_client;;
+      11) maint_runreport;;
+      12) maint_runhistory;;
     esac
   done
 }
@@ -5296,6 +5981,15 @@ Commands
   info                      system, Steam ARM status and hardware notes
   report                    hardware report without personal details,
                             saved to $SA_REPORT
+  report run [APPID|last] [--history] [--save]
+                            report of one game start (default: last
+                            started): route, settings, result, renderer,
+                            hardware; personal details removed; terminal:
+                            shown, then saved on yes to
+                            ~/steam-arm-report-APPID-DATE-TIME.md; else
+                            printed (--save saves without asking);
+                            --history adds earlier starts of other games
+                            (x86 games through emulation only)
   gfx <appid> auto|a|b      graphics route of one game: automatic,
                             A forwarding, B Mali drivers in emulation
   gfx-default auto|a|b      route for games without their own setting:
@@ -5304,10 +5998,20 @@ Commands
   profile <appid> key=value ...
                             game profile keys (overlay, mangohud, env,
                             args, gl32, vk32, godot, unity, gfx,
-                            multiblock, diskcache);
+                            multiblock, diskcache, autotune=fix|off,
+                            mesa=<version>: route B game on an extra
+                            Mesa version);
                             Raspberry Pi GPU keys d3d=dxvk|wined3d,
                             glver=3.2..4.6, gl=zink;
                             key= removes one, --clear removes all
+  tune <appid> [on|fix|off|reset|show]
+                            automatic tuning of one x86 Linux game (off
+                            by default): on (same as fix) tries one
+                            changed setting at the next start after a
+                            failed start (graphics route, FEX Multiblock,
+                            32-bit GL thunk; up to 4 tries; keys set by
+                            hand win); off keeps settings found; reset
+                            removes them; show (default): state
   compat <appid> linux|windows|ge|clear
                             force Linux build or Windows build (Proton;
                             ge: newest installed GE-Proton build),
@@ -5318,17 +6022,25 @@ Commands
                             state, rules and titles set
   cpu-notice [on|off]       desktop notice when an x86 game draws on CPU
                             (off by default); no value: state
+  run-history [on|off]      record start and end of each x86 game start
+                            through emulation in client folder
+                            (.local/state/steam-arm/runs.log, newest 200
+                            lines; off by default; off deletes it);
+                            no value: state
   components a,b,...        install exactly these parts (runs setup)
   driver-archive status|download|local FILE|custom FILE SHA256
                             driver archive of gpu-in-emulation: download
                             (default), local copy of published archive,
                             or custom archive (own Mesa build); local and
-                            custom run setup
+                            custom run setup; status also lists extra
+                            Mesa versions (installed with setup option
+                            --mesa-extra or Components > Driver archive)
   backup [DIR] [--account NAME] [--parts a,b,...]
                             settings backup file in DIR (default: your
                             home), readable by you only; parts: setup,
                             system-profiles, personal-profiles,
-                            compat-tools, fex, mangohud (default: all);
+                            compat-tools, fex, mangohud, personal-tuning
+                            (default: all);
                             personal parts come from NAME (default: you,
                             else the game account)
   restore FILE [--account NAME] [--parts a,b,...] [--merge|--replace]
@@ -5384,10 +6096,12 @@ Environment
 Files
   $SA_CONF      settings (GFX_DEFAULT=auto|a|b;
                             forward is read as a; AUTO_BUILD=on|off;
-                            CPU_NOTICE=on|off; CLIENT=arm64|x86 set by
+                            CPU_NOTICE=on|off; RUN_HISTORY=on|off;
+                            CLIENT=arm64|x86 set by
                             setup, Maintenance > Client type)
   $SA_TITLES_ETC        game profiles written here
   ~/steam-arm-report.txt    hardware report (report command)
+  ~/steam-arm-report-*.md   run reports (report run command)
   ~/.cache/steam-arm/       logs of setup runs started here
 
 Documentation: $SA_DOCS
@@ -5416,6 +6130,8 @@ profile_ok(){ case "$1=$2" in
   overlay=|overlay=x86|overlay=vulkan|overlay=off|mangohud=|mangohud=on|mangohud=off|gfx=|gfx=a|gfx=b) return 0;;
   gl32=|gl32=off|vk32=|vk32=keep|godot=|godot=gl|godot=vulkan|unity=|unity=vulkan|unity=gl) return 0;;
   multiblock=|multiblock=on|multiblock=off|diskcache=|diskcache=on|diskcache=off) return 0;;
+  autotune=|autotune=off|autotune=fix|mesa=) return 0;;
+  mesa=*) [[ "$2" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]];;
   d3d=|d3d=dxvk|d3d=wined3d|gl=|gl=zink|glver=) return 0;;
   glver=*) case " $SA_GL_VERSIONS " in *" $2 "*) return 0;; esac; return 1;;
   env=*|args=*) valid_value "$2";;
@@ -5426,7 +6142,7 @@ cli_profile(){
   valid_appid "$id" || { echo "usage: steam-arm-config profile <appid> key=value ..." >&2; return 2; }
   shift
   if [ "${1:-}" = --clear ]; then
-    for k in overlay mangohud env args gl32 vk32 godot unity gfx multiblock diskcache d3d glver gl; do tc_set "$SA_TITLES_ETC" "$id" "$k" "" || return 1; done
+    for k in overlay mangohud env args gl32 vk32 godot unity gfx mesa multiblock diskcache autotune d3d glver gl; do tc_set "$SA_TITLES_ETC" "$id" "$k" "" || return 1; done
     echo "app $id: profile removed"; return 0
   fi
   for kv in "$@"; do
@@ -5436,6 +6152,31 @@ cli_profile(){
   done
   for kv in "$@"; do tc_set "$SA_TITLES_ETC" "$id" "${kv%%=*}" "${kv#*=}" || return 1; done
   echo "app $id: $(tc_effective "$id" | tr '\n' ' ')"
+  for kv in "$@"; do
+    case "$kv" in mesa=?*) mx_ready "${kv#mesa=}" || echo "note: Mesa ${kv#mesa=} not installed (Components > Driver archive > Extra versions); game starts on default drivers";; esac
+  done
+  return 0
+}
+# Automatic tuning of one game (fix mode, per game only): mode in /etc profile; results in the game account's folder.
+at_mode(){ case "$(tc_get "$1" autotune)" in fix) echo "on (fix problems)";; *) echo off;; esac; }
+at_run(){
+  [ -f "$SA_AUTOTUNE_PY" ] || { echo "steam-arm-config: $SA_AUTOTUNE_PY missing; run Update / Repair" >&2; return 1; }
+  acct_run "$(game_user)" python3 "$SA_AUTOTUNE_PY" "$1" "$(arm_home)" "$2" </dev/null
+}
+cli_tune(){
+  local id=${1:-} u="usage: steam-arm-config tune <appid> [on|fix|off|reset|show]"
+  valid_appid "$id" || { echo "$u" >&2; return 2; }
+  case "${2:-show}" in
+    on|fix) tc_set "$SA_TITLES_ETC" "$id" autotune fix || return 1
+            echo "app $id: automatic tuning on (fix problems), from the next start"
+            [ "$(game_kind "$id")" != windows ] || echo "note: Windows games through Proton are not tuned (x86 Linux games through emulation only)";;
+    off) tc_set "$SA_TITLES_ETC" "$id" autotune "" || return 1
+         at_run stop "$id"
+         echo "app $id: automatic tuning off; settings found stay (steam-arm-config tune $id reset removes them)";;
+    reset) at_run reset "$id";;
+    show) echo "app $id: automatic tuning $(at_mode "$id")"; at_run show "$id";;
+    *) echo "$u" >&2; return 2;;
+  esac
 }
 cli_compat(){
   valid_appid "${1:-}" || { echo "usage: steam-arm-config compat <appid> linux|windows|ge|clear" >&2; return 2; }
@@ -5468,6 +6209,36 @@ cli_auto_build(){
     *) echo "usage: steam-arm-config auto-build [on|off]" >&2; return 2;;
   esac
 }
+cli_run_history(){
+  case "${1:-}" in
+    on) conf_set RUN_HISTORY on && echo "Run history: on (from the next game start)";;
+    off) conf_set RUN_HISTORY off && rr_read rm -f "$(runs_log)"; echo "Run history: off, recorded lines deleted";;
+    '') echo "Run history: $(run_history)";;
+    *) echo "usage: steam-arm-config run-history [on|off]" >&2; return 2;;
+  esac
+}
+# report run [APPID|last] [--history] [--save]: terminal: pager, then save on yes; otherwise printed (saved with --save).
+cli_runreport(){
+  local a app=last hist=0 save=0 f dest
+  for a in "$@"; do
+    case "$a" in
+      --history) hist=1;; --save) save=1;; last) app=last;;
+      *) valid_appid "$a" || { echo "usage: steam-arm-config report run [APPID|last] [--history] [--save]" >&2; return 2; }; app=$a;;
+    esac
+  done
+  is_installed || { echo "steam-arm-config: Steam ARM is not installed" >&2; return 1; }
+  f=$(tmpf) || { echo "$TMP_FAIL" >&2; return 1; }
+  if ! rr_make "$app" "$hist" "$f"; then cat "$f"; rm -f "$f"; return 1; fi
+  dest=$(rr_dest "$RR_APP")
+  if [ "$save" = 0 ] && { [ ! -t 0 ] || [ ! -t 1 ]; }; then cat "$f"; rm -f "$f"; return 0; fi
+  if [ "$save" = 0 ]; then
+    if have less; then less "$f"; elif have more; then more "$f"; else cat "$f"; fi
+    printf 'Save report to %s? [y/N] ' "$dest"; read -r a
+    case "$a" in y|Y|yes|Yes) ;; *) echo "Not saved."; rm -f "$f"; return 0;; esac
+  fi
+  if rr_save "$f" "$dest"; then echo "Saved to $dest (readable by you only). Read it before posting."; rm -f "$f"
+  else echo "steam-arm-config: could not write $dest" >&2; rm -f "$f"; return 1; fi
+}
 cli_cpu_notice(){
   case "${1:-}" in
     on|off) conf_set CPU_NOTICE "$1" && echo "CPU drawing notice: $1";;
@@ -5484,7 +6255,7 @@ cli_driver_archive(){
   local -a cmd; local u="usage: steam-arm-config driver-archive status|download|local FILE|custom FILE SHA256" e h
   case "${1:-}/$#" in status/1|download/1|local/2|custom/3) ;; *) echo "$u" >&2; return 2;; esac
   case "$1" in
-    status) echo "driver archive: $(da_status)"; return 0;;
+    status) echo "driver archive: $(da_status)"; echo "extra Mesa versions: $(mx_state)"; return 0;;
     download)
       if [ -z "$(conf_get PROVIDER_CUSTOM_SHA256)" ]; then
         if [ -n "$(conf_get PROVIDER_LOCAL_FILE)" ]; then
@@ -5622,13 +6393,19 @@ main(){
     -h|--help) usage;;
     help)        if [ "${2:-}" = fixing ]; then fixing_text; else usage; fi;;
     info)        echo "== System"; info_system; echo; echo "== Steam ARM"; info_status; echo; echo "== Notes"; info_notes;;
-    report)      report_make && cat "$SA_REPORT" && echo && echo "Saved to $SA_REPORT (home folder of the account that ran this)";;
+    report)      if [ "${2:-}" = run ]; then
+                   [ "$(id -un)" = "$(game_user)" ] || CLI_ROOT_WHY="reading the game account's logs needs administrator rights" cli_root "$@"
+                   shift 2; cli_runreport "$@"
+                 else report_make && cat "$SA_REPORT" && echo && echo "Saved to $SA_REPORT (home folder of the account that ran this)"; fi;;
     gfx)         cli_root "$@"; shift; cli_gfx "$@";;
     gfx-default) cli_root "$@"; shift; cli_gfx_default "$@";;
     profile)     cli_root "$@"; shift; cli_profile "$@";;
     compat)      cli_root "$@"; shift; cli_compat "$@";;
+    tune)        case "${3:-show}" in show) [ "$(id -un)" = "$(game_user)" ] || cli_root "$@";; *) cli_root "$@";; esac
+                 shift; cli_tune "$@";;
     auto-build)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_auto_build "$@";;
     cpu-notice)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_cpu_notice "$@";;
+    run-history) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_run_history "$@";;
     components)  cli_root "$@"; shift; cli_components "$@";;
     driver-archive) case "${2:-}" in download|local|custom) cli_root "$@";; esac; shift; cli_driver_archive "$@";;
     backup)      shift; cli_backup "$@";;
@@ -5682,6 +6459,12 @@ Options
                     gpu-in-emulation: back to download of published driver
                     archive (clears saved local and custom archive settings;
                     rebuilds after custom archive)
+  --mesa-extra=LIST gpu-in-emulation: extra Mesa versions kept next to second tree,
+                    comma separated (--mesa-extra= for none); route B titles pick
+                    one with title setting mesa=<version>; kept for later runs
+  --mesa-extra-file=FILE
+                    local archive of a listed extra Mesa version (sha256 checked,
+                    version taken from it and added); saved for later runs
   --remove          uninstall: removes everything this installer added and restores
                     changed system settings; asks before deleting client folder
                     (games live there), keeps it by default; distribution packages stay
@@ -5805,6 +6588,14 @@ Graphics per title (x86 Linux titles)
   Custom driver archive (STEAM_ARM_PROVIDER_SHA256): gfx=b and GFX_DEFAULT=b also
   work on other GPU families; automatic switch stays Mali-only.
   steam-arm-config sets it too (Graphics > Default route).
+  Extra Mesa versions (--mesa-extra, off by default): <appid> mesa=<version> runs a route B
+  title on that version's tree /opt/fex-rootfs/Ubuntu_24_04-mali-<version>; on route A it
+  does nothing (log line). Missing tree: second tree, with log line. Listed versions:
+USAGE
+  while read -r v _ u a d; do
+    [ -n "$v" ] && printf '    %-8s archive about %s MB, about %s MB extra disk%s\n' "$v" "$a" "$d" "$([ "$u" = - ] && echo ", local file only")"
+  done <<<"$MESA_EXTRA_LIST"
+  cat <<'USAGE'
 
 x86 client (CPU without Armv8.1 atomics)
   Valve's native ARM64 client stops at start on Armv8.0 CPUs (Cortex-A53, A57, A72, A73),
@@ -5901,6 +6692,8 @@ while [ $# -gt 0 ]; do
     --keep)     MODE=keep;;
     --replace-other) REPLACE_OTHER=1;;
     --provider-default) PROVIDER_DEFAULT=1;;
+    --mesa-extra=*) MESA_EXTRA_SEL="${1#*=}"; MESA_EXTRA_SET=1;;
+    --mesa-extra-file=*) MESA_EXTRA_FILE="${1#*=}";;
     --select)   MODE=select; SEL="${2:-}"; shift;;
     --select=*) MODE=select; SEL="${1#*=}";;
     --skip)     MODE=skip; SEL="${2:-}"; shift;;
@@ -5934,6 +6727,23 @@ if [ -n "${STEAM_ARM_PROVIDER_SHA256:-}" ] && [ "$MODE" != remove ] && [ "$HELP"
   [ "$PROVIDER_DEFAULT" = 0 ] || die "--provider-default and STEAM_ARM_PROVIDER_SHA256 contradict each other. Pass one of them."
   [[ "$STEAM_ARM_PROVIDER_SHA256" =~ ^[0-9A-Fa-f]{64}$ ]] || die "STEAM_ARM_PROVIDER_SHA256 must be the 64-character sha256 of the archive (sha256sum prints it)."
   STEAM_ARM_PROVIDER_SHA256=$(printf '%s' "$STEAM_ARM_PROVIDER_SHA256" | tr 'A-F' 'a-f')
+fi
+# Extra Mesa versions: listed versions only; a given file must match one of them (path saved, so charset limited).
+MX_FILE_VER=""
+if [ "$MODE" != remove ] && [ "$MODE" != detect ] && [ "$HELP" = 0 ]; then
+  MX_LISTED=$(awk '{ printf "%s%s", s, $1; s = ", " }' <<<"$MESA_EXTRA_LIST")
+  MESA_EXTRA_SEL=$(printf '%s' "$MESA_EXTRA_SEL" | tr -d ' ' | tr ',' '\n' | grep . | sort -uV | paste -sd, -)
+  for v in ${MESA_EXTRA_SEL//,/ }; do
+    mx_entry "$v" >/dev/null || die "--mesa-extra: Mesa $v is not in this installer's list (listed: $MX_LISTED)."
+  done
+  if [ -n "$MESA_EXTRA_FILE" ]; then
+    [ -f "$MESA_EXTRA_FILE" ] || die "--mesa-extra-file=$MESA_EXTRA_FILE: file not found."
+    MX_FILE_VER=$(mx_match "$MESA_EXTRA_FILE") \
+      || die "--mesa-extra-file=$MESA_EXTRA_FILE matches no listed Mesa archive (listed: $MX_LISTED; sha256 checked). Nothing changed."
+    if [ "$MESA_EXTRA_SET" = 1 ]; then
+      case ",$MESA_EXTRA_SEL," in *",$MX_FILE_VER,"*) ;; *) die "--mesa-extra-file holds Mesa $MX_FILE_VER, which --mesa-extra=$MESA_EXTRA_SEL leaves out.";; esac
+    fi
+  fi
 fi
 # Custom archive path is saved in the settings file, which the launcher reads as shell.
 if [ -n "${STEAM_ARM_PROVIDER_TARBALL:-}" ] && [ "$MODE" != remove ] && [ "$HELP" = 0 ] && [ "$PROVIDER_DEFAULT" = 0 ] \
@@ -6297,7 +7107,7 @@ MHSHIM
 }
 # --- uninstall (--remove): everything this installer added; client folder only on typed request ---
 remove_all(){
-  local uh="" armhome="" del=0 a gone_client=0 gone_rfs=0 gone_mali=0 restored="" pkgs p binfmt=0 other=0 gp_rm=0 fc_rm=0 kept="" ft
+  local uh="" armhome="" del=0 a gone_client=0 gone_rfs=0 gone_mali=0 gone_mx="" restored="" pkgs p binfmt=0 other=0 gp_rm=0 fc_rm=0 kept="" ft
   local linger made_acct tb="" d fstab_added rfs_made rfs_del=0 nomark=0 fstab_kept=0 foreign ge="" x
   [ "$(id -u)" = 0 ] || die "run as root: sudo bash steam-arm-install.sh --remove"
   getent passwd "$GAMEUSER" >/dev/null 2>&1 && uh=$(getent passwd "$GAMEUSER" | cut -d: -f6)
@@ -6306,6 +7116,7 @@ remove_all(){
   else warn "$ARMHOME_BAD"; warn "client folder is not touched by this removal"; fi
   linger=$(conf_get LINGER_SET); made_acct=$(conf_get ACCOUNT_CREATED)
   fstab_added=$(conf_get FSTAB_ADDED); rfs_made=$(conf_get RFS_CREATED); foreign=$(conf_get ARMHOME_FOREIGN)
+  local as_made lpl; as_made=$(conf_get AUTOSTART_CREATED); lpl=$(conf_get LAUNCHPADLIB_CREATED)
   grep -qs '^downloaded by steam-arm-setup' "$RFS/.steam-arm-rootfs" && rfs_made=1
   steam_banner "Steam ARM $SA_VERSION: native ARM64 Steam client removal" "Removes what setup added; installed games stay unless asked" "$PS_LINE"
   [ "$RETIRE_OTHER" = 1 ] && retire_other
@@ -6331,6 +7142,13 @@ remove_all(){
   fi
   say "kernel limit"
   if [ -f "$MC" ]; then mc_restore ""; restored="${restored:+$restored, }vm.max_map_count"; else echo "  vm.max_map_count was not changed"; fi
+  # Valve's launch wrapper back, thunk paths files out of compatdata; needs the entry helper, so before it goes.
+  if [ -n "$armhome" ] && [ -f /usr/local/lib/steam-arm-entry.py ] && [ -d "$armhome/.local/share/Steam" ]; then
+    say "handler entry"
+    x=$(as_user python3 /usr/local/lib/steam-arm-entry.py restore "$armhome/.local/share/Steam" 2>&1) \
+      || warn "Valve's launch wrapper could not be put back; Steam restores it at its next client update"
+    [ -n "$x" ] && printf '%s\n' "$x" | sed 's/^/  /'
+  fi
   # Valve's emulation tool back to its original lines; needs the patch helper, so before it goes.
   ft="$armhome/.local/share/Steam/steamapps/common/FEX-Emu"
   if [ -n "$armhome" ] && [ -d "$ft" ] && [ -f /usr/local/lib/steam-arm-fexpatch.py ]; then
@@ -6378,8 +7196,10 @@ remove_all(){
         /usr/local/lib/steam-arm-physx.py /usr/local/lib/steam-arm-kde-input /usr/local/lib/steam-arm-launchopts.py \
         /usr/local/lib/steam-arm-autobuild.py /usr/local/lib/steam-arm-appinfo.py /usr/local/lib/steam-arm-geproton.py \
         /usr/local/lib/steam-arm-x86client.py /usr/local/lib/steam-arm-run.py /usr/local/lib/steam-arm-pv-bwrap \
-        /usr/local/lib/steam-arm-python3 \
+        /usr/local/lib/steam-arm-python3 /usr/local/lib/steam-arm-entry.py \
+        /usr/local/lib/steam-arm-autotune.py \
         /usr/local/lib/steam-arm-glx-lax-patch.py /usr/local/lib/steam-arm-glx-lax.src /usr/local/lib/steam-arm-glx-lax.stat \
+        /usr/local/lib/steam-arm-glx-lax.state \
         /usr/local/lib/steam-arm-vk-spoof.c \
         /usr/local/sbin/steam-arm-glx-lax /usr/local/sbin/steam-arm-xpad-dedup /usr/local/sbin/steam-arm-pad-xbox \
         /usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0 /usr/lib/aarch64-linux-gnu/libVkLayer_steam_arm_spoof.so \
@@ -6400,6 +7220,7 @@ remove_all(){
     legacy_mesa_restore && { restored="${restored:+$restored, }distro Mesa in $RFS"; [ "$other" = 0 ] && gp_rm=1; }
   fi
   mali_tree_remove && gone_mali=1
+  gone_mx=$(mx_drop_all)
   if [ "$gp_rm" = 1 ]; then rm -f "$RFS/graphics_provider.json"
   elif [ -f "$RFS/graphics_provider.json" ]; then kept="$kept $RFS/graphics_provider.json"; fi
   [ "$other" = 0 ] && [ "$(readlink /usr/share/guestos/fex-mesa 2>/dev/null)" = "$RFS" ] && rm -f /usr/share/guestos/fex-mesa
@@ -6411,6 +7232,8 @@ remove_all(){
     as_user rm -f "$uh/Desktop/Steam ARM.desktop" "$uh/Desktop/Steam ARM (Desktop mode).desktop" \
           "$uh/.config/autostart/steam-arm-tray.desktop" \
           "$uh"/.local/share/icons/hicolor/*/apps/steam-arm.png "$uh"/.local/share/icons/hicolor/*/apps/steam-arm-desktop.png
+    # autostart folder setup made: removed when empty
+    [ "$as_made" = 1 ] && as_user rmdir "$uh/.config/autostart" 2>/dev/null
     # folder goes with setup's Config.json when nothing else is in it
     if [ "$fc_rm" = 1 ]; then as_user rm -f "$uh/.fex-emu/Config.json"; as_user rmdir "$uh/.fex-emu" 2>/dev/null
     elif [ -f "$uh/.fex-emu/Config.json" ]; then kept="$kept $uh/.fex-emu/Config.json"; fi
@@ -6484,6 +7307,7 @@ remove_all(){
   echo "  Removed:   launcher, helpers, settings menu, menu and desktop entries, icons, controller rules,"
   echo "             services, sudo rule, window rule, apt hook, settings in /etc/steam-arm"
   [ "$gone_mali" = 1 ] && echo "  Removed:   Mali drivers inside emulation ($MALI)"
+  [ -n "$gone_mx" ] && echo "  Removed:   extra Mesa versions inside emulation: $gone_mx ($MALI-<version>)"
   [ -n "$ge" ] && echo "  Removed:   GE-Proton builds installed from settings menu: $ge (games set to them go back to Steam's choice: Linux build where game has one, else default Proton)"
   [ "$fexsrc" = 2 ] && echo "  Removed:   FEX package source $FEXSRC and its key $FEXKEY"
   [ -n "$restored" ] && echo "  Restored:  $restored"
@@ -6525,6 +7349,12 @@ remove_all(){
       echo "             FEX package source:  sudo add-apt-repository --remove $FEXPPA"; fi
   fi
   [ "$binfmt" = 1 ] && echo "  box64 and box32, if installed, handle x86 programs again after next reboot."
+  # add-apt-repository's cache folder
+  case "$lpl" in
+    */.launchpadlib) if [ "$PURGE" = 1 ] && [ -d "$lpl" ]; then rm -rf "$lpl" && echo "  Deleted:   $lpl (add-apt-repository cache made by setup)"
+                     elif [ -d "$lpl" ]; then echo "  Kept:      $lpl (add-apt-repository cache made by setup; --purge deletes it)"; fi;;
+    *) [ "$PURGE" = 1 ] && [ -d /root/.launchpadlib ] && echo "  Kept:      /root/.launchpadlib (add-apt-repository cache, not made by this setup)";;
+  esac
   return 0
 }
 if [ "$MODE" = remove ]; then remove_all; exit 0; fi
@@ -6650,8 +7480,11 @@ if ! command -v FEX >/dev/null 2>&1 && ! os_ubuntu; then
 elif ! command -v FEX >/dev/null 2>&1; then
   command -v add-apt-repository >/dev/null || apt-get install -y software-properties-common \
     || die "software-properties-common did not install (needed to add the FEX package source). $NETHINT"
+  LPL="${HOME:-/root}/.launchpadlib"; LPL_NEW=0; [ -e "$LPL" ] || LPL_NEW=1
   grep -rq "fex-emu/fex" /etc/apt/sources.list.d/ 2>/dev/null || add-apt-repository -y "$FEXPPA" \
     || die "could not add the FEX package source $FEXPPA. $NETHINT FEX packages exist for Ubuntu-based systems; on other distributions install FEX yourself first."
+  # add-apt-repository's cache folder: removed by --remove --purge only when this run made it
+  if [ "$LPL_NEW" = 1 ] && [ -d "$LPL" ]; then LPL_REC=$LPL; fi
 fi
 wait_apt; apt-get update -y || die "package lists could not be updated (apt-get update failed). $NETHINT"
 # FEX build for this CPU, same rule as FEX's InstallFEX.py (first CPU's Features line).
@@ -6694,15 +7527,15 @@ for l in libSDL3.so.0 libopenal.so.1 libgtk-x11-2.0.so.0 libibus-1.0.so.5; do
   ldconfig -p | grep -q "$l" || die "$l missing after package install. Run this again; if it stays missing, report it with the output above."
 done
 # FEX owns x86 execution (box64/box32 binfmt off), persistent
-echo 0 > /proc/sys/fs/binfmt_misc/box64 2>/dev/null || true
-echo 0 > /proc/sys/fs/binfmt_misc/box32 2>/dev/null || true
+{ echo 0 > /proc/sys/fs/binfmt_misc/box64; } 2>/dev/null || true
+{ echo 0 > /proc/sys/fs/binfmt_misc/box32; } 2>/dev/null || true
 cat > /etc/systemd/system/steam-arm-fex-binfmt.service <<'UNIT'
 [Unit]
 Description=Disable box64/box32 binfmt so FEX owns x86-64 execution
 After=systemd-binfmt.service
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'echo 0 > /proc/sys/fs/binfmt_misc/box64 2>/dev/null; echo 0 > /proc/sys/fs/binfmt_misc/box32 2>/dev/null; true'
+ExecStart=/bin/sh -c '{ echo 0 > /proc/sys/fs/binfmt_misc/box64; } 2>/dev/null; { echo 0 > /proc/sys/fs/binfmt_misc/box32; } 2>/dev/null; true'
 RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
@@ -6785,6 +7618,8 @@ say "3/11  x86-64 RootFS (graphics provider) + emulator configuration"
 rfs_missing(){ local f; for f in usr/lib/x86_64-linux-gnu/libc.so.6 usr/lib/i386-linux-gnu/libc.so.6 usr/bin/bash; do [ -e "$1/$f" ] || printf ' %s' "$f"; done; }
 # Moved in through $RFS.part, completeness checked, marker written last; a stopped earlier run leaves only $RFS.part, removed here.
 rm -rf "$RFS.part"
+# settings file exists from here: record of add-apt-repository's cache folder (package step)
+[ -n "${LPL_REC:-}" ] && conf_set LAUNCHPADLIB_CREATED "$LPL_REC"
 # Fetcher's folders; a fetched RootFS counts only once setup marked it complete there.
 RFS_DIRS=(/root/.fex-emu/RootFS /root/.local/share/fex-emu/RootFS)
 RFS_DONE=.steam-arm-fetch-complete
@@ -6805,6 +7640,8 @@ if [ ! -d "$RFS" ]; then
       rm -rf "$d/Ubuntu_24_04"; echo "  earlier download unusable; downloading again"
     fi
   done
+  # fetcher folders that exist before the download; ones it makes are removed once the RootFS moved
+  FEXD_NEW=""; for d in /root/.fex-emu /root/.local/share/fex-emu; do [ -e "$d" ] || FEXD_NEW="$FEXD_NEW $d"; done
   if [ -z "$SRC" ]; then
     # leftover download from earlier run: fetcher's overwrite prompt aborts under -y
     for d in "${RFS_DIRS[@]}"; do rm -f "$d/Ubuntu_24_04.sqsh"; done
@@ -6828,6 +7665,13 @@ if [ ! -d "$RFS" ]; then
   mv "$RFS.part" "$RFS" || die "could not move $RFS.part to $RFS; run this again"
   # download no longer needed once extracted (525 MB)
   for d in "${RFS_DIRS[@]}"; do rm -f "$d/Ubuntu_24_04.sqsh"; done
+  # fetcher's own folders, when this run made them: its Config.json names only the RootFS it fetched
+  for d in $FEXD_NEW; do
+    [ -d "$d" ] || continue
+    rmdir "$d/RootFS" 2>/dev/null
+    grep -qs '"RootFS"' "$d/Config.json" && [ "$(grep -c . "$d/Config.json")" -le 6 ] && rm -f "$d/Config.json"
+    rmdir "$d" 2>/dev/null && echo "  $d removed (made by the RootFS download)"
+  done
 elif [ ! -f "$RFS/.steam-arm-rootfs" ] && MISS=$(rfs_missing "$RFS") && [ -n "$MISS" ]; then
   die "x86-64 root filesystem $RFS is incomplete (missing:$MISS). Move it away or delete it (sudo rm -rf $RFS), then run this again to download it."
 elif grep -qs '^downloaded by steam-arm-setup' "$RFS/.steam-arm-rootfs"; then
@@ -6843,7 +7687,7 @@ fi
 rfs_guard "$RFS" || warn "package tools in $RFS could not be guarded; never run apt or dpkg inside the emulation"
 [ "$CLIENT" = x86 ] && { rfs_bwrap_off "$RFS" || warn "x86 bwrap in $RFS could not be set aside; runtime containers of x86 client may hang"; }
 if [ "$CLIENT" = arm64 ]; then
-  for t in "$RFS" "$MALI"; do rfs_bwrap_on "$t" && echo "  x86 bwrap in $t put back (native client)"; done
+  for t in "$RFS" "$MALI" $(mx_present | sed "s#^#$MALI-#"); do rfs_bwrap_on "$t" && echo "  x86 bwrap in $t put back (native client)"; done
 fi
 # graphics_provider.json makes the runtime use this RootFS as the emulation path (forwarding, default for every title).
 # A different file placed by something else stays untouched and that owner's (not recorded, so --remove keeps it).
@@ -6854,12 +7698,11 @@ else
   gp_list_write || die "could not write $RFS/graphics_provider.json. Free some space on the disk that holds /opt, then run this again."
   own_mark "$RFS/graphics_provider.json"
 fi
-# Same RootFS under the path Valve's runtime looks at; a folder or link placed there by other software stays.
-if [ -L /usr/share/guestos/fex-mesa ] && [ "$(readlink /usr/share/guestos/fex-mesa)" = "$RFS" ]; then :
-elif [ -e /usr/share/guestos/fex-mesa ] || [ -L /usr/share/guestos/fex-mesa ]; then
-  echo "  /usr/share/guestos/fex-mesa was placed by other software; left as it is"
-else
-  mkdir -p /usr/share/guestos && ln -s "$RFS" /usr/share/guestos/fex-mesa
+# Patch guestos-link retired: launcher names the graphics provider at every start. Link of earlier versions removed;
+# a folder or other link placed there by other software stays.
+if [ -L /usr/share/guestos/fex-mesa ] && [ "$(readlink /usr/share/guestos/fex-mesa)" = "$RFS" ]; then
+  rm -f /usr/share/guestos/fex-mesa && rmdir /usr/share/guestos 2>/dev/null
+  echo "  /usr/share/guestos/fex-mesa removed (launcher names graphics provider at every start)"
 fi
 # Second graphics tree for titles that need Mali drivers inside the emulation (handler picks per title).
 # --provider-default: custom settings cleared only once the published tree is in place; on failure both stay.
@@ -6881,7 +7724,14 @@ if [ "$PROVIDER_DEFAULT" = 1 ] && grep -qs '^PROVIDER_\(CUSTOM\|LOCAL\)_' "$CONF
     echo "  driver archive settings cleared: download from project release from now on"
   fi
 fi
-for t in "$RFS" "$MALI"; do
+# Extra Mesa versions for route B titles: only next to the second tree.
+if opt gpu-in-emulation; then
+  mx_sync
+else
+  MX_GONE=$(mx_drop_all); [ -z "$MX_GONE" ] || echo "  gpu-in-emulation deselected: Mesa $MX_GONE trees deleted"
+  { [ -n "$MX_FILE_VER" ] || [ -n "$MESA_EXTRA_SEL" ]; } && warn "extra Mesa versions need gpu-in-emulation; not built"
+fi
+for t in "$RFS" "$MALI" $(mx_present | sed "s#^#$MALI-#"); do
   rfs_root_own "$t" || warn "owner of $t could not be set to root; account owning it can change x86 programs of the emulation"
 done
 # FEX config for the game user; HostEnv entries select the GLX copy (step 4) and Vulkan layer path (step 5).
@@ -6945,21 +7795,23 @@ OUT=/usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0
 STAMP=/usr/local/lib/steam-arm-glx-lax.src
 # Fast path for the apt hook: source path, size and mtime unchanged since last build.
 STAT=/usr/local/lib/steam-arm-glx-lax.stat
+# patched | unpatched: drop signal of patch glx-lax (launcher reads it)
+STATE=/usr/local/lib/steam-arm-glx-lax.state
 ST="$SRC $(stat -c '%s %Y' "$SRC")"
-[ -f "$OUT" ] && [ "$(cat "$STAT" 2>/dev/null)" = "$ST" ] && exit 0
+[ -f "$OUT" ] && [ -f "$STATE" ] && [ "$(cat "$STAT" 2>/dev/null)" = "$ST" ] && exit 0
 SUM=$(sha256sum "$SRC" | cut -c1-64)
-[ -f "$OUT" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$SUM" ] && [ "$(patchelf --print-soname "$OUT" 2>/dev/null)" = libGLX_steamarmlax.so.0 ] && { echo "$ST" > "$STAT"; exit 0; }
+[ -f "$OUT" ] && [ -f "$STATE" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$SUM" ] && [ "$(patchelf --print-soname "$OUT" 2>/dev/null)" = libGLX_steamarmlax.so.0 ] && { echo "$ST" > "$STAT"; exit 0; }
 T=$(mktemp "$OUT.XXXXXX") || exit 1
 trap 'rm -f "$T"' EXIT
 if python3 /usr/local/lib/steam-arm-glx-lax-patch.py "$SRC" "$T" >/dev/null 2>&1; then
-  echo "steam-arm-glx-lax: patched copy built from $(basename "$SRC")"
+  RES=patched; echo "steam-arm-glx-lax: patched copy built from $(basename "$SRC")"
 else
-  cp -f "$SRC" "$T"
+  RES=unpatched; cp -f "$SRC" "$T"
   echo "steam-arm-glx-lax: pattern not found in $(basename "$SRC"); vendor library is an unpatched copy" >&2
 fi
 # Own SONAME so Steam Linux Runtime containers copy this vendor lib in too.
 command -v patchelf >/dev/null && patchelf --set-soname libGLX_steamarmlax.so.0 "$T"
-chmod 644 "$T" && mv -f "$T" "$OUT" && echo "$SUM" > "$STAMP" && echo "$ST" > "$STAT" && ldconfig
+chmod 644 "$T" && mv -f "$T" "$OUT" && echo "$SUM" > "$STAMP" && echo "$ST" > "$STAT" && echo "$RES" > "$STATE" && ldconfig
 GLX
 chmod 755 /usr/local/sbin/steam-arm-glx-lax
 # Rebuild after every dpkg run that changed system Mesa GLX; never fails the apt run.
@@ -6973,7 +7825,7 @@ chmod 644 "$GLX_HOOK"
 else
 say "4/11  private Mesa GLX copy: not selected"
 rm -f /usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0 /usr/local/sbin/steam-arm-glx-lax /usr/local/lib/steam-arm-glx-lax-patch.py \
-      /usr/local/lib/steam-arm-glx-lax.src /usr/local/lib/steam-arm-glx-lax.stat "$GLX_HOOK"
+      /usr/local/lib/steam-arm-glx-lax.src /usr/local/lib/steam-arm-glx-lax.stat /usr/local/lib/steam-arm-glx-lax.state "$GLX_HOOK"
 fi
 
 # ---------------------------------------------------------------------------
@@ -7156,6 +8008,7 @@ rm -f /usr/lib/aarch64-linux-gnu/libVkLayer_steam_arm_spoof.so /usr/share/vulkan
 fi
 
 # ---------------------------------------------------------------------------
+{ opt xpad-dedup || opt pad-hidraw; } && { mkdir -p /etc/udev/rules.d || warn "/etc/udev/rules.d could not be created; controller rules not written"; }
 if opt xpad-dedup; then
 say "6/11  one joystick per pad (duplicate xpad node removed)"
 # Some third-party pads expose a headset interface that xpad also binds, duplicating the joystick; unbind it.
@@ -7180,7 +8033,7 @@ done
 exit 0
 DEDUP
 chmod 755 /usr/local/sbin/steam-arm-xpad-dedup
-cat > /etc/udev/rules.d/71-steam-arm-xpad-dedup.rules <<'RULE'
+cat > /etc/udev/rules.d/71-steam-arm-xpad-dedup.rules <<'RULE' || warn "/etc/udev/rules.d/71-steam-arm-xpad-dedup.rules could not be written"
 # Drop duplicate xpad binding on third-party pads' headset interface.
 ACTION=="add|bind", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", DRIVER=="xpad", ATTR{bInterfaceProtocol}=="03", RUN+="/usr/bin/systemd-run --no-block --quiet /usr/local/sbin/steam-arm-xpad-dedup"
 RULE
@@ -7200,7 +8053,7 @@ if [ -f /usr/lib/udev/rules.d/60-steam-input.rules ] || [ -f /lib/udev/rules.d/6
 elif [ -f /etc/udev/rules.d/60-steam-input.rules ] && ! grep -qs "$VALVE_MARK" /etc/udev/rules.d/60-steam-input.rules; then
   echo "  /etc/udev/rules.d/60-steam-input.rules was placed by someone else; kept"
 else
-cat > /etc/udev/rules.d/60-steam-input.rules <<'VALVERULES'
+cat > /etc/udev/rules.d/60-steam-input.rules <<'VALVERULES' || warn "/etc/udev/rules.d/60-steam-input.rules could not be written"
 # Valve steam-devices 60-steam-input.rules (https://github.com/ValveSoftware/steam-devices), MIT licence; installed by steam-arm-setup
 # Copyright (c) 2018 Valve Software
 #
@@ -7468,7 +8321,7 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="057e", ATTRS{idP
 # Nintendo Switch 2 GameCube Controller over USB
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="2073", MODE="0660", TAG+="uaccess"
 VALVERULES
-chmod 644 /etc/udev/rules.d/60-steam-input.rules
+chmod 644 /etc/udev/rules.d/60-steam-input.rules 2>/dev/null
 fi
 # Pads on the kernel's xpad table that Valve's rules lack; regenerate with gen-gamepad-hidraw-rules.py.
 PAD_IDS="
@@ -7530,12 +8383,12 @@ PAD_IDS="
     echo "KERNEL==\"hidraw*\", ATTRS{idVendor}==\"$v\", ATTRS{idProduct}==\"$p\", MODE=\"0660\", TAG+=\"uaccess\""
     echo "KERNEL==\"hidraw*\", KERNELS==\"*$u*\", MODE=\"0660\", TAG+=\"uaccess\""
   done
-} > /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules
-chmod 644 /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules
+} > /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules || warn "/etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules could not be written"
+chmod 644 /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules 2>/dev/null
 udevadm control --reload 2>/dev/null
 udevadm trigger --subsystem-match=hidraw --subsystem-match=misc 2>/dev/null
 udevadm settle 2>/dev/null
-n=$(grep -c 'ATTRS{idProduct}' /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules)
+n=$(grep -c 'ATTRS{idProduct}' /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules 2>/dev/null); n=${n:-0}
 say "     Valve's controller list, plus $n more pads"
 else
 say "7/11  controller access: not selected"
@@ -8185,7 +9038,7 @@ if [ "$CLIENT" = x86 ] && [ "$CLIENT_SET" = auto ]; then
     if [ "$PROBE" = ok ]; then
       echo "  native client $PKG_VER runs on this CPU again$po; switching back to native ARM64 client"
       CLIENT=arm64
-      for t in "$RFS" "$MALI"; do rfs_bwrap_on "$t" && echo "  x86 bwrap in $t put back (native client)"; done
+      for t in "$RFS" "$MALI" $(mx_present | sed "s#^#$MALI-#"); do rfs_bwrap_on "$t" && echo "  x86 bwrap in $t put back (native client)"; done
     else
       echo "  native client $PKG_VER still needs Armv8.1$po (steam-for-linux #13288); x86 client stays"
     fi
@@ -8311,14 +9164,22 @@ conf_set CLIENT_SET "$CLIENT_SET"
 if [ -n "$CLIENT_PROBE" ]; then conf_set CLIENT_PROBE "$CLIENT_PROBE"; fi
 # Page size override used on a non-4K kernel: kept so the launcher and later runs honour it.
 if [ "$PAGESIZE" != 4096 ] && [ "$PS_IGNORE" = 1 ]; then conf_set STEAM_ARM_IGNORE_PAGESIZE 1; else conf_del STEAM_ARM_IGNORE_PAGESIZE; fi
-# Launch handler: replaces the FEX tool's LD_PRELOAD deletion; picks overlay/MangoHud/engine fixes per title.
+# Launch handler: entered from launch wrapper stand-in (steam-arm-run.py); picks overlay/MangoHud/engine fixes per title.
 cat > /usr/local/lib/steam-arm-handler.py <<'HANDLERPY'
 #!/usr/bin/env python3
 """steam-arm launch handler.
 
-Valve's FEX compatibility tool (fex-compat-tool, patched by steam-arm-setup) runs this file in
-place of its own `del os.environ['LD_PRELOAD']`, before the runtime container starts. It works
-on the tool's os.environ and sys.argv and decides per title:
+Entry (ENTRY, set by caller):
+  arm64   native client: launch wrapper stand-in (linuxarm64/steam-launch-wrapper) runs
+          steam-arm-run.py, which runs this file before Valve's FEX tool starts. No file of
+          Valve's FEX tool is edited: FEX settings go through FEX_APP_CONFIG (Valve's per-title
+          keys kept), thunk paths of FEX tools before 2609 through ThunksDB.json in the title's
+          compatdata/fex-emu folder, LD_PRELOAD through `env` placed after the tool's arguments.
+  x86     x86 client: same stand-in for Valve's x86 launch wrapper (system FEX, no FEX tool).
+  tool    fallback when no stand-in can be placed: Valve's FEX tool (fex-compat-tool, edited by
+          steam-arm-setup) runs this file in place of its `del os.environ['LD_PRELOAD']`.
+It works on os.environ and sys.argv (command line of the title, tool chain included) and
+decides per title:
 
   Steam overlay   x86 overlay core by default; `vulkan` adds the arm64 core and the arm64
                   overlay Vulkan layer (for Vulkan titles, whose frames x86 core never sees);
@@ -8350,6 +9211,8 @@ on the tool's os.environ and sys.argv and decides per title:
                   title on forwarding; b = every title on the second tree (Mali GPU only).
                   Second tree from a custom driver archive (marker "custom"): gfx=b and GFX_DEFAULT=b
                   on any GPU family; automatic rules stay Mali-only.
+                  mesa=<version>: route B title on extra tree /opt/fex-rootfs/Ubuntu_24_04-mali-<version>
+                  (setup --mesa-extra); route A: log line only; tree missing: second tree, log line.
   Kept settings   A value a rule would set that launch options or the environment already set
                   stays, with a "launch option kept" log line naming both values (FEX Multiblock
                   too, from a launch-option FEX_APP_CONFIG; Steam's own FEX setting is no choice). Mali drivers inside the emulation need thunks off and their own graphics
@@ -8359,7 +9222,9 @@ on the tool's os.environ and sys.argv and decides per title:
   Code cache      diskcache=on: FEX code cache (FEX tool 2609.1 or newer only); titles with own JIT
                   (Java, Mono, .NET, LuaJIT, CEF) cache file-backed code only. Title's cache folder
                   ($STEAM_COMPAT_SHADER_PATH/fex-emu) deleted before start when FEX tool or game build
-                  changed (stamp file .steam-arm-stamp inside it).
+                  changed (stamp file .steam-arm-stamp inside it). FEX tool 2610+ turns the cache on for
+                  every title itself (1 GB cap, prunes old FEX versions): diskcache=on adds nothing, stamp
+                  compares game build only, diskcache=off is the per-title off switch.
   Script launchers  Source engine style start scripts are followed to binary they name, for detection.
   x86 client      On CPUs without Armv8.1 atomics Valve's x86 client runs through system FEX; its launch
                   wrapper stand-in enters this handler through steam-arm-run.py (CLIENT_X86 set): same
@@ -8374,20 +9239,34 @@ on the tool's os.environ and sys.argv and decides per title:
                   Proton build but this Linux build started; never writes that file.
   Renderer check  background thread: once the title loads a GL or Vulkan library, logs the GPU
                   device its processes hold ("renderer: GPU ..."), or "GPU forwarding not active:
-                  rendering on CPU (llvmpipe)" when none is held. STEAM_ARM_RENDERER_CHECK=0 turns it off.
+                  rendering on CPU (llvmpipe)" when none is held and the title stays busy (an idle title
+                  without GPU memory is loading, waiting or stuck: no verdict). STEAM_ARM_RENDERER_CHECK=0
+                  turns it off.
                   CPU_NOTICE=on in steam-arm.conf: CPU verdict also raises a desktop notice that stays
                   until closed (GoldSrc titles excluded).
+  Run record      RUN_HISTORY=on in steam-arm.conf, or autotune key in the title's profile: one start line
+                  and (launch wrapper entries) one exit line per start in ~/.local/state/steam-arm/runs.log
+                  (key=value, no paths or names, newest 200 lines, owner only); read by steam-arm-config report run.
+  Automatic tuning  autotune=fix (launch wrapper entries): a start that crashed before graphics within 60 s,
+                  showed no CPU use for 90 s before GPU memory, drew on CPU or showed no graphics in 300 s
+                  makes the next start try one changed setting (steam-arm-autotune.py): gfx, multiblock or
+                  gl32=off; at most 4 trials per stamp; results in ~/.config/steam-arm/tuned.conf. Exit status
+                  of the chain is 0 even after a crash, so verdicts use time, CPU and renderer. Never a signal
+                  to the game; a hang gets one notice to use Steam's Stop.
 
 Profiles, one title per line, later files override earlier ones:
   /usr/local/share/steam-arm/titles.conf      included with steam-arm-setup
+  ~/.config/steam-arm/tuned.conf               automatic tuning results
   /etc/steam-arm/titles.conf                  system
   ~/.config/steam-arm/titles.conf              client home (HOME inside the launcher)
 Line: <appid> key=value ...   keys: overlay=x86|vulkan|off  mangohud=on|off
       godot=gl|vulkan  unity=vulkan|gl  env=NAME=VALUE;NAME=VALUE  args=ARG;ARG
       gl32=off (32-bit title on emulated x86 Mesa, no GL thunk)  vk32=keep (keep -vulkan)
       gfx=a (forwarding)  gfx=b (Mali drivers inside the emulation)
+      mesa=<version> (route B only: extra Mesa tree /opt/fex-rootfs/Ubuntu_24_04-mali-<version>)
       multiblock=on|off (FEX Multiblock; launch-option FEX_APP_CONFIG and Steam's FEX setting win)
       diskcache=on|off (FEX code cache, FEX tool 2609.1+; launch-option FEX_DISKCACHE / FEX_APP_CONFIG win)
+      autotune=fix|off (automatic tuning, off when unset)
       d3d=dxvk|wined3d  glver=3.2|3.3|4.0..4.6  gl=zink (Raspberry Pi GPU only)
 Per-title launch options override profiles: STEAM_ARM_OVERLAY=x86|vulkan|off, and
 STEAM_ARM_PRELOAD_KEEP=a,b (keep exactly LD_PRELOAD entries containing these substrings).
@@ -8411,6 +9290,10 @@ import zipfile
 def log(*a):
     # flushed: the renderer thread writes while the game runs
     print("steam-arm:", *a, flush=True)
+
+
+# Run record: renderer verdict for the exit line; on when RUN_HISTORY=on or the title has autotune.
+RUN = {"renderer": "unknown", "on": False}
 
 
 def private_log():
@@ -8441,15 +9324,22 @@ APPID = os.environ.get("SteamAppId") or os.environ.get("SteamGameId") or ""
 # Environment before any rule; names in STEAM_ARM_LAUNCHOPTS came from title settings (launcher), not from account.
 LAUNCH_ENV = dict(os.environ)
 SYNCED = set(os.environ.get("STEAM_ARM_LAUNCHOPTS", "").lstrip("+").split(","))
-# x86 client: handler entered through steam-arm-run.py (launch wrapper stand-in), which sets this flag.
-CLIENT_X86 = globals().get("CLIENT_X86", False)
-PROFILE_FILES = ("/usr/local/share/steam-arm/titles.conf", "/etc/steam-arm/titles.conf",
+# Entry: "arm64" or "x86" (launch wrapper stand-in, steam-arm-run.py), "tool" (inside edited FEX tool).
+ENTRY = globals().get("ENTRY") or ("x86" if globals().get("CLIENT_X86") else "tool")
+CLIENT_X86 = ENTRY == "x86"
+if ENTRY == "tool" and os.path.basename(os.environ.get("FEX_APP_CONFIG", "")).startswith("steam-arm-fex-app-config-"):
+    # stand-in ran this handler already (its FEX app config is set); tool's own block catches this and applies
+    # Valve's default (SystemExit would end the tool)
+    raise RuntimeError("not needed, launch wrapper ran handler already")
+# tuned.conf (automatic tuning) sits below /etc and personal files: keys set there always win
+TUNED_CONF = os.path.join(os.path.expanduser("~"), ".config/steam-arm/tuned.conf")
+PROFILE_FILES = ("/usr/local/share/steam-arm/titles.conf", TUNED_CONF, "/etc/steam-arm/titles.conf",
                  os.path.join(os.path.expanduser("~"), ".config/steam-arm/titles.conf"))
 
 
-def load_profile():
+def load_profile(files=None):
     prof = {}
-    for path in PROFILE_FILES:
+    for path in files or PROFILE_FILES:
         try:
             lines = open(path).read().splitlines()
         except OSError:
@@ -8605,13 +9495,19 @@ def fex_app_config(thunks=None, config=None):
             cfg = json.load(open(user))
         except (OSError, ValueError):
             cfg = {}
-    else:
-        # tool's own translation of Steam's FEX settings, which it skips once FEX_APP_CONFIG is set
-        gen = getattr(sys.modules.get("__main__"), "generate_app_config", None)
-        if callable(gen):
-            cfg = gen()
+    elif ENTRY != "x86":
+        # Valve's translation of Steam's FEX settings, which the tool skips once FEX_APP_CONFIG is set
+        cfg = valve_fex_keys()
     if not isinstance(cfg, dict):
         cfg = {}
+    if ENTRY == "arm64":
+        # settings 2.3 wrote into Valve's ConfigTemplate.json; a value already there (launch option, Valve) stays
+        for key, want in (("Config", {"ServerSocketPath": "/run/user/%d/steam-arm-fexserver.sock" % os.getuid(),
+                                      "SilentLog": "1"}), ("ThunksDB", {"GL": "1", "Vulkan": "1"})):
+            if not isinstance(cfg.get(key), dict):
+                cfg[key] = {}
+            for k, v in want.items():
+                cfg[key].setdefault(k, v)
     for key, add in (("ThunksDB", thunks), ("Config", config)):
         if add:
             if not isinstance(cfg.get(key), dict):
@@ -8679,9 +9575,13 @@ def unity_has_vulkan():
 MALI_ROOT = "/opt/fex-rootfs/Ubuntu_24_04-mali"
 
 
+def tree_ready(root):
+    """True when a graphics tree is complete (setup writes its marker last)."""
+    return os.path.isfile(root + "/.steam-arm-mali") and os.path.isfile(root + "/graphics_provider.json")
+
+
 def mali_ready():
-    """True when the second tree is complete (setup writes its marker last)."""
-    return os.path.isfile(MALI_ROOT + "/.steam-arm-mali") and os.path.isfile(MALI_ROOT + "/graphics_provider.json")
+    return tree_ready(MALI_ROOT)
 
 
 # GPU families the second tree's drivers cover (panfrost GL, panvk; G1 needs Mesa 26.2); panvk loads by default only on PANVK_FAMILIES.
@@ -8742,11 +9642,192 @@ def user_fex():
     return c if isinstance(c, dict) else {}
 
 
+def tool_entry():
+    """(index in sys.argv, folder) of Valve's FEX tool program on the command line, else (None, None)."""
+    for i, a in enumerate(sys.argv):
+        d = os.path.dirname(a)
+        if d and os.path.isfile(os.path.join(d, "emulator.json")) and os.path.isfile(os.path.join(d, "toolmanifest.vdf")):
+            return i, os.path.abspath(d)
+    return None, None
+
+
+def tool_dir():
+    """Folder of Valve's FEX tool, None when this start has none."""
+    if ENTRY == "tool":
+        m = sys.modules.get("__main__")
+        # runpy puts the handler path in sys.argv[0]; the tool script itself is __main__
+        return getattr(m, "g_fex_path", None) or os.path.dirname(os.path.abspath(getattr(m, "__file__", None) or "."))
+    return tool_entry()[1]
+
+
+def tool_cmdline(d):
+    """Words of the tool's toolmanifest commandline ("/fex-compat-tool %verb% --"), [] when unreadable."""
+    try:
+        m = re.search(r'"commandline"\s+"([^"]*)"', open(os.path.join(d, "toolmanifest.vdf")).read())
+    except OSError:
+        return []
+    return m.group(1).split() if m else []
+
+
+def tool_kind(d):
+    """'python' or 'c++' (ELF) for the program the tool's manifest starts, else 'unknown'."""
+    w = tool_cmdline(d)
+    try:
+        with open(os.path.join(d, w[0].lstrip("/")), "rb") as f:
+            head = f.read(128)
+    except (OSError, IndexError):
+        return "unknown"
+    if head[:4] == b"\x7fELF":
+        return "c++"
+    return "python" if head[:2] == b"#!" and b"python" in head.split(b"\n")[0] else "unknown"
+
+
+def tool_args_end():
+    """Index in sys.argv after the FEX tool's own arguments (where the next layer starts), else None."""
+    i, d = tool_entry()
+    if i is None:
+        return None
+    w = tool_cmdline(d)
+    j = i + len(w)
+    if w and w[-1] == "--" and sys.argv[j - 1:j] == ["--"]:
+        return j
+    try:
+        return sys.argv.index("--", i + 1) + 1
+    except ValueError:
+        return None
+
+
+def steam_num(v):
+    # strtoull(v, 0) != 0 as in FEXCompatTool
+    try:
+        return int(v.strip(), 0) != 0
+    except ValueError:
+        return False
+
+
+def cxx_fex_keys():
+    """Steam's FEX settings as FEXCompatTool (FEX 2609+) writes them; keys Steam leaves unset stay out."""
+    opt = {}
+    for env, k in (("STEAM_FEX_TSOENABLED", "TSOEnabled"), ("STEAM_FEX_MULTIBLOCK", "Multiblock"), ("STEAM_FEX_LOG", "log")):
+        if os.environ.get(env) is not None:
+            opt[k] = steam_num(os.environ[env])
+    ui = os.environ.get("STEAM_COMPAT_FEX_CONFIG")
+    if ui is not None:
+        # as the C++ tool: a set (even empty) override replaces all four keys, missing ones unset
+        for name, k in (("TSOEnabled:", "TSOEnabled"), ("Multiblock:", "Multiblock"), ("ThunksDB_GL:", "GL"),
+                        ("ThunksDB_Vulkan:", "Vulkan")):
+            pos = ui.find(name)
+            c = ui[pos + len(name):pos + len(name) + 1] if pos >= 0 else ""
+            opt[k] = True if c == "1" else False if c == "0" else None
+    cfg = {"Config": {}}
+    for k in ("TSOEnabled", "Multiblock"):
+        if opt.get(k) is not None:
+            cfg["Config"][k] = "1" if opt[k] else "0"
+    if opt.get("log") is not None:
+        cfg["Config"]["SilentLog"] = "0" if opt["log"] else "1"
+        if opt["log"]:
+            cfg["Config"]["OutputLog"] = "server"
+    th = {k: "1" if opt[k] else "0" for k in ("GL", "Vulkan") if opt.get(k) is not None}
+    if th:
+        cfg["ThunksDB"] = th
+    return cfg
+
+
+def python_tool_keys(d):
+    """generate_app_config of Valve's Python FEX tool, loaded read only (main part not run, no bytecode written); None on failure."""
+    path, dwb = list(sys.path), sys.dont_write_bytecode
+    sys.path.insert(0, d)
+    sys.dont_write_bytecode = True
+    try:
+        gen = runpy.run_path(os.path.join(d, tool_cmdline(d)[0].lstrip("/")), run_name="steam_arm_fex_tool").get(
+            "generate_app_config")
+        return gen() if callable(gen) else None
+    except BaseException as e:
+        log("fex: Valve's FEX tool not read (%s); C++ tool rules used for Steam's FEX settings" % e)
+        return None
+    finally:
+        sys.path[:] = path
+        sys.dont_write_bytecode = dwb
+
+
+def valve_fex_keys():
+    """FEX app config Valve's tool would write for this start (appinfo STEAM_FEX_*, Steam's FEX setting)."""
+    if ENTRY == "tool":
+        gen = getattr(sys.modules.get("__main__"), "generate_app_config", None)
+        return gen() if callable(gen) else {}
+    d = tool_dir()
+    c = python_tool_keys(d) if d and tool_kind(d) == "python" else None
+    return c if isinstance(c, dict) else cxx_fex_keys()
+
+
+# FEX substitutes a thunk only for library paths in ThunksDB's Overlay; container paths below are in FEX 2609+.
+THUNK_NAMES = {"GL": ["libGL.so", "libGL.so.1", "libGL.so.1.7.0", "libGL.so.1.2.0"],
+               "Vulkan": ["libvulkan.so", "libvulkan.so.1"], "EGL": ["libEGL.so", "libEGL.so.1"]}
+THUNKS_MARK = "steam-arm"
+
+
+def overlay_paths(ns):
+    for arch in ("i386-linux-gnu", "x86_64-linux-gnu"):
+        for base in ("/usr/lib/pressure-vessel/overrides/lib/" + arch,
+                     "/usr/lib/pressure-vessel/overrides/lib/%s/aliases" % arch,
+                     "/run/gfx/main/usr/lib/" + arch):
+            for n in ns:
+                yield base + "/" + n
+
+
+ENTRY_PY = "/usr/local/lib/steam-arm-entry.py"
+
+
+def thunk_paths_probe(d):
+    """(state, reason) of patch thunk-paths from steam-arm-entry.py; version rule when that file cannot be read."""
+    try:
+        return runpy.run_path(ENTRY_PY, run_name="steam_arm_entry")["probe_thunk_paths"](d, "arm64")
+    except Exception as e:
+        log("patch probe thunk-paths not read (%s)" % e)
+    v = fex_tool_ver()
+    return ("retired", "FEX tool %s" % fex_ver_str(v)) if v and v >= (2609, 0) else ("active", "FEX tool before 2609")
+
+
+def title_thunksdb():
+    """Patch thunk-paths active (FEX tool before 2609): Valve's ThunksDB with container paths added, as the title's own
+    ThunksDB.json (compatdata/<appid>/fex-emu, read by FEX after Valve's); removed once retired. Own file only."""
+    d, cd = tool_dir(), os.environ.get("STEAM_COMPAT_DATA_PATH")
+    if not d or not cd:
+        return
+    dst = os.path.join(cd, "fex-emu", "ThunksDB.json")
+    try:
+        cur = json.load(open(dst))
+    except (OSError, ValueError):
+        cur = None
+    if os.path.lexists(dst) and not (isinstance(cur, dict) and THUNKS_MARK in cur):
+        log("fex: own ThunksDB.json of this title left as it is: %s" % dst)
+        return
+    v = fex_tool_ver()
+    p = thunk_paths_probe(d)
+    if p[0] == "retired":
+        if cur is not None:
+            os.unlink(dst)
+            log("fex: thunk paths file of this title removed (patch thunk-paths retired: %s)" % p[1])
+        return
+    db = json.load(open(os.path.join(d, "usr/share/fex-emu/ThunksDB.json")))
+    for lib, ns in THUNK_NAMES.items():
+        e = db.get("DB", {}).get(lib)
+        if isinstance(e, dict) and isinstance(e.setdefault("Overlay", []), list):
+            e["Overlay"] += [x for x in overlay_paths(ns) if x not in e["Overlay"]]
+    db[THUNKS_MARK] = "runtime container thunk paths, FEX tool before 2609"
+    if db != cur:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        fd, t = tempfile.mkstemp(prefix=".steam-arm-", dir=os.path.dirname(dst))
+        with os.fdopen(fd, "w") as f:
+            json.dump(db, f, indent=2)
+        os.chmod(t, 0o644)
+        os.replace(t, dst)
+    log("fex: thunk paths for runtime container in %s (FEX tool %s)" % (dst, fex_ver_str(v) if v else "version unknown"))
+
+
 def fex_tool_ver():
     """(YYMM, point) of Valve's FEX tool from VERSIONS.txt beside the tool, None when unknown; FEX-2607-76-g... is (2607, 0)."""
-    m = sys.modules.get("__main__")
-    # runpy puts the handler path in sys.argv[0]; the tool script itself is __main__
-    d = getattr(m, "g_fex_path", None) or os.path.dirname(os.path.abspath(getattr(m, "__file__", None) or "."))
+    d = tool_dir() or "."
     try:
         m = re.search(r"FEX-([0-9]{4})(?:\.([0-9]+))?", open(os.path.join(d, "VERSIONS.txt")).read())
     except OSError:
@@ -8809,6 +9890,17 @@ def human(n):
 STAMP = ".steam-arm-stamp"
 
 
+def stamp_fields(s):
+    """{"FEX tool": ..., "game build": ...} of a stamp line ("FEX-2609.1 build=N", or "build=N" for FEX tool 2610+)."""
+    out = {}
+    for w in s.split():
+        if w.startswith("build="):
+            out["game build"] = w[6:]
+        elif w.startswith("FEX-"):
+            out["FEX tool"] = w
+    return out
+
+
 def cache_stamp_check(want):
     """Delete this title's FEX cache folder when tool version or game build changed since last start."""
     base = os.environ.get("STEAM_COMPAT_SHADER_PATH")
@@ -8824,15 +9916,17 @@ def cache_stamp_check(want):
         have = None
     if have == want:
         return
+    o, n = stamp_fields(have or ""), stamp_fields(want)
+    # build-only stamp (FEX tool 2610+ prunes old FEX versions itself): FEX tool half not compared
+    keys = [k for k in ("FEX tool", "game build") if k in n]
     try:
-        if os.path.isdir(d) and [f for f in os.listdir(d) if f != STAMP]:
+        if have is not None and all(o.get(k) == n[k] for k in keys):
+            pass
+        elif os.path.isdir(d) and [f for f in os.listdir(d) if f != STAMP]:
             size = tree_size(d)
             shutil.rmtree(d)
-            if have is None:
-                why = "no stamp"
-            else:
-                o, n = have.split(" build=", 1) + ["?"], want.split(" build=", 1)
-                why = ", ".join("%s %s -> %s" % (k, o[i], n[i]) for i, k in enumerate(("FEX tool", "game build")) if o[i] != n[i])
+            why = "no stamp" if have is None else ", ".join(
+                "%s %s -> %s" % (k, o.get(k, "?"), n[k]) for k in keys if o.get(k) != n[k])
             log("fex: code cache of this title cleared (%s; %s freed)" % (why, human(size)))
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, STAMP), "w") as f:
@@ -9124,6 +10218,8 @@ GFX_LIB = re.compile(r"/(libGLX?(_\w+)?\.so|libEGL(_\w+)?\.so|libOpenGL\.so|libv
                      r"|libgallium[^/]*\.so|\w+_dri\.so|libvulkan_\w+\.so)")
 # x86 Mesa inside the emulation: on forwarding, a sign that the thunk was bypassed
 GUEST_MESA = re.compile(r"(x86_64|i386)-linux-gnu/(?:\S*/)?(libgallium[^/]*\.so|\w+_dri\.so|libvulkan_\w+\.so)")
+# CPU drawing keeps the title busy; below this many CPU seconds per second without GPU memory it draws nothing
+IDLE_CPU = 0.1
 # runtime, launcher and Wine helpers that may load GL or open the GPU; not the title
 HELPER_PREFIX = ("steam-runtime", "srt-", "pressure-vessel", "pv-", "steam-launch-w", "python", "wine")
 HELPER_COMM = {"bwrap", "reaper", "FEXServer", "sh", "bash", "dash", "printenv", "steam",
@@ -9204,15 +10300,16 @@ def gfx_state(pid):
 
 def renderer_verdict(state, polls):
     """Log text for one process state seen with a graphics library for `polls` checks; None while undecided.
-    A GPU render node in use (memory allocated) means GPU; none after 15 checks: CPU."""
-    comm, gfx, guest, fwd, devs = state
+    A GPU render node in use (memory allocated) means GPU; none after 15 checks: CPU. Optional 6th field busy: False
+    (process idle since its graphics library loaded: loading, waiting or stuck, not drawing) gives no verdict."""
+    comm, gfx, guest, fwd, devs = state[:5]
     if not gfx:
         return None
     how = "forwarding to host driver" if fwd else "drivers inside emulation" if guest else "host driver"
     if devs:
         return "renderer: GPU (%s), %s, process %s" % (", ".join(sorted(devs)), how, comm)
     # FEX loader name: program not started yet (title processes carry their own name), so no CPU verdict
-    if polls >= 15 and comm not in FEX_COMM:
+    if polls >= 15 and comm not in FEX_COMM and (len(state) < 6 or state[5] is not False):
         why = ("x86 Mesa inside emulation loaded (%s)" % ", ".join(guest)) if guest else "no GPU device in use"
         return "renderer: warning: GPU forwarding not active: rendering on CPU (llvmpipe); %s, process %s" % (why, comm)
     return None
@@ -9220,7 +10317,7 @@ def renderer_verdict(state, polls):
 
 def renderer_watch(root, limit=180, step=2):
     """Every `step` s for `limit` s: first verdict for a title process below root goes to the log."""
-    seen = {}
+    seen, hist, idle = {}, {}, None
     t0 = time.time()
     while time.time() - t0 < limit:
         time.sleep(step)
@@ -9228,24 +10325,193 @@ def renderer_watch(root, limit=180, step=2):
             s = gfx_state(pid)
             if not s or not s[1] or s[0] in HELPER_COMM or s[0].startswith(HELPER_PREFIX):
                 continue
+            # seconds from start to the first graphics library (automatic tuning: hang check stops there)
+            if "t_gfx" not in globals().get("RUN", {"t_gfx": 0}) and s[0] not in FEX_COMM:
+                RUN.update(t_gfx=int(time.time() - t0), gfx_comm=s[0])
             seen[pid] = seen.get(pid, 0) + 1
-            v = renderer_verdict(s, seen[pid])
+            # CPU use over the last 15 and the last 5 checks (still drawing now); unknown (None) keeps the 15-check rule
+            h = hist.setdefault(pid, [])
+            h.append((time.time(), proc_cpu(pid)))
+            del h[:-15]
+            busy = None if any(c is None for _, c in h) or h[-1][0] <= h[0][0] \
+                else all((h[-1][1] - a[1]) / (h[-1][0] - a[0]) >= IDLE_CPU for a in (h[0], h[-min(5, len(h))])
+                         if h[-1][0] > a[0])
+            v = renderer_verdict(s + (busy,), seen[pid])
+            if not v and busy is False and not s[4] and seen[pid] >= 15:
+                idle = s[0]
             if v:
                 log(v)
+                globals().get("RUN", {})["t_render"] = int(time.time() - t0)
+                globals().get("RUN", {})["renderer"] = "cpu" if v.startswith("renderer: warning:") else "gpu"
                 if v.startswith("renderer: warning:"):
                     pi = pi_hint()
                     if pi:
                         log("renderer: " + pi)
                     notify_cpu()
                 return
-    log("renderer: not detected within %d s (no GL or Vulkan library loaded, or title still loading)" % limit)
+    globals().get("RUN", {})["renderer"] = "none"
+    if idle:
+        log("renderer: not detected within %d s: process %s loaded a graphics library, holds no GPU memory and uses "
+            "almost no CPU (title loading, waiting or stuck; not drawing)" % (limit, idle))
+    else:
+        log("renderer: not detected within %d s (no GL or Vulkan library loaded, or title still loading)" % limit)
 
 
-def renderer_thread(root):
+def renderer_thread(root, limit=180):
     try:
-        renderer_watch(root)
+        renderer_watch(root, limit)
     except Exception as e:
         log("renderer: check stopped:", e)
+
+
+def proc_cpu(pid):
+    """CPU seconds (user + system, all threads) of pid; None when gone."""
+    try:
+        st = open("/proc/%d/stat" % pid).read()
+        f = st[st.rindex(")") + 2:].split()
+        return (int(f[11]) + int(f[12])) / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def hang_watch(root, window, cpu_max, limit, step=2):
+    """Until the title holds GPU memory: CPU time of every process below root; less than cpu_max s per s over `window` s
+    is a hang verdict (log line, one notice). Titles that link GL load it before they hang, so the graphics library is
+    no end mark. Reads /proc only; never sends a signal."""
+    prev, hist, t0 = None, [], time.time()
+    while time.time() - t0 < limit:
+        time.sleep(step)
+        if RUN["renderer"] == "gpu":
+            return
+        cur = {p: c for p, c in ((p, proc_cpu(p)) for p in descendants(root)) if c is not None}
+        if not cur:
+            return
+        if prev is not None:
+            now = time.time()
+            # new processes count with their whole CPU time
+            hist.append((now, sum(c - prev.get(p, 0.0) for p, c in cur.items())))
+            hist = [(t, d) for t, d in hist if now - t <= window]
+            used = sum(d for _, d in hist)
+            if now - t0 >= window and used < cpu_max * window:
+                RUN["hang"] = int(now - t0)
+                log("autotune: app %s: hang: %.2f s CPU in %d s by %d processes, no GPU memory in use"
+                    % (APPID, used, window, len(cur)))
+                nxt = AT["peek"](os.path.expanduser("~"), APPID, RUN["at_ctx"]) if AT else None
+                at_notice("Game seems stuck: no CPU or GPU activity for %d s. Stop it with Steam's Stop button%s. "
+                          "Game waiting in its own launcher window: ignore this." % (window, "; next start tries " + nxt if nxt else ""))
+                return
+        prev = cur
+
+
+def hang_thread(root, window, cpu_max, limit):
+    try:
+        hang_watch(root, window, cpu_max, limit)
+    except Exception as e:
+        log("autotune: hang check stopped:", e)
+
+
+def at_notice(body):
+    """At most one automatic tuning notice per start."""
+    if RUN.get("noticed"):
+        log("notice: not shown (one automatic tuning notice per start)")
+        return False
+    RUN["noticed"] = True
+    return desktop_notice("Steam ARM automatic tuning", body, timeout=10)
+
+
+def private_tool_logs(root, limit=30):
+    """Arm64 entry: Valve's tool log (/tmp/fex-compat-tool-<pid>.log, created readable by all) of a process below root: owner only."""
+    done, t0 = set(), time.time()
+    while time.time() - t0 < limit:
+        time.sleep(0.5)
+        for pid in descendants(root):
+            p = "/tmp/fex-compat-tool-%d.log" % pid
+            if pid in done:
+                continue
+            try:
+                st = os.lstat(p)
+                if st.st_uid == os.getuid() and not os.path.islink(p) and st.st_mode & 0o077:
+                    os.chmod(p, 0o600)
+                done.add(pid)
+            except OSError:
+                pass
+
+
+RUNS_MAX = 200
+
+
+def runs_path():
+    return os.path.join(os.path.expanduser("~"), ".local/state/steam-arm/runs.log")
+
+
+def conf_value(key):
+    """Last KEY= value of /etc/steam-arm/steam-arm.conf, quotes removed; empty when absent."""
+    try:
+        v = [l[len(key) + 1:] for l in open("/etc/steam-arm/steam-arm.conf").read().splitlines() if l.startswith(key + "=")]
+    except OSError:
+        return ""
+    return v[-1].strip().strip("'\"") if v else ""
+
+
+def run_record_why(p):
+    """Reason the run record is on for this title, else None."""
+    if conf_value("RUN_HISTORY") == "on":
+        return "RUN_HISTORY=on"
+    if p.get("autotune", "off") not in ("off", ""):
+        return "title autotune"
+    return None
+
+
+def run_record(fields):
+    """Appends one key=value line to runs.log (owner only, no links), keeps the newest RUNS_MAX lines."""
+    import fcntl
+    p = runs_path()
+    os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
+    line = " ".join("%s=%s" % (k, re.sub(r"[^A-Za-z0-9._:+,-]", "_", str(v))[:64] or "-") for k, v in fields)
+    fd = os.open(p, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "r+") as f:
+        if os.fstat(fd).st_uid != os.getuid():
+            raise OSError("runs.log: not own file")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        rows = [r for r in f.read().splitlines() if r.strip()][-(RUNS_MAX - 1):] + [line]
+        f.seek(0)
+        f.truncate()
+        f.write("\n".join(rows) + "\n")
+
+
+def utc_now():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def mesa_version(root=""):
+    """Mesa version from the libgallium file name under root, else unknown."""
+    for p in sorted(glob.glob(root + "/usr/lib/*/libgallium-*.so")):
+        m = re.search(r"libgallium-([0-9][0-9.]*[0-9])", os.path.basename(p))
+        if m:
+            return m.group(1)
+    return "unknown"
+
+
+def run_exit(rc):
+    """Exit line of the run record and automatic tuning verdict (launch wrapper entries; called by steam-arm-run.py
+    after the chain ended). Exit status of the chain is 0 even when the game crashed, so verdicts use time and renderer."""
+    secs = int(time.time() - RUN.get("t0", time.time()))
+    v = AT["verdict"](RUN.get("hang"), RUN["renderer"], secs) if AT else None
+    if RUN["on"]:
+        st = ("sig%d" % -rc) if rc < 0 else str(rc)
+        try:
+            run_record([("t", utc_now()), ("ev", "exit"), ("app", APPID or "-"), ("run", os.getpid()), ("status", st),
+                        ("secs", secs), ("renderer", RUN["renderer"])] + ([("verdict", v)] if v else []))
+        except OSError as e:
+            log("run record: exit line not written:", e)
+    if AT:
+        log("autotune: app %s: graphics library at %s s (process %s), renderer %s at %s s, run %d s" % (
+            APPID, RUN.get("t_gfx", "-"), RUN.get("gfx_comm", "-"), RUN["renderer"], RUN.get("t_render", "-"), secs))
+        try:
+            for line in AT["finish"](os.path.expanduser("~"), APPID, v, secs, RUN["at_ctx"]):
+                log("autotune: app %s: %s" % (APPID, line))
+        except Exception as e:
+            log("autotune: result not recorded:", e)
 
 
 prof = load_profile()
@@ -9296,6 +10562,31 @@ if AB:
         desktop_notice("Steam ARM", "Exit Steam ARM and start it again: this game then downloads and runs its Windows build.")
     if AB[0] == "skip":
         raise SystemExit(0)
+# Automatic tuning (autotune=fix): settings under trial already came in through tuned.conf; checks before the start.
+AUTOTUNE_PY = "/usr/local/lib/steam-arm-autotune.py"
+AT = None
+AT_USER = []
+_atm = prof.get("autotune", "off")
+if _atm == "fix" and ENTRY not in ("arm64", "x86"):
+    log("autotune: not available for this start (handler entry through FEX tool edit gives no end of run)")
+elif _atm == "fix":
+    try:
+        AT = runpy.run_path(AUTOTUNE_PY, run_name="steam_arm_autotune")
+        _fv = fex_tool_ver()
+        AT_USER = sorted(set(load_profile(PROFILE_FILES[2:])) & set(AT["KNOBS"]))
+        RUN["t0"] = time.time()
+        _l, _n = AT["begin"](os.path.expanduser("~"), APPID, "fex=%s build=%s mesa=%s gpu=%s client=%s" % (
+            fex_ver_str(_fv) if _fv else "unknown", game_build(), mesa_version(), gpu_family(),
+            "x86" if CLIENT_X86 else "arm64"), AT_USER)
+        for _x in _l:
+            log("autotune: app %s: %s" % (APPID, _x))
+        if _n:
+            at_notice(_n)
+    except Exception as e:
+        AT = None
+        log("autotune: off for this start (%s)" % e)
+elif _atm not in ("off", ""):
+    log("autotune: title setting autotune=%s unknown (values: fix, off); off" % _atm)
 # 32-bit Unity stops when x86 overlay attaches; default overlay off unless profile/launch option asks.
 engine_overlay = "off" if (engine == "unity" and bits == 32) else None
 # 64-bit Unity+Vulkan: Panfrost's GL is too old for Unity's core path (GLXBadFBConfig), so force Vulkan unless profile/launch overrides.
@@ -9486,6 +10777,17 @@ if gfx == "b" and CLIENT_X86:
     gfx, why = "a", "x86 client: Mali drivers inside the emulation not wired"
 if gfx == "b" and not mali_ready():
     gfx, why = "a", "Mali drivers inside the emulation not installed"
+# mesa=<version>: extra tree for route B only; a missing tree leaves the second tree.
+mroot = MALI_ROOT
+mver = prof.get("mesa", "")
+if mver and gfx != "b":
+    log("mesa: title setting mesa=%s not used: route a (forwarding uses host drivers)" % mver)
+elif mver and not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", mver):
+    log("mesa: title setting mesa=%s unknown (form: 26.2.4); default drivers" % mver)
+elif mver and not tree_ready(MALI_ROOT + "-" + mver):
+    log("mesa: Mesa %s not installed (settings menu: Components, Driver archive, Extra versions); default drivers" % mver)
+elif mver:
+    mroot = MALI_ROOT + "-" + mver
 if gfx == "b":
     try:
         uf = user_fex()
@@ -9501,10 +10803,13 @@ if gfx == "b":
             if str(utd.get(k)).lower() in ("1", "true"):
                 log("overridden for Mali route: thunk %s=%s (now 0, drivers run inside the emulation)" % (k, utd[k]))
         fex_app_config(thunks={"GL": 0, "Vulkan": 0}, config=cfg)
-        set_env("STEAM_COMPAT_GRAPHICS_PROVIDER", MALI_ROOT + "/graphics_provider.json", "Mali route",
+        set_env("STEAM_COMPAT_GRAPHICS_PROVIDER", mroot + "/graphics_provider.json", "Mali route",
                 ("/opt/fex-rootfs/Ubuntu_24_04/graphics_provider.json",))
         set_env("__GLX_VENDOR_LIBRARY_NAME", "mesa", "Mali route", ("steamarmlax",))
-        log(("graphics: custom drivers inside the emulation (%s)" if custom else "graphics: Mali drivers in emulation (%s)") % why)
+        if mroot != MALI_ROOT:
+            log("graphics: Mesa %s drivers in emulation (%s; title setting mesa=%s)" % (mesa_version(mroot), why, mver))
+        else:
+            log(("graphics: custom drivers inside the emulation (%s)" if custom else "graphics: Mali drivers in emulation (%s)") % why)
         if cfg:
             log("java: 21 or newer, FEX Multiblock off")
     except OSError as e:
@@ -9566,6 +10871,11 @@ if dcp in ("on", "off"):
         log("fex: code cache not applied: FEX tool version unknown (no VERSIONS.txt)")
     elif ver < (2609, 1):
         log("fex: code cache not applied: needs FEX tool FEX-2609.1 or newer (tool: %s)" % fex_ver_str(ver))
+    elif ver >= (2610, 0) and dcp == "on":
+        # patch code-cache retired: Valve's template turns the cache on (1 GB cap, prunes old FEX versions)
+        cache_stamp_check("build=%s" % game_build())
+        log("fex: code cache on through Valve's FEX tool (%s turns it on for every title); diskcache=on adds nothing"
+            % fex_ver_str(ver))
     else:
         cfg = {"DiskCache": "1" if dcp == "on" else "0"}
         jit = (own_jit() or ("java" if jre else None)) if dcp == "on" else None
@@ -9579,8 +10889,21 @@ if dcp in ("on", "off"):
         except (OSError, ValueError) as e:
             log("fex: could not write FEX app config:", e)
 
-if os.environ.get("STEAM_ARM_RENDERER_CHECK", "1") != "0":
-    threading.Thread(target=renderer_thread, args=(os.getpid(),), daemon=True).start()
+# Settings this start runs with, for the next automatic tuning step (trials change one of them).
+if AT:
+    try:
+        _mb = (json.load(open(APP_CFG)).get("Config") or {}).get("Multiblock") if APP_CFG else None
+    except (OSError, ValueError, AttributeError):
+        _mb = None
+    RUN["at_ctx"] = {"eff": {"gfx": gfx, "multiblock": "off" if str(_mb).lower() in ("0", "false") else "on",
+                             "gl32": "off" if gfx == "a" and prof.get("gl32") == "off" and bits != 64 else "on"},
+                     "route_b": (fam in MALI_FAMILIES or custom) and mali_ready() and not CLIENT_X86,
+                     "bits": bits, "user_keys": AT_USER}
+    threading.Thread(target=hang_thread, args=(os.getpid(), AT["HANG_S"], AT["HANG_CPU"], AT["NOGFX_S"]), daemon=True).start()
+if os.environ.get("STEAM_ARM_RENDERER_CHECK", "1") != "0" or AT:
+    threading.Thread(target=renderer_thread, args=(os.getpid(), AT["NOGFX_S"] if AT else 180), daemon=True).start()
+if ENTRY == "arm64":
+    threading.Thread(target=private_tool_logs, args=(os.getpid(),), daemon=True).start()
 
 items = dedupe(items)
 if items:
@@ -9589,24 +10912,63 @@ if items:
 else:
     os.environ.pop("LD_PRELOAD", None)
     log("LD_PRELOAD: none")
+
+if ENTRY == "arm64":
+    # Valve's FEX tool unedited: own settings through FEX_APP_CONFIG, thunk paths per title, LD_PRELOAD after the tool
+    try:
+        fex_app_config()
+        log("fex: app config %s: %s" % (os.environ["FEX_APP_CONFIG"], json.dumps(json.load(open(APP_CFG)), sort_keys=True)))
+    except (OSError, ValueError) as e:
+        log("fex: could not write FEX app config:", e)
+    try:
+        title_thunksdb()
+    except (OSError, ValueError) as e:
+        log("fex: thunk paths file not written:", e)
+    pre = os.environ.pop("LD_PRELOAD", None)
+    at = tool_args_end()
+    if pre and at is not None:
+        # tool may drop LD_PRELOAD; env (emulated) sets it for the runtime container layer
+        sys.argv[at:at] = ["/usr/bin/env", "LD_PRELOAD=" + pre]
+    elif pre:
+        log("LD_PRELOAD not passed: FEX tool arguments not found")
+
+# Start line of the run record; values only, no paths or names (report reads it).
+_why = run_record_why(prof)
+if _why:
+    RUN.update(on=True, t0=RUN.get("t0", time.time()))
+    _fv = fex_tool_ver()
+    try:
+        run_record([("t", utc_now()), ("ev", "start"), ("app", APPID or "-"), ("run", os.getpid()),
+                    ("entry", "wrapper" if ENTRY in ("arm64", "x86") else "tool"), ("client", "x86" if CLIENT_X86 else "arm64"),
+                    ("gfx", gfx), ("overlay", globals().get("mode") or "keep"), ("engine", engine or "-"), ("bits", bits or "-"),
+                    ("fex", fex_ver_str(_fv) if _fv else "unknown"), ("tool", tool_kind(tool_dir()) if tool_dir() else "-"),
+                    ("mesa", mesa_version(mroot if gfx == "b" else "")), ("proton", (tool or "x86") if x86_proton else "-"),
+                    ("multiblock", mbp or "-"), ("diskcache", dcp or "-"), ("profile", ",".join(sorted(prof)) or "-")])
+        log("run record: on (%s)" % _why)
+    except OSError as e:
+        RUN["on"] = False
+        log("run record: not written:", e)
 HANDLERPY
 chmod 644 /usr/local/lib/steam-arm-handler.py
-# x86 client: launch wrapper stand-in runs the handler through this file (native python, outside the emulation).
+# Launch wrapper stand-ins (native and x86 client) run the handler through this file (native python, outside the emulation).
 cat > /usr/local/lib/steam-arm-run.py <<'RUNPY'
 #!/usr/bin/env python3
-"""steam-arm-run: steam-arm launch handler for Valve's x86 client (CPUs without Armv8.1 atomics).
+"""steam-arm-run: steam-arm launch handler, entered from stand-in of Valve's launch wrapper.
 
 Stand-in of Valve's launch wrapper runs:
-  steam-arm-run.py --client x86 [--preload LIST] -- WRAPPER ARGS...
-Launch handler (/usr/local/lib/steam-arm-handler.py) decides per title on this process's environment and
-arguments, as inside Valve's FEX tool for native client; LIST is the game's LD_PRELOAD (kept out of this
-native process). WRAPPER then runs as child with result; SIGTERM, SIGINT and SIGHUP pass on to it; exit
-status is its own. Handler log: /tmp/steam-arm-run-<pid>.log, readable by game account only."""
+  steam-arm-run.py --client x86|arm64 [--preload LIST] -- WRAPPER ARGS...
+x86: Valve's x86 client (CPUs without Armv8.1 atomics). arm64: native client, titles that start through
+Valve's FEX tool (other starts never reach this file). Launch handler (/usr/local/lib/steam-arm-handler.py)
+decides per title on this process's environment and arguments (whole tool chain); LIST is the game's
+LD_PRELOAD (kept out of this native process). WRAPPER then runs as child with result; SIGTERM, SIGINT and
+SIGHUP pass on to it; exit status is its own. Handler log: /tmp/steam-arm-run-<pid>.log, readable by game
+account only; start time, exit status and run time logged, exit line of the run record written when on."""
 import os
 import runpy
 import signal
 import subprocess
 import sys
+import time
 
 HANDLER = "/usr/local/lib/steam-arm-handler.py"
 
@@ -9657,8 +11019,12 @@ def main(a):
     sys.stdout = log
     print("SteamAppId=%s" % (os.environ.get("SteamAppId") or os.environ.get("SteamGameId") or ""))
     print("steam-arm: client: %s through emulation" % client if client == "x86" else "steam-arm: client: native ARM64")
+    print("steam-arm: entry: launch wrapper")
+    t0 = time.time()
+    print("steam-arm: start:", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0)))
+    g = {}
     try:
-        runpy.run_path(HANDLER, init_globals={"CLIENT_X86": client == "x86"})
+        g = runpy.run_path(HANDLER, init_globals={"ENTRY": client, "CLIENT_X86": client == "x86"})
     except SystemExit as e:
         # handler skipped this start (automatic Windows build pending)
         print("steam-arm: launch skipped by handler")
@@ -9690,6 +11056,9 @@ def main(a):
         except InterruptedError:
             continue
     print("steam-arm: exit status", rc)
+    print("steam-arm: run time: %d s" % (time.time() - t0))
+    if callable(g.get("run_exit")):
+        g["run_exit"](rc)
     sys.stdout = out
     return 128 - rc if rc < 0 else rc
 
@@ -9698,6 +11067,920 @@ if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 RUNPY
 chmod 644 /usr/local/lib/steam-arm-run.py
+# Native client: launch wrapper stand-in as handler entry (Valve's FEX tool unedited); launcher and removal use it.
+cat > /usr/local/lib/steam-arm-entry.py <<'ENTRYPY'
+#!/usr/bin/env python3
+"""steam-arm-entry: launch handler entry of the native client; Valve's FEX tool stays unedited.
+
+  prepare S   linuxarm64/steam-launch-wrapper (Valve's program) moved to <name>.real, stand-in put in its
+              place: titles that start through Valve's FEX tool run steam-arm-run.py (launch handler) first,
+              every other start goes straight to Valve's program. Exit 0: stand-in in place; 1: not placed
+              (no launch wrapper yet, or a file this tool does not know), launcher falls back to FEX tool edit.
+  restore S   Valve's launch wrapper back; ThunksDB.json files the handler wrote into compatdata removed;
+              own block out of the game environment file.
+  status S    lines for --detect: FEX tool program type and own edits, handler entry, last FEX title start,
+              game environment file, own patches.
+  gfx S [NAME=VALUE...]  own block in Valve's game environment file (<home>/.config/steam/env/gfx.txt, read by
+              Valve's launch wrapper at every game start, later lines win): block first, lines of the person after
+              it kept; no lines = block removed (file too when nothing else is in it). Exit 0: written; 1: Valve's
+              launch wrapper does not read the file, or file not writable (launcher exports instead).
+  patches S [VKCACHE]  one line per own patch: "patch NAME: active|retired|off (reason)"; drop signals read
+              from Valve's FEX tool, settings file, private GLX copy, vulkaninfo (result kept in VKCACHE).
+S = client folder (.../.local/share/Steam)."""
+import glob
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+
+REL = "linuxarm64/steam-launch-wrapper"
+MARK = "# steam-arm stand-in"
+RUN = "/usr/local/lib/steam-arm-run.py"
+FEXDIR = "steamapps/common/FEX-Emu"
+CONF = "/etc/steam-arm/steam-arm.conf"
+RFS = "/opt/fex-rootfs/Ubuntu_24_04"
+GUESTOS = "/usr/share/guestos/fex-mesa"
+GLX_STATE = "/usr/local/lib/steam-arm-glx-lax.state"
+VK_ICD_DIR = "/usr/share/vulkan/icd.d"
+VK_FEATURES = ("fillModeNonSolid", "geometryShader", "multiViewport", "shaderClipDistance", "shaderCullDistance",
+               "robustBufferAccess2")
+GFX_REL = ".config/steam/env/gfx.txt"
+GFX_BEGIN = "# Steam ARM begin: lines up to end mark rewritten at each Steam ARM start; own lines go below"
+GFX_END = "# Steam ARM end"
+GFX_LINE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[^\n]*\Z")
+# names the launcher writes (own lines when the end mark is gone)
+GFX_NAMES = ("DISABLE_VK_LAYER_VALVE_steam_fossilize_1", "STEAM_ARM_VK_SPOOF")
+
+
+def put(path, data, mode):
+    """Atomic write through a temp file in the same folder."""
+    fd, t = tempfile.mkstemp(prefix=".steam-arm-", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.chmod(t, mode)
+        os.replace(t, path)
+    except BaseException:
+        if os.path.exists(t):
+            os.unlink(t)
+        raise
+
+
+def is_elf(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def stand_in(real):
+    r = shlex.quote(real)
+    # without steam-arm-run.py (removed by an older version) every start goes straight to Valve's program
+    return ("#!/bin/sh\n%s: Valve's launch wrapper (%s) for every start; titles through Valve's FEX tool run\n"
+            "# steam-arm launch handler first (steam-arm-run.py).\n"
+            'case "$*" in\n'
+            '  */FEX-Emu/*) [ -f %s ] && exec env -u LD_PRELOAD /usr/bin/python3 %s --client arm64 --preload "${LD_PRELOAD-}" -- %s "$@";;\n'
+            "esac\n"
+            'exec %s "$@"\n' % (MARK, os.path.basename(real), RUN, RUN, r, r))
+
+
+def ours(path):
+    try:
+        with open(path, "rb") as f:
+            return MARK.encode() in f.read(4096)
+    except OSError:
+        return False
+
+
+def prepare(s):
+    w = os.path.join(s, REL)
+    real = w + ".real"
+    if not os.path.lexists(w):
+        print("launch wrapper not there yet (client not started once); FEX tool edit used until it is")
+        return 1
+    if is_elf(w) and not os.path.islink(w):
+        # Valve's program (new, or put back by a client update): it becomes the real one
+        os.replace(w, real)
+    elif not ours(w):
+        print("warning: %s is neither Valve's program nor stand-in; left as it is, FEX tool edit used" % REL)
+        return 1
+    if not is_elf(real):
+        print("warning: %s.real missing; FEX tool edit used" % REL)
+        return 1
+    want = stand_in(real).encode()
+    try:
+        cur = open(w, "rb").read()
+    except OSError:
+        cur = b""
+    if cur != want:
+        put(w, want, 0o755)
+        print("handler entry: launch wrapper stand-in (%s); Valve's FEX tool not edited" % REL)
+    return 0
+
+
+def restore(s):
+    w = os.path.join(s, REL)
+    real = w + ".real"
+    if ours(w) and os.path.isfile(real):
+        os.replace(real, w)
+        print("Valve's launch wrapper put back (%s)" % REL)
+    elif is_elf(w) and os.path.isfile(real) and not os.path.islink(real):
+        # client put its own program back: saved copy is stale
+        os.unlink(real)
+    n = 0
+    for p in glob.glob(os.path.join(s, "steamapps/compatdata/*/fex-emu/ThunksDB.json")):
+        try:
+            if "steam-arm" in json.load(open(p)):
+                os.unlink(p)
+                n += 1
+        except (OSError, ValueError, TypeError):
+            pass
+    if n:
+        print("thunk paths files removed from %d title folders (compatdata)" % n)
+    gfx(s, [])
+    return 0
+
+
+def gfx_path(s):
+    """Game environment file in the home of client folder s (<home>/.local/share/Steam)."""
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(s)))), GFX_REL)
+
+
+def gfx_split(text):
+    """(own block lines, other lines); without end mark only own-looking lines after the begin mark count as own."""
+    lines = text.splitlines()
+    closed = GFX_END in lines
+    own, rest, inside = [], [], False
+    for ln in lines:
+        if not inside and ln == GFX_BEGIN:
+            inside = True
+        elif inside and ln == GFX_END:
+            inside = False
+        elif inside and (closed or ln.split("=", 1)[0] in GFX_NAMES):
+            own.append(ln)
+        else:
+            inside = False
+            rest.append(ln)
+    return own, rest
+
+
+def gfx_reader(s):
+    """True when Valve's launch wrapper (saved copy behind the stand-in, else the program) reads the file."""
+    w = os.path.join(s, REL)
+    for p in (w + ".real", w):
+        if is_elf(p) and not os.path.islink(p):
+            try:
+                with open(p, "rb") as f:
+                    return ("/" + GFX_REL).encode() in f.read()
+            except OSError:
+                return False
+    return False
+
+
+def gfx(s, lines):
+    """Own block set to lines (removed when empty); 0 written or nothing to do, 1 not written."""
+    bad = [ln for ln in lines if not GFX_LINE.match(ln)]
+    if bad:
+        print("warning: not NAME=VALUE: %s" % ", ".join(bad))
+        return 1
+    path = gfx_path(s)
+    if lines and not gfx_reader(s):
+        print("game environment file not read by Valve's launch wrapper; game settings stay in launcher environment")
+        gfx(s, [])
+        return 1
+    if os.path.islink(path) or (os.path.lexists(path) and not os.path.isfile(path)):
+        print("warning: %s is not a plain file; left as it is" % path)
+        return 1
+    try:
+        with open(path, encoding="utf-8", errors="surrogateescape") as f:
+            text = f.read()
+        mode = os.stat(path).st_mode & 0o777
+    except FileNotFoundError:
+        text, mode = "", 0o644
+    except OSError as e:
+        print("warning: %s not readable: %s" % (path, e))
+        return 1
+    own, rest = gfx_split(text)
+    try:
+        if not lines:
+            if GFX_BEGIN not in text.splitlines():
+                return 0
+            if any(ln.strip() for ln in rest):
+                put(path, ("\n".join(rest) + "\n").encode("utf-8", "surrogateescape"), mode)
+            else:
+                os.unlink(path)
+                for d in (os.path.dirname(path), os.path.dirname(os.path.dirname(path))):
+                    try:
+                        os.rmdir(d)
+                    except OSError:
+                        break
+            print("game environment file: Steam ARM lines removed")
+            return 0
+        new = "\n".join([GFX_BEGIN] + list(lines) + [GFX_END] + rest) + "\n"
+        if new != text:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            put(path, new.encode("utf-8", "surrogateescape"), mode)
+            print("game environment file: %s" % ", ".join(lines))
+    except OSError as e:
+        print("warning: %s not written: %s" % (path, e))
+        return 1
+    return 0
+
+
+def gfx_status(s):
+    path = gfx_path(s)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            own, rest = gfx_split(f.read())
+    except OSError:
+        print("game environment file: none")
+        return
+    other = len([ln for ln in rest if ln.strip() and not ln.lstrip().startswith("#")])
+    print("game environment file: %s%s" % ("Steam ARM lines: " + ", ".join(own) if own else "no Steam ARM lines",
+                                           ", other lines: %d" % other if other else ""))
+
+
+def tool_kind(f):
+    """(kind, own edits) of Valve's FEX tool in f: kind python|c++|unknown|not downloaded."""
+    try:
+        cmd = open(os.path.join(f, "toolmanifest.vdf")).read().split('"commandline"', 1)[1].split('"')[1].split()
+        with open(os.path.join(f, cmd[0].lstrip("/")), "rb") as fh:
+            head = fh.read(128)
+        kind = "c++" if head[:4] == b"\x7fELF" else "python" if head[:2] == b"#!" and b"python" in head.split(b"\n")[0] \
+            else "unknown"
+    except (OSError, IndexError):
+        kind = "not downloaded" if not os.path.isdir(f) else "unknown"
+    edits = len(glob.glob(os.path.join(f, "*.steam-arm-sha")) + glob.glob(os.path.join(f, "usr/share/fex-emu/*.steam-arm-sha")))
+    return kind, edits
+
+
+def last_start(s):
+    """'reached' or 'not reached' for the newest title start through Valve's FEX tool (client's gameprocess_log),
+    None when none is logged: reached = handler log of that title written since."""
+    try:
+        lines = open(os.path.join(s, "logs/gameprocess_log.txt"), errors="replace").read().splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        m = re.match(r'\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] AppID (\d+) adding PID \d+ as a tracked process "(.*)"$', line)
+        if not m or "/FEX-Emu" not in m.group(3):
+            continue
+        t0 = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) - 2
+        for p in glob.glob("/tmp/steam-arm-run-*.log") + glob.glob("/tmp/fex-compat-tool-*.log"):
+            try:
+                if os.path.getmtime(p) >= t0 and "SteamAppId=%s\n" % m.group(2) in open(p, errors="replace").read(1 << 20) \
+                        and "steam-arm:" in open(p, errors="replace").read(1 << 20):
+                    return "reached"
+            except OSError:
+                pass
+        return "not reached"
+    return None
+
+
+def conf_get(key, path=None):
+    """Last KEY= value of the settings file, quotes removed; empty when absent."""
+    try:
+        v = [l[len(key) + 1:] for l in open(path or CONF).read().splitlines() if l.startswith(key + "=")]
+    except OSError:
+        return ""
+    return v[-1].strip().strip("'\"") if v else ""
+
+
+def comp_on(name):
+    """Component chosen at setup; every component counts as chosen when the settings file has no list."""
+    try:
+        has = any(l.startswith("COMPONENTS_ON=") for l in open(CONF).read().splitlines())
+    except OSError:
+        has = False
+    return not has or name in conf_get("COMPONENTS_ON").split(",")
+
+
+def fex_ver(f):
+    """(YYMM, point) of Valve's FEX tool in f from VERSIONS.txt; FEX-2607-76-g... is (2607, 0); None when unknown."""
+    try:
+        m = re.search(r"FEX-([0-9]{4})(?:\.([0-9]+))?", open(os.path.join(f, "VERSIONS.txt")).read())
+    except OSError:
+        return None
+    return (int(m.group(1)), int(m.group(2) or 0)) if m else None
+
+
+def ver_str(v):
+    return "FEX-%d" % v[0] + (".%d" % v[1] if v[1] else "")
+
+
+def tool_unknown(f):
+    return "FEX tool not downloaded yet" if not os.path.isdir(f) else "FEX tool version unknown (no VERSIONS.txt)"
+
+
+# Drop signals (3.0 A4): each probe returns (state, reason), state active, retired or off.
+def probe_thunk_paths(f, client):
+    """P1: container thunk paths, written per title for tools that lack them."""
+    if client == "x86":
+        return "off", "x86 client: system FEX, Valve's FEX tool not used"
+    v = fex_ver(f)
+    if v is None:
+        return "active", tool_unknown(f) + "; checked again at each title start"
+    if v >= (2609, 0):
+        return "retired", "FEX tool %s lists runtime container thunk paths itself" % ver_str(v)
+    return "active", "FEX tool %s lists no runtime container thunk paths; ThunksDB.json per title in compatdata" % ver_str(v)
+
+
+def probe_tool_edit(s, client):
+    """P5 (with P2-P4 file edits): edits of Valve's FEX tool, needed only when no launch wrapper stand-in is in place."""
+    if client == "x86":
+        return "off", "x86 client: Valve's FEX tool not used"
+    edits = tool_kind(os.path.join(s, FEXDIR))[1]
+    if ours(os.path.join(s, REL)):
+        return "retired", "handler runs from launch wrapper; Valve's FEX tool not edited" + (
+            "" if not edits else " (%d earlier edits put back at next launcher start)" % edits)
+    return "active", "no launch wrapper stand-in in place; FEX tool edit is the handler entry" + (
+        "" if edits else " (applied at launcher start)")
+
+
+def probe_server_socket(f, client):
+    """P2/P3: own FEXServer socket and SilentLog in the app config; kept until a hardware check without them."""
+    if client == "x86":
+        return "off", "x86 client: Valve's FEX tool not used"
+    try:
+        argv = json.load(open(os.path.join(f, "emulator.json"))).get("emulator_v0", {}).get("server_argv")
+    except (OSError, ValueError, AttributeError):
+        argv = None
+    if argv:
+        return "active", "Valve's tool starts its own FEX server per game (emulator.json server_argv); own socket kept until checked on hardware"
+    return "active", "Valve's tool starts no FEX server per game; own socket needed"
+
+
+def probe_code_cache(f, client):
+    """P6: diskcache key and cache wipe on FEX tool change; FEX tool 2610+ turns the code cache on itself."""
+    if client == "x86":
+        return "off", "x86 client: no FEX code cache"
+    v = fex_ver(f)
+    if v is None:
+        return "active", tool_unknown(f)
+    if v >= (2610, 0):
+        return "retired", ("FEX tool %s turns code cache on for every title (1 GB cap, old entries pruned); "
+                           "diskcache=off turns it off per title" % ver_str(v))
+    return "active", "FEX tool %s: code cache only for titles with diskcache=on" % ver_str(v)
+
+
+def probe_glx_lax(state=None):
+    """P7: private GLX copy; retired when system Mesa GLX no longer has the cross-thread check (copy left unpatched)."""
+    if not comp_on("glx-lax"):
+        return "off", "component not chosen"
+    try:
+        st = open(state or GLX_STATE).read().strip()
+    except OSError:
+        st = ""
+    if st == "patched":
+        return "active", "system Mesa GLX refuses a context current in two threads; private copy patched"
+    if st == "unpatched":
+        return "retired", "system Mesa GLX has no cross-thread check to patch; system GLX used"
+    return "active", "private copy not built yet (setup builds it)"
+
+
+def vk_missing(cache=None):
+    """Features vk-spoof reports that the GPU's Vulkan driver lacks (spoof layer off): list, or None when unknown.
+    Result kept in cache, keyed by the driver files in the Vulkan ICD folder."""
+    key = []
+    for p in sorted(glob.glob(os.path.join(VK_ICD_DIR, "*.json"))):
+        try:
+            lib = json.load(open(p)).get("ICD", {}).get("library_path", "")
+            # bare library names resolve through the loader's search path
+            libs = [lib] if os.path.isabs(lib) else glob.glob("/usr/lib/*/" + glob.escape(os.path.basename(lib))) + \
+                glob.glob("/usr/lib/" + glob.escape(os.path.basename(lib)))
+            st = [os.stat(x) for x in [p] + libs[:1]]
+            key.append(" ".join([os.path.basename(p)] + ["%d:%d" % (s.st_size, int(s.st_mtime)) for s in st]))
+        except (OSError, ValueError, AttributeError):
+            key.append(os.path.basename(p))
+    key = "|".join(key)
+    if cache:
+        try:
+            k, v = open(cache).read().split("\n")[:2]
+            if k == key:
+                return v.split() if v != "-" else []
+        except (OSError, ValueError):
+            pass
+    env = dict(os.environ, STEAM_ARM_VK_SPOOF_DISABLE="1")
+    env.pop("STEAM_ARM_VK_SPOOF", None)
+    try:
+        out = subprocess.run(["vulkaninfo"], env=env, capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # first device that is not a CPU driver (lavapipe)
+    found = None
+    for dev in re.split(r"\nGPU[0-9]+:[ \t]*\n", out)[1:]:
+        if re.search(r"deviceType\s*=\s*PHYSICAL_DEVICE_TYPE_CPU", dev):
+            continue
+        val = {m.group(1): m.group(2) for m in re.finditer(r"^\s*(\w+)\s*=\s*(\w+)\s*$", dev, re.M)}
+        found = [n for n in VK_FEATURES if val.get(n) != "true"]
+        break
+    if found is not None and cache:
+        try:
+            os.makedirs(os.path.dirname(cache), exist_ok=True)
+            put(cache, ("%s\n%s\n" % (key, " ".join(found) or "-")).encode(), 0o644)
+        except OSError:
+            pass
+    return found
+
+
+def probe_vk_spoof(cache=None, missing=False):
+    """P8: Vulkan feature layer; retired when the GPU's driver offers every feature the layer reports."""
+    if not comp_on("vk-spoof"):
+        return "off", "component not chosen"
+    m = vk_missing(cache) if missing is False else missing
+    if m is None:
+        return "active", "Vulkan features unknown (vulkaninfo not installed or no GPU device listed)"
+    if not m:
+        return "retired", "GPU's Vulkan driver offers every feature the layer reports; layer not loaded"
+    return "active", "GPU's Vulkan driver lacks: %s" % ", ".join(m)
+
+
+def probe_x86_client(client):
+    """P10: x86 client with its fixes, only on CPUs the native client stops on."""
+    if client == "x86":
+        return "active", "x86 client in use (CPU without Armv8.1 atomics, or chosen by hand)"
+    return "retired", "native ARM64 client in use"
+
+
+def probe_guestos(link=None, rfs=None):
+    """P13: guestos link to the RootFS; the launcher names the graphics provider at every start instead."""
+    link, rfs = link or GUESTOS, rfs or RFS
+    if os.path.islink(link) and os.readlink(link) == rfs:
+        return "active", "%s from an earlier version; next setup run removes it" % link
+    if os.path.lexists(link):
+        return "retired", "%s belongs to other software; left as it is" % link
+    return "retired", "launcher names graphics provider at every start; link not needed"
+
+
+def patches(s, vkcache=None):
+    """[(name, state, reason)] of every own patch for client folder s."""
+    client = "x86" if conf_get("CLIENT") == "x86" else "arm64"
+    f = os.path.join(s, FEXDIR)
+    return [("thunk-paths",) + probe_thunk_paths(f, client), ("tool-edit",) + probe_tool_edit(s, client),
+            ("server-socket",) + probe_server_socket(f, client), ("code-cache",) + probe_code_cache(f, client),
+            ("glx-lax",) + probe_glx_lax(), ("vk-spoof",) + probe_vk_spoof(vkcache),
+            ("x86-client",) + probe_x86_client(client), ("guestos-link",) + probe_guestos()]
+
+
+def print_patches(s, vkcache=None):
+    for n, st, why in patches(s, vkcache):
+        print("patch %s: %s (%s)" % (n, st, why))
+    return 0
+
+
+def status(s):
+    f = os.path.join(s, FEXDIR)
+    kind, edits = tool_kind(f)
+    print("fex tool: %s, edits: %d" % (kind, edits))
+    w = os.path.join(s, REL)
+    if ours(w):
+        e = "launch wrapper"
+    elif edits:
+        e = "FEX tool edit"
+    else:
+        e = "none"
+    print("handler entry: %s" % e)
+    r = last_start(s)
+    if r:
+        print("handler: %s (newest title start through FEX tool)" % r)
+    gfx_status(s)
+    return print_patches(s)
+
+
+def main(a):
+    if len(a) == 3 and a[0] == "patches":
+        return print_patches(a[1], a[2])
+    if len(a) >= 2 and a[0] == "gfx":
+        return gfx(a[1], a[2:])
+    if len(a) != 2 or a[0] not in ("prepare", "restore", "status", "patches"):
+        sys.stderr.write(__doc__ + "\n")
+        return 2
+    return {"prepare": prepare, "restore": restore, "status": status, "patches": print_patches}[a[0]](a[1])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+ENTRYPY
+chmod 644 /usr/local/lib/steam-arm-entry.py
+# Automatic tuning (fix mode) for titles with autotune=fix; handler and steam-arm-config tune use it.
+cat > /usr/local/lib/steam-arm-autotune.py <<'AUTOTUNEPY'
+#!/usr/bin/env python3
+"""steam-arm-autotune: automatic tuning (fix mode) for titles with autotune=fix in a title profile.
+
+Runs through the launch handler for x86 Linux titles that start through FEX. A bad start (crash before graphics
+within 60 s, hang before graphics, rendering on CPU, no graphics within 300 s) makes the next start try one
+changed setting from the best-known one: graphics route (gfx), FEX Multiblock (multiblock), 32-bit GL thunk off
+(gl32=off). At most 4 trials per stamp (FEX tool, game build, Mesa, GPU family, client type). Never TSO, X87 or SMC
+settings: their failures are wrong output, not measurable. Never sends a signal to a game.
+Settings found: HOME/.config/steam-arm/tuned.conf (titles.conf syntax, evidence in a comment), loaded below
+/etc/steam-arm/titles.conf and personal titles.conf, so keys set there always win. State:
+HOME/.config/steam-arm/autotune/state.json. HOME = client home (HOME of the launcher).
+
+  show HOME APPID     state of one title (steam-arm-config tune <appid> show)
+  reset HOME APPID    remove settings found and state of one title
+  stop HOME APPID     drop a pending trial from tuned.conf (autotune turned off; settings found stay)
+  merge CUR_TUNED CUR_STATE BAK_TUNED BAK_STATE OUT_TUNED OUT_STATE
+                      restore: titles from backup added, titles here kept
+"""
+import fcntl
+import json
+import os
+import re
+import sys
+import tempfile
+import time
+
+MAX_TRIALS = 4
+CRASH_S = 60
+HANG_S = 90
+HANG_CPU = 0.02
+NOGFX_S = 300
+# knobs a trial may change; TSO, X87, SMC and other correctness settings are never touched
+KNOBS = {"gfx": ("a", "b"), "multiblock": ("on", "off"), "gl32": ("off",)}
+BAD = ("crash", "hang", "cpu", "nographics")
+HEAD = ("# Written by Steam ARM automatic tuning (titles with autotune=fix). One line per title, evidence after #.\n"
+        "# Keys in /etc/steam-arm/titles.conf and personal titles.conf win. steam-arm-config tune <appid> reset removes a line.\n")
+TEXT = {"crash": "ended at %d s before graphics", "hang": "no CPU or GPU activity for %d s before graphics",
+        "cpu": "drew on CPU (llvmpipe)", "nographics": "no graphics within %d s", "ok": "drew on GPU",
+        "short": "drew on GPU, ended at %d s", "unclear": "ended at %d s without graphics library"}
+
+
+def paths(home):
+    c = os.path.join(home, ".config/steam-arm")
+    return os.path.join(c, "tuned.conf"), os.path.join(c, "autotune", "state.json")
+
+
+def kv(d):
+    return " ".join("%s=%s" % (k, d[k]) for k in sorted(d)) or "-"
+
+
+def describe(v, secs):
+    t = TEXT.get(v, v)
+    if "%d" not in t:
+        return t
+    return t % ({"hang": HANG_S, "nographics": NOGFX_S}.get(v, secs))
+
+
+def write(path, text, mode):
+    """Atomic write as this account; never through a link."""
+    d = os.path.dirname(path)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    if os.path.islink(path):
+        raise OSError("%s is a link" % path)
+    fd, t = tempfile.mkstemp(prefix=".steam-arm-", dir=d)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.chmod(t, mode)
+        os.replace(t, path)
+    except BaseException:
+        if os.path.exists(t):
+            os.unlink(t)
+        raise
+
+
+def new_title():
+    return {"stamp": "", "best": {}, "trial": {}, "why": "", "tried": [], "trials": 0, "undone": [], "base": {},
+            "applied": {}, "status": "watching", "last": []}
+
+
+def load_state(path):
+    try:
+        d = json.load(open(path))
+    except (OSError, ValueError):
+        d = None
+    if not isinstance(d, dict) or not isinstance(d.get("titles"), dict):
+        d = {"version": 1, "titles": {}}
+    for k, t in list(d["titles"].items()):
+        if not (re.fullmatch(r"[0-9]{1,10}", k) and isinstance(t, dict)):
+            del d["titles"][k]
+            continue
+        n = new_title()
+        n.update({x: t[x] for x in n if x in t and isinstance(t[x], type(n[x]))})
+        d["titles"][k] = n
+    return d
+
+
+def save_state(path, d):
+    write(path, json.dumps(d, indent=1, sort_keys=True) + "\n", 0o600)
+
+
+def valid_line(line):
+    """titles.conf line holding only tuning knobs (comments and blank lines pass)."""
+    w = line.split("#", 1)[0].split()
+    if not w:
+        return True
+    if not re.fullmatch(r"[0-9]{1,10}", w[0]):
+        return False
+    for x in w[1:]:
+        k, _, v = x.partition("=")
+        if v not in KNOBS.get(k, ()):
+            return False
+    return True
+
+
+def tuned_read(path):
+    try:
+        return open(path).read().splitlines()
+    except OSError:
+        return []
+
+
+def tuned_get(lines, appid):
+    """Knobs of appid's line in tuned.conf lines."""
+    out = {}
+    for line in lines:
+        w = line.split("#", 1)[0].split()
+        if w and w[0] == appid:
+            for x in w[1:]:
+                k, _, v = x.partition("=")
+                if v in KNOBS.get(k, ()):
+                    out[k] = v
+    return out
+
+
+def tuned_note(lines, appid):
+    """{"kept": knobs, "trial": knobs} from the evidence note of appid's line written by this tool; None otherwise."""
+    for line in lines:
+        w, _, note = line.partition("#")
+        if w.split()[:1] == [appid] and note.strip().startswith("autotune "):
+            out = {}
+            for part in ("kept", "trial"):
+                m = re.search(r"; %s ([^;]*)" % part, note)
+                out[part] = {}
+                for x in (m.group(1).split() if m else ()):
+                    k, _, v = x.partition("=")
+                    if v in KNOBS.get(k, ()):
+                        out[part][k] = v
+            return out
+    return None
+
+
+def tuned_set(path, appid, knobs, note):
+    lines = [l for l in tuned_read(path) if not (l.split("#", 1)[0].split()[:1] == [appid])
+             and not l.startswith("# Written by Steam ARM") and not l.startswith("# Keys in /etc")]
+    if knobs:
+        lines.append("%s %s   # %s" % (appid, kv(knobs), note[:200]))
+    body = [l for l in lines if l.strip()]
+    if body:
+        write(path, HEAD + "\n".join(body) + "\n", 0o644)
+    elif os.path.lexists(path):
+        os.unlink(path)
+
+
+class Locked:
+    """Exclusive lock beside state.json for one read-change-write."""
+
+    def __init__(self, home):
+        self.tuned, self.state = paths(home)
+        self.fd = None
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.state), mode=0o700, exist_ok=True)
+        self.fd = os.open(os.path.join(os.path.dirname(self.state), ".lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        self.d = load_state(self.state)
+        return self
+
+    def __exit__(self, *a):
+        os.close(self.fd)
+
+
+def candidates(t, ctx):
+    """Next settings to try, one knob changed from the best-known setting; tried, undone and profile keys left out."""
+    base = dict(t["base"])
+    base.update(t["best"])
+    out = []
+    if ctx.get("route_b"):
+        out.append(("gfx", "a" if base.get("gfx") == "b" else "b"))
+    out.append(("multiblock", "on" if base.get("multiblock") == "off" else "off"))
+    if ctx.get("bits") == 32 and base.get("gfx", "a") == "a" and base.get("gl32") != "off":
+        out.append(("gl32", "off"))
+    user = set(ctx.get("user_keys", ()))
+    return [(k, v) for k, v in out if k not in user and k not in t["undone"] and "%s=%s" % (k, v) not in t["tried"]
+            and t["best"].get(k) != v]
+
+
+def begin(home, appid, stamp, user_keys):
+    """Start of a launch of an opted-in title: undo and stamp checks, trial count. Returns (log lines, notice text)."""
+    logs, notice = [], None
+    with Locked(home) as L:
+        fresh = appid not in L.d["titles"]
+        t = L.d["titles"].setdefault(appid, new_title())
+        lines = tuned_read(L.tuned)
+        cur = tuned_get(lines, appid)
+        own = tuned_note(lines, appid) if fresh and cur else None
+        if own is not None:
+            # own line without a record (restored backup, state removed): kept part is a result, trial part is
+            # dropped at the end of this start, other keys were hand edits and stay as written
+            t["applied"] = dict(cur)
+            t["best"] = {k: v for k, v in own["kept"].items() if cur.get(k) == v}
+            t["undone"] = sorted(k for k in cur if k not in t["best"] and own["trial"].get(k) != cur[k])
+            t["status"] = "kept" if t["best"] else "watching"
+            logs.append("tuned.conf line without tuning record: %s taken as tuning result" % kv(cur))
+        for k, v in sorted(t["applied"].items()):
+            if cur.get(k) != v:
+                t["undone"] = sorted(set(t["undone"]) | {k})
+                t["best"].pop(k, None)
+                t["trial"].pop(k, None)
+                logs.append("%s=%s removed from tuned.conf by hand; not tried again" % (k, v))
+        for k in sorted(set(cur) - set(t["applied"]) - set(t["undone"])):
+            # written into tuned.conf by hand: kept as written, never tried
+            t["undone"] = sorted(set(t["undone"]) | {k})
+            logs.append("%s=%s written into tuned.conf by hand; kept, not tried" % (k, cur[k]))
+        t["applied"] = cur
+        if t["stamp"] != stamp:
+            if t["stamp"]:
+                logs.append("new stamp (%s): trial count starts again" % stamp)
+            t.update(stamp=stamp, trials=0, tried=[])
+            if t["status"] == "exhausted":
+                t["status"] = "watching"
+        for k in sorted(set(t["trial"]) & set(user_keys)):
+            logs.append("trial %s=%s dropped: %s set by title profile" % (k, t["trial"].pop(k), k))
+        for k in sorted(set(KNOBS) & set(user_keys)):
+            logs.append("%s set by title profile, not tested" % k)
+        if t["trial"]:
+            t["trials"] += 1
+            logs.append("trial %d of %d: %s (%s)" % (t["trials"], MAX_TRIALS, kv(t["trial"]), t["why"] or "earlier start"))
+            notice = "This start tries %s for this game (%s)." % (kv(t["trial"]), t["why"] or "earlier start")
+        else:
+            logs.append("fix mode; settings found earlier: %s" % kv(t["best"]) if t["best"] else "fix mode; nothing changed")
+        save_state(L.state, L.d)
+    return logs, notice
+
+
+def peek(home, appid, ctx):
+    """Knob the next start would try after a bad verdict now, as k=v, or None."""
+    t = load_state(paths(home)[1])["titles"].get(appid)
+    if not t or t["trials"] >= MAX_TRIALS:
+        return None
+    c = candidates(t, ctx)
+    return "%s=%s" % c[0] if c else None
+
+
+def verdict(hang, renderer, secs):
+    """crash, hang, cpu, nographics (bad); ok (good); short, unclear (no decision). renderer: gpu|cpu|none|unknown.
+    GPU memory after a hang flag (own launcher window waited for input, then game started) clears the hang."""
+    if hang and renderer != "gpu":
+        return "hang"
+    if renderer == "cpu":
+        return "cpu"
+    if renderer == "none":
+        return "nographics"
+    if renderer == "gpu":
+        return "ok" if secs >= CRASH_S else "short"
+    return "crash" if secs < CRASH_S else "unclear"
+
+
+def finish(home, appid, v, secs, ctx):
+    """End of a launch: record, keep or drop the trial, pick the next one. Returns log lines."""
+    logs = []
+    day = time.strftime("%Y-%m-%d")
+    with Locked(home) as L:
+        t = L.d["titles"].setdefault(appid, new_title())
+        trial = dict(t["trial"])
+        eff = {k: ctx["eff"][k] for k in ctx.get("eff", {}) if k in KNOBS}
+        t["base"].update({k: x for k, x in eff.items() if k not in trial})
+        t["last"] = (t["last"] + [{"t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "knobs": kv(trial),
+                                   "verdict": v, "secs": int(secs)}])[-5:]
+        what = describe(v, secs)
+        pick = False
+        if trial and v == "ok":
+            t["best"].update(trial)
+            t["trial"] = {}
+            t["status"] = "kept"
+            logs.append("verdict: %s; kept %s" % (what, kv(trial)))
+        elif trial and v in BAD:
+            t["tried"].append(kv(trial))
+            t["trial"] = {}
+            logs.append("verdict: %s; %s undone" % (what, kv(trial)))
+            pick = True
+        elif trial:
+            logs.append("verdict: %s; no decision, %s stays for next start" % (what, kv(trial)))
+            if t["trials"] >= MAX_TRIALS:
+                t["trial"] = {}
+                t["status"] = "exhausted"
+                logs.append("trial limit (%d) reached for this stamp; best-known setting kept" % MAX_TRIALS)
+        elif v in BAD:
+            t["why"] = "%s: %s" % (kv({k: x for k, x in eff.items() if k != "gl32"}) if eff else "current setting", what)
+            logs.append("verdict: %s" % what)
+            pick = True
+        else:
+            if v == "ok":
+                t["status"] = "kept" if t["best"] else "watching"
+            logs.append("verdict: %s; no change" % what)
+        if pick:
+            c = candidates(t, ctx)
+            if t["trials"] >= MAX_TRIALS:
+                t["status"] = "exhausted"
+                logs.append("trial limit (%d) reached for this stamp; best-known setting kept" % MAX_TRIALS)
+            elif not c:
+                t["status"] = "exhausted"
+                logs.append("no setting left to try; best-known setting kept")
+            else:
+                t["trial"] = dict([c[0]])
+                t["status"] = "trying"
+                logs.append("next start tries %s" % kv(t["trial"]))
+        knobs = dict(t["best"])
+        knobs.update(t["trial"])
+        # keys the person changed in tuned.conf stay as written
+        cur = tuned_get(tuned_read(L.tuned), appid)
+        knobs.update({k: cur[k] for k in t["undone"] if k in cur})
+        note = "autotune %s %s" % (day, t["stamp"])
+        if t["best"]:
+            note += "; kept %s" % kv(t["best"])
+        if t["trial"]:
+            note += "; trial %s after %s" % (kv(t["trial"]), t["why"])
+        tuned_set(L.tuned, appid, knobs, note)
+        t["applied"] = knobs
+        save_state(L.state, L.d)
+    return logs
+
+
+def show(home, appid):
+    tuned, state = paths(home)
+    t = load_state(state)["titles"].get(appid)
+    cur = tuned_get(tuned_read(tuned), appid)
+    if not t and not cur:
+        print("app %s: no tuning record" % appid)
+        return 0
+    t = t or new_title()
+    print("app %s: %s" % (appid, {"watching": "no problem seen", "trying": "trial pending", "kept": "setting found",
+                                  "exhausted": "no setting left to try"}.get(t["status"], t["status"])))
+    print("settings found: %s" % kv(t["best"]))
+    print("pending trial: %s" % (kv(t["trial"]) + (" (" + t["why"] + ")" if t["why"] else "") if t["trial"] else "-"))
+    print("in tuned.conf: %s" % kv(cur))
+    print("trials this stamp: %d of %d; tried: %s" % (t["trials"], MAX_TRIALS, ", ".join(t["tried"]) or "-"))
+    print("undone by hand (never tried again): %s" % (", ".join(t["undone"]) or "-"))
+    print("stamp: %s" % (t["stamp"] or "-"))
+    for r in t["last"]:
+        print("run %s: %s, %s, %d s" % (r.get("t", "?"), r.get("knobs", "-"), r.get("verdict", "?"), r.get("secs", 0)))
+    return 0
+
+
+def reset(home, appid):
+    with Locked(home) as L:
+        had = L.d["titles"].pop(appid, None) is not None
+        cur = tuned_get(tuned_read(L.tuned), appid)
+        tuned_set(L.tuned, appid, {}, "")
+        save_state(L.state, L.d)
+    print("app %s: tuning reset%s" % (appid, "" if had or cur else " (nothing recorded)"))
+    return 0
+
+
+def stop(home, appid):
+    with Locked(home) as L:
+        t = L.d["titles"].get(appid)
+        if t and t["trial"]:
+            knobs = dict(t["best"])
+            t["trial"] = {}
+            t["status"] = "kept" if knobs else "watching"
+            tuned_set(L.tuned, appid, knobs, "autotune %s; kept %s" % (t["stamp"], kv(knobs)))
+            t["applied"] = knobs
+            save_state(L.state, L.d)
+            print("app %s: pending trial dropped" % appid)
+    return 0
+
+
+def merge(cur_tuned, cur_state, bak_tuned, bak_state, out_tuned, out_state):
+    """Titles in the backup that have no record here are added; titles here keep their own (measured on this machine)."""
+    cur, bak = load_state(cur_state), load_state(bak_state)
+    cl, bl = tuned_read(cur_tuned), tuned_read(bak_tuned)
+    if not all(valid_line(l) for l in bl):
+        print("backup tuned.conf not valid", file=sys.stderr)
+        return 1
+    have = {l.split("#", 1)[0].split()[0] for l in cl if l.split("#", 1)[0].split()} | set(cur["titles"])
+    add = sorted({l.split("#", 1)[0].split()[0] for l in bl if l.split("#", 1)[0].split()} | set(bak["titles"]))
+    add = [a for a in add if a not in have]
+    for a in add:
+        if a in bak["titles"]:
+            cur["titles"][a] = bak["titles"][a]
+    lines = [l for l in cl if l.strip() and not l.startswith("#")]
+    lines += [l for l in bl if l.split("#", 1)[0].split()[:1] and l.split()[0] in add]
+    write(out_tuned, (HEAD + "\n".join(lines) + "\n") if lines else "", 0o644)
+    save_state(out_state, cur)
+    print("added %d, kept %d" % (len(add), len(have)))
+    return 0
+
+
+def main(a):
+    if len(a) == 3 and a[0] in ("show", "reset", "stop") and re.fullmatch(r"[0-9]{1,10}", a[2]):
+        return {"show": show, "reset": reset, "stop": stop}[a[0]](a[1], a[2])
+    if len(a) == 7 and a[0] == "merge":
+        return merge(*a[1:])
+    sys.stderr.write(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+AUTOTUNEPY
+chmod 644 /usr/local/lib/steam-arm-autotune.py
 # Host python under a path the x86 RootFS lacks: an emulated exec of it stays native.
 ln -sfn /usr/bin/python3 /usr/local/lib/steam-arm-python3
 # Runtime containers of the x86 client: host bubblewrap with host libraries, FEX thunks and FEXServer socket inside.
@@ -9734,8 +12017,10 @@ cat > "$tmp" <<'TITLES'
 #   overlay=x86|vulkan|off  mangohud=on|off  godot=gl|vulkan  env=A=1;B=2  args=-x;-y   (example: <appid> overlay=off)
 #   gl32=off (32-bit title on emulated x86 Mesa, no GL thunk)  vk32=keep (32-bit title keeps -vulkan)
 #   gfx=b (Mali drivers inside emulation)  gfx=a (forwarding); unset = automatic
+#   mesa=<version> (route B title on an extra Mesa version, Components > Driver archive > Extra versions)
 #   multiblock=on|off (FEX Multiblock for the title; unset = Valve's per-title default)
-#   diskcache=on|off (FEX code cache for the title, FEX tool 2609.1 or newer; unset = off)
+#   diskcache=on|off (FEX code cache for the title, FEX tool 2609.1 or newer; unset = off, FEX-2610+: on)
+#   autotune=fix|off (automatic tuning: after a failed start next start tries one changed setting; unset = off)
 #   Raspberry Pi GPU only: d3d=dxvk|wined3d (Proton titles; unset = wined3d)  glver=3.3 (GL version report,
 #   GLSL version to match)  gl=zink (OpenGL through Zink, experimental)
 TITLES
@@ -10557,6 +12842,7 @@ LOG="$ARMHOME/steam-arm.log"
 # Log cap: over 1 MiB at start, current log becomes steam-arm.log.1 (one old copy kept).
 [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ] && mv -f "$LOG" "$LOG.1" 2>/dev/null
 lwarn(){ echo "steam-arm: $*" >&2; printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG" 2>/dev/null; }
+llog(){ printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG" 2>/dev/null; }
 # notice ID SUMMARY BODY TIMEOUT_MS: send (ID 0) or replace a desktop notification; prints its id.
 notice(){
   if command -v gdbus >/dev/null 2>&1; then
@@ -10686,9 +12972,15 @@ if [ -x "$KDEIN" ]; then
     HOME="$REALHOME" "$KDEIN" off >/dev/null 2>&1 || lwarn "kde-input-prompt could not be reversed; next start tries again"
   fi
 fi
-# Private GLX copy only when chosen and loadable; otherwise system Mesa GLX.
+# Own patches: drop signals read once per start (steam-arm-entry.py); a retired patch is not applied.
+PATCHES=$(python3 /usr/local/lib/steam-arm-entry.py patches "$S" "$ARMHOME/.cache/steam-arm/vk-features" 2>/dev/null)
+[ -n "$PATCHES" ] && printf '%s\n' "$PATCHES" | while IFS= read -r l; do llog "$l"; done
+retired(){ printf '%s\n' "$PATCHES" | grep -q "^patch $1: retired "; }
+# Private GLX copy only when chosen, loadable and its patch not retired; otherwise system Mesa GLX.
 LAX=/usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0; LAX_BAD=0
-if comp_on glx-lax; then
+if comp_on glx-lax && retired glx-lax; then
+  LAX_BAD=1
+elif comp_on glx-lax; then
   if [ ! -f "$LAX" ]; then
     LAX_BAD=1; lnote "private GLX copy missing, using system Mesa GLX; run the installer again to rebuild it"
   elif ! out=$(ldd "$LAX" 2>&1) || printf '%s\n' "$out" | grep -q 'not found'; then
@@ -10698,12 +12990,20 @@ if comp_on glx-lax; then
   fi
 fi
 # shader-cache (listed by name only): pre-caching on; this key turns off Steam's arm64, x86_64 and i386 fossilize layers (arm64 one crashes Proton titles in vkCreateDevice).
-NOSHADERS=-noshaders
+NOSHADERS=-noshaders; GAMEENV=
 if [ -n "${COMPONENTS_ON+x}" ] && comp_on shader-cache; then
-  NOSHADERS=; export DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1
+  NOSHADERS=; GAMEENV=DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1
 fi
 # Proton titles use host Vulkan.
-comp_on vk-spoof && [ -f /usr/share/vulkan/implicit_layer.d/VkLayer_steam_arm_spoof.json ] && export STEAM_ARM_VK_SPOOF=1
+comp_on vk-spoof && ! retired vk-spoof && [ -f /usr/share/vulkan/implicit_layer.d/VkLayer_steam_arm_spoof.json ] \
+  && GAMEENV="${GAMEENV:+$GAMEENV }STEAM_ARM_VK_SPOOF=1"
+# Game-only lines: native client gets them through Valve's game environment file (its launch wrapper sets them at each
+# game start; they win over launch options, so settings a title may override stay exports below); else exports.
+GFXOK=0
+if [ "$CLIENT" = arm64 ]; then out=$(python3 /usr/local/lib/steam-arm-entry.py gfx "$S" $GAMEENV 2>&1) && GFXOK=1
+else out=$(python3 /usr/local/lib/steam-arm-entry.py gfx "$S" 2>&1); fi
+[ -n "$out" ] && printf '%s\n' "$out" | while IFS= read -r l; do llog "$l"; done
+[ "$GFXOK" = 1 ] || for v in $GAMEENV; do export "$v"; done
 case "${GPU_FAMILY:-}" in
   # Raspberry Pi GPU: DXVK cannot start on V3D's Vulkan driver, so Proton titles use WineD3D; d3d=dxvk per title.
   broadcom-v3d71|broadcom-v3d42|broadcom-vc4)
@@ -10968,7 +13268,21 @@ elif [ -n "${__GLX_VENDOR_LIBRARY_NAME:-}" ] && ! grep -q steamarmlax "$FEXCFG" 
   cp -f "$REALHOME/.fex-emu/Config.json" "$FEXCFG"
 fi
 
-# --- Valve's FEX compat tool: patch thunk paths/socket so GL/Vulkan aren't CPU (llvmpipe); a watcher re-applies it on change ---
+# --- Handler entry: launch wrapper stand-in (native client); Valve's FEX tool stays unedited. Watcher puts it back after a client update ---
+ENTRYPY=/usr/local/lib/steam-arm-entry.py
+ENTRYST=; ENTRY_OK=0; ENTRYMSG=
+entry_check(){
+  [ "$CLIENT" = arm64 ] || return 0
+  st=$(stat -c '%s %Y %i' "$S/linuxarm64/steam-launch-wrapper" "$S/linuxarm64/steam-launch-wrapper.real" 2>/dev/null | tr '\n' ' ')
+  [ -n "$st" ] && [ "$st" = "$ENTRYST" ] && return 0
+  msg=$(python3 "$ENTRYPY" prepare "$S" 2>&1); rc=$?
+  if [ "$rc" = 0 ]; then ENTRY_OK=1; [ -n "$msg" ] && llog "$msg"
+  else ENTRY_OK=0; [ "$msg" = "$ENTRYMSG" ] || llog "${msg:-handler entry: launch wrapper stand-in not placed}"; fi
+  ENTRYMSG=$msg
+  ENTRYST=$(stat -c '%s %Y %i' "$S/linuxarm64/steam-launch-wrapper" "$S/linuxarm64/steam-launch-wrapper.real" 2>/dev/null | tr '\n' ' ')
+}
+entry_check
+# --- Fallback when no stand-in is in place: edit Valve's FEX compat tool (thunk paths, socket, handler hook); watcher re-applies on change ---
 FEXPATCH=/usr/local/lib/steam-arm-fexpatch.py
 # FEX 2609+ lists the container thunk paths itself; same VERSIONS.txt parse as steam-arm-fexpatch.py.
 fex_new(){ v=$(grep -o 'FEX-[0-9]\{4\}' "$F/VERSIONS.txt" 2>/dev/null | head -1 | cut -c5-8); [ -n "$v" ] && [ "$v" -ge 2609 ]; }
@@ -10982,10 +13296,18 @@ fex_ok(){ { fex_new || grep -q '/run/gfx/main/' "$F/usr/share/fex-emu/ThunksDB.j
 FEXST=; FEXMSG=
 fex_stamp(){ stat -c '%s %Y %i' "$F/ConfigTemplate.json" "$F/fex-compat-tool" "$F/usr/share/fex-emu/ThunksDB.json" 2>/dev/null | tr '\n' ' '; }
 # $1 --no-wait: start-up call, never delays Steam (the watcher waits for a tool update to finish).
+# Edits of an earlier version or the fallback, from their sha records.
+fex_edited(){ ls "$F"/*.steam-arm-sha "$F"/usr/share/fex-emu/*.steam-arm-sha >/dev/null 2>&1; }
 fex_check(){
   [ "$CLIENT" = arm64 ] && [ -d "$F" ] || return 0
   st=$(fex_stamp); [ "$st" = "$FEXST" ] && return 0
-  if ! fex_ok; then
+  if [ "$ENTRY_OK" = 1 ]; then
+    # stand-in runs the handler: Valve's tool files as Valve wrote them
+    if fex_edited; then
+      if python3 "$FEXPATCH" --unpatch "$F" >/dev/null 2>&1; then llog "FEX tool: own edits put back (handler runs from launch wrapper)"
+      else lwarn "FEX tool: own edits could not be put back; Steam restores them at its next update of the tool"; fi
+    fi
+  elif ! fex_ok; then
     msg=$(python3 "$FEXPATCH" ${1:+"$1"} "$F" 2>&1); rc=$?
     # 75: Steam is still writing the tool; next look tries again
     [ "$rc" = 75 ] && return 0
@@ -11056,7 +13378,7 @@ for f in glob.glob("/dev/shm/fex-*-stats"):
 SHMPY
 }
 shm_sweep
-( n=0; while sleep 1; do fex_check; mode_watch; n=$((n + 1)); [ $((n % 60)) -eq 0 ] && shm_sweep; done ) &
+( n=0; while sleep 1; do entry_check; fex_check; mode_watch; n=$((n + 1)); [ $((n % 60)) -eq 0 ] && shm_sweep; done ) &
 FEXWATCH=$!
 # physx-skip (listed by name; old settings file = on): PhysX install step of Proton titles hangs, mark it done in the prefix, else SIGTERM it after 60 s.
 # STEAM_ARM_PHYSX_SKIP=0 or =1 overrides it for this session.
@@ -12735,6 +15057,18 @@ def _inside(path, root):
     return path == root or path.startswith(root + "/")
 
 
+def mkdir755(path):
+    """makedirs with every new folder 0755; os.makedirs applies its mode to the last folder only, umask to the rest."""
+    new = []
+    p = path
+    while p and not os.path.isdir(p):
+        new.append(p)
+        p = os.path.dirname(p)
+    os.makedirs(path, 0o755, exist_ok=True)
+    for d in new:
+        os.chmod(d, 0o755)
+
+
 def unpack(tar, stage, top):
     """Stream-unpack tar into stage; every member under top, no special files, links stay inside top."""
     n = size = 0
@@ -12759,13 +15093,12 @@ def unpack(tar, stage, top):
             if m.isdir():
                 if os.path.lexists(dest) and (os.path.islink(dest) or not os.path.isdir(dest)):
                     raise Failed("Archive member %r repeats a name; nothing installed." % name[:200])
-                os.makedirs(dest, 0o755, exist_ok=True)
-                os.chmod(dest, 0o755)
+                mkdir755(dest)
             elif m.isreg():
                 size += m.size
                 if size > MAX_BYTES:
                     raise Failed("Archive unpacks to more than %s; nothing installed." % gb(MAX_BYTES))
-                os.makedirs(parent, 0o755, exist_ok=True)
+                mkdir755(parent)
                 fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
                 with os.fdopen(fd, "wb") as out:
                     shutil.copyfileobj(t.extractfile(m), out, 1 << 20)
@@ -12776,7 +15109,7 @@ def unpack(tar, stage, top):
                 tg = m.linkname
                 if not tg or tg.startswith("/") or not _inside(posixpath.normpath(posixpath.join(posixpath.dirname(name), tg)), top):
                     raise Failed("Archive link %r points outside tool folder; nothing installed." % name[:200])
-                os.makedirs(parent, 0o755, exist_ok=True)
+                mkdir755(parent)
                 os.symlink(tg, dest)
                 links.append(dest)
             else:
@@ -13750,6 +16083,7 @@ if __name__ == "__main__":
     main()
 TRAYPY
 chmod 755 /usr/local/bin/steam-arm-tray
+[ -d "$UHOME/.config/autostart" ] || conf_set AUTOSTART_CREATED 1
 as_user mkdir -p "$UHOME/.config/autostart"
 user_write "$UHOME/.config/autostart/steam-arm-tray.desktop" <<'TRAYDESK' || warn "tray autostart entry could not be written"
 [Desktop Entry]

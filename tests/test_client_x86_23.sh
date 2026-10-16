@@ -180,7 +180,7 @@ S9=$(block '^# x86 client by CPU rule: native client checked' '^say "10/11 ')
 check "S1 native check only for x86 chosen by CPU rule (not by hand)" "grep -q '^if \[ \"\$CLIENT\" = x86 \] && \[ \"\$CLIENT_SET\" = auto \]; then\$' <<<\"\$S9\""
 check "S2 check result ok switches to native client in same run, else x86 stays" "grep -q '      CLIENT=arm64\$' <<<\"\$S9\" && grep -q 'still needs Armv8.1\$po (steam-for-linux #13288); x86 client stays' <<<\"\$S9\""
 check "S6 step 9 hands saved CLIENT_PROBE to the check (same build: no download)" "grep -q '^  if native_probe \"\$CLIENT_PROBE\"; then\$' <<<\"\$S9\""
-check "S7 automatic switch to native client puts bwrap back in RootFS and Mali tree" "grep -A2 '^      CLIENT=arm64\$' <<<\"\$S9\" | grep -q 'for t in \"\$RFS\" \"\$MALI\"; do rfs_bwrap_on \"\$t\"'"
+check "S7 automatic switch to native client puts bwrap back in RootFS and Mali tree" "grep -A2 '^      CLIENT=arm64\$' <<<\"\$S9\" | grep -qF 'for t in \"\$RFS\" \"\$MALI\" \$(mx_present | sed \"s#^#\$MALI-#\"); do rfs_bwrap_on \"\$t\"'"
 check "S3 x86 edits put back only when switching from x86 client" "grep -q '^if \[ \"\$FOLDER_PREV\" = x86 \]; then\$' <<<\"\$S9\" && grep -q 'python3 \"\$X86PY\" restore \"\$S\" \"\$ARMHOME\"' <<<\"\$S9\""
 check "S4 x86 bootstrap only when no x86 client present; Steam running stops it first" "grep -q \"file -b \\\"\\\$S/ubuntu12_32/steam\\\" | grep -qE 'Intel (80386|i386)'\" <<<\"\$S9\" && grep -q 'client_dl \"\$MANIFEST_X86\" steam_ubuntu12 || die \"\$DL_ERR\"' <<<\"\$S9\" && grep -q 'steam_up && steam_up_die' <<<\"\$S9\""
 check "S8 switch x86 -> native: package records dropped, native file check at next start (box bug 10)" "grep -A3 '^if \[ \"\$FOLDER_PREV\" = x86 \]; then\$' <<<\"\$S9\" | grep -q 'python3 \"\$X86PY\" reset \"\$S\" \"\$ARMHOME\" arm64'"
@@ -204,7 +204,7 @@ s9(){
     say(){ :; }; warn(){ echo "WARN $*" >> "$L"; }; die(){ echo "DIE $*" >> "$L"; exit 1; }
     native_probe(){ echo "PROBE $1" >> "$L"; PKG_VER=200; PROBE_OLD=0; [ "$NP" = fail ] && { DL_ERR=net; return 1; }; PROBE=$NP; }
     as_user(){ echo "AS_USER $*" >> "$L"; cat >/dev/null; return 0; }
-    rfs_bwrap_on(){ echo "BWRAP_ON $1" >> "$L"; }
+    rfs_bwrap_on(){ echo "BWRAP_ON $1" >> "$L"; }; mx_present(){ :; }
     client_dl(){ echo "DL $*" >> "$L"; return 1; }
     steam_up(){ return 1; }
     file(){ case $2 in *ubuntu12_32/steam) echo "ELF 32-bit LSB executable, Intel i386";; *) echo "ELF 64-bit LSB executable, ARM aarch64";; esac; }

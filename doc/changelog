@@ -1,3 +1,46 @@
+steam-arm-setup (3.0) stable; urgency=low
+
+  * Run report: Maintenance, Report how last game ran, or steam-arm-config
+    report run; one file per game start, allow-listed lines only, shown
+    before saving; nothing leaves machine.
+  * Run history, off by default: one line per start and end of x86 game
+    through emulation in client folder .local/state/steam-arm/runs.log.
+  * Automatic tuning, off by default, per game (title key autotune=fix,
+    Games menu or steam-arm-config tune): verdict per start from time,
+    CPU use and renderer check; after bad start next start tries one
+    changed setting (graphics route, FEX Multiblock, 32-bit GL
+    forwarding); at most 4 trials per stamp; results in tuned.conf of
+    client home, below title profiles; never sends signal to game. Line
+    with tuning evidence but no decision state counts as result.
+  * --detect and launcher log name state of each own fix (patch lines);
+    retired fixes are not applied.
+  * Launch handler of native client enters through stand-in of Valve's
+    launch wrapper; Valve's FEX tool files stay unedited; FEX tool edit
+    stays as fallback.
+  * Game-only settings of native client (vk-spoof layer on, shader-cache
+    layer off) go into Valve's game environment file
+    ~/.config/steam/env/gfx.txt of client home as marked block; lines
+    written by hand kept; removal takes block out. Settings that launch
+    options override per title stay in launcher environment.
+  * FEX-2610 tool and newer: code cache on for every title by Valve;
+    diskcache=off turns it off per title.
+  * Setup no longer links root filesystem as /usr/share/guestos/fex-mesa;
+    link of earlier versions removed.
+  * Title profile layers: included, automatic tuning results, system,
+    personal.
+  * Issue forms ask for one Steam ARM report field.
+  * Renderer check no longer reports CPU drawing for game that waits or
+    stops before drawing; CPU verdict needs busy game.
+  * Removal with --purge deletes empty folders setup made; box64 binfmt
+    shell error and missing udev rules folder fixed.
+  * Extra Mesa versions for route B games, none by default (Components,
+    Driver archive, Extra versions, or --mesa-extra with
+    --mesa-extra-file): one tree per SHA-256 pinned version; title key
+    mesa=<version> picks it per game; route A: log line only.
+  * --detect line official client: none|found, detection only.
+
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Fri, 16 Oct 2026 00:00:00 +0000
+
 steam-arm-setup (2.3.2) stable; urgency=low
 
   * Proton titles on Raspberry Pi GPUs use WineD3D by default; DXVK

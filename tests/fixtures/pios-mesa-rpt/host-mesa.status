@@ -1,0 +1,36 @@
+Package: libegl-mesa0
+Status: install ok installed
+Architecture: arm64
+Source: mesa
+Version: 26.2.2-1~bpo13+0~rpt1
+
+Package: libgbm1
+Status: install ok installed
+Architecture: arm64
+Source: mesa
+Version: 26.2.2-1~bpo13+0~rpt1
+
+Package: libgl1-mesa-dri
+Status: install ok installed
+Architecture: arm64
+Source: mesa
+Version: 26.2.2-1~bpo13+0~rpt1
+
+Package: libglx-mesa0
+Status: install ok installed
+Architecture: arm64
+Source: mesa
+Version: 26.2.2-1~bpo13+0~rpt1
+
+Package: mesa-libgallium
+Status: install ok installed
+Architecture: arm64
+Source: mesa
+Version: 26.2.2-1~bpo13+0~rpt1
+
+Package: mesa-vulkan-drivers
+Status: install ok installed
+Architecture: arm64
+Source: mesa
+Version: 26.2.2-1~bpo13+0~rpt1
+

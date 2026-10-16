@@ -269,7 +269,7 @@ check "installer: STEAM_ARM_PROGRESS=1 without a terminal -> curl --progress-bar
 OUT=$(bash -c ". '$D/curl.sh'; echo \"\${CURL_SHOW[*]}|\${CURL_ENV[*]}\"" 2>/dev/null </dev/null)
 check "installer: no terminal, no STEAM_ARM_PROGRESS -> curl -sS" "[ \"\$OUT\" = '-sS|' ]"
 OUT=$(grep -n 'CURL_SHOW\[@\]' "$INST")
-check "installer: client package and driver downloads both take CURL_ENV" "[ \$(grep -c 'env \"\${CURL_ENV\[@\]}\" curl .*\"\${CURL_SHOW\[@\]}\"' '$INST') = 2 ] && [ \$(grep -c 'CURL_SHOW\[@\]' '$INST') = 2 ]"
+check "installer: client package, driver and extra Mesa downloads take CURL_ENV" "[ \$(grep -c 'env \"\${CURL_ENV\[@\]}\" curl .*\"\${CURL_SHOW\[@\]}\"' '$INST') = 3 ] && [ \$(grep -c 'CURL_SHOW\[@\]' '$INST') = 3 ]"
 OUT=$(fn run_installer "$CFG" | grep -o 'STEAM_ARM_PROGRESS=.*')
 check "menu: setup run gets STEAM_ARM_PROGRESS=1 on the built-in screen only" "fn run_installer '$CFG' | grep -qF 'STEAM_ARM_PROGRESS=\"\$([ \"\$DIALOG\" = builtin ] && echo 1)\"'"
 UR=$D/ur.sh
