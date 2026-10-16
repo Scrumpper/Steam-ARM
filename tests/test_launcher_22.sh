@@ -223,7 +223,8 @@ check "menu steam_running: no account resolved -> any account (conservative)" "[
 TP=$T/tray.py
 awk '/^cat > \/usr\/local\/bin\/steam-arm-tray <<.TRAYPY.$/{f=1;next} /^TRAYPY$/{f=0} f' "$INST" \
   | awk '/^def proc_uid/{f=1} /^def signal_processes/{f=0} f' > "$TP"
-cp "$(command -v sleep)" "$T/steam"; "$T/steam" 5 & SP=$!
+# stand-in process named steam: python sets its own comm (no coreutils binary, whose argv[0] handling varies)
+python3 -c 'import ctypes, time; ctypes.CDLL(None).prctl(15, b"steam", 0, 0, 0); time.sleep(5)' & SP=$!
 command sleep 0.2
 OUT=$(python3 - "$TP" "$SP" <<'PY'
 import os, sys
