@@ -14,7 +14,7 @@ set -u
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd -P)
 LOCK=$HERE/distro-matrix.lock TREE=$HERE/distro-matrix-tree.py FETCH=$HERE/fetch-image.py REMOVAL=$HERE/check-removal.py
 CACHE=${SARM_MATRIX_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/sarm-matrix}
-PREP_VER=5
+PREP_VER=7
 GAMEUSER=gamer
 # row|kind|image (amd64,arm64 when they differ)|label; kind: install, preflight (stops at host packages), pagesize
 # (16K page kernel: setup switches the Pi kernel and stops), gate, x86
@@ -150,6 +150,13 @@ id "$GU" >/dev/null 2>&1 || useradd -m -s /bin/bash ${G:+-G "${G%,}"} "$GU"
 # folders a desktop session leaves in an account that has logged in once
 su -s /bin/sh -c 'mkdir -p ~/.config ~/.local/share ~/.cache ~/Desktop' "$GU"
 mkdir -p /etc/udev/rules.d
+# no init system in the chroot: maintainer scripts' service restarts succeed as on a booted system, daemons stay down
+mkdir -p /usr/local/sbin
+printf '#!/bin/sh\necho "matrix stand-in: service $*" >&2\nexit 0\n' > /usr/local/sbin/service
+printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+chmod 755 /usr/local/sbin/service /usr/sbin/policy-rc.d
+# apt runs maintainer scripts with DPkg::Path, default without /usr/local/sbin
+echo 'DPkg::Path "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";' > /etc/apt/apt.conf.d/00matrix-dpkg-path
 apt-get clean
 PREP
 }
