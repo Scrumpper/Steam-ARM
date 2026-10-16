@@ -27,8 +27,9 @@ check "extract: functions, block, remove lines" "grep -q '^fex_source_debian()' 
 check "installer: bash -n" "bash -n '$INST'"
 # Ubuntu branch: same lines as 2.1
 awk '/^if ! command -v FEX >\/dev\/null 2>&1; then$/{f=1;next} f&&/^fi$/{exit} f' "$OLD" > "$T/u21"
-awk '/^elif ! command -v FEX >\/dev\/null 2>&1; then$/{f=1;next} f&&/^fi$/{exit} f' "$INST" > "$T/u22"
-check "Ubuntu branch identical to 2.1" "[ -s $T/u21 ] && cmp -s $T/u21 $T/u22"
+# 3.0 adds the record of add-apt-repository's cache folder (LPL lines); rest as in 2.1
+awk '/^elif ! command -v FEX >\/dev\/null 2>&1; then$/{f=1;next} f&&/^fi$/{exit} f' "$INST" | grep -v -e LPL -e "add-apt-repository's cache folder" > "$T/u22"
+check "Ubuntu branch identical to 2.1 (cache folder record aside)" "[ -s $T/u21 ] && cmp -s $T/u21 $T/u22"
 check "pinned fingerprint = Launchpad signing_key_fingerprint" "grep -qx 'FEXPPA_FPR=EDB98BFE8A2310DC9C4A376E76DBFEBEA206F5AC' '$INST'"
 check "functions defined outside embedded settings menu" "[ \$(grep -c '^fex_source_debian()' '$INST') = 1 ] && ! awk '/^menu_app\\(\\)\\{ cat <<.STEAMARMCONFIG.\$/{f=1} /^STEAMARMCONFIG\$/{f=0} f' '$INST' | grep -q fex_source_debian"
 

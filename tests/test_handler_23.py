@@ -166,9 +166,13 @@ for v in ("FEX-2607-76-gabc1234", "FEX-2609", "FEX-2609-12-gabc1234"):
     shown = v.split("-g")[0].rsplit("-", 1)[0] if v.count("-") > 1 else v
     check("C3 %s: no DiskCache key, needs-tool line" % v, r["dc"] is None
           and "fex: code cache not applied: needs FEX tool FEX-2609.1 or newer (tool: %s)" % shown in r["log"], r["log"][-600:])
-for v in ("FEX-2610", "FEX-2609.2", "FEX-2701-3-gdeadbee"):
+r = run(plain, "diskcache=on", fexdir=tool("FEX-2609.2"))
+check("C4 FEX-2609.2: DiskCache 1", r["dc"] == "1", r["log"][-600:])
+# 3.0 (D2): FEX tool 2610+ turns the cache on itself; diskcache=on adds nothing
+for v in ("FEX-2610", "FEX-2701-3-gdeadbee"):
     r = run(plain, "diskcache=on", fexdir=tool(v))
-    check("C4 %s: DiskCache 1" % v, r["dc"] == "1", r["log"][-600:])
+    check("C4 %s: no DiskCache key, Valve's default named" % v, r["dc"] is None and "diskcache=on adds nothing" in r["log"],
+          r["log"][-600:])
 r = run(plain, "diskcache=on", fexdir=tool(None))
 check("C5 no VERSIONS.txt: version unknown line, no key", r["dc"] is None
       and "fex: code cache not applied: FEX tool version unknown (no VERSIONS.txt)" in r["log"], r["log"][-600:])
@@ -232,16 +236,20 @@ put(os.path.join(CD, "cache.foz"), b"x" * 4096)
 r = run(plain, "diskcache=on")
 check("C12 same tool and build: cache file kept", os.path.isfile(os.path.join(CD, "cache.foz")) and "cleared" not in r["log"]
       and rd(STAMP) == "FEX-2609.1 build=1234", r["log"][-600:])
-r = run(plain, "diskcache=on", fexdir=tool("FEX-2610"))
+r = run(plain, "diskcache=on", fexdir=tool("FEX-2609.2"))
 check("C12 tool changed: cache deleted, cleared line names tool change and size",
       not os.path.exists(os.path.join(CD, "cache.foz"))
-      and "fex: code cache of this title cleared (FEX tool FEX-2609.1 -> FEX-2610; 4.0K freed)" in r["log"], r["log"][-600:])
-check("C12 tool changed: new stamp", rd(STAMP) == "FEX-2610 build=1234", rd(STAMP))
+      and "fex: code cache of this title cleared (FEX tool FEX-2609.1 -> FEX-2609.2; 4.0K freed)" in r["log"], r["log"][-600:])
+check("C12 tool changed: new stamp", rd(STAMP) == "FEX-2609.2 build=1234", rd(STAMP))
+put(os.path.join(CD, "cache.foz"), b"x")
+r = run(plain, "diskcache=on", fexdir=tool("FEX-2610"))
+check("C12 tool 2610 (prunes old FEX versions itself): cache kept, stamp game build only",
+      os.path.isfile(os.path.join(CD, "cache.foz")) and rd(STAMP) == "build=1234" and "cleared" not in r["log"], r["log"][-600:])
 put(os.path.join(CD, "cache.foz"), b"x")
 manifest("1240")
 r = run(plain, "diskcache=on", fexdir=tool("FEX-2610"))
 check("C12 game build changed: cache deleted, cleared line names build", not os.path.exists(os.path.join(CD, "cache.foz"))
-      and "game build 1234 -> 1240" in r["log"] and rd(STAMP) == "FEX-2610 build=1240", r["log"][-600:])
+      and "game build 1234 -> 1240" in r["log"] and rd(STAMP) == "build=1240", r["log"][-600:])
 manifest("1234")
 os.path.exists(STAMP) and os.unlink(STAMP)
 put(os.path.join(CD, "cache.foz"), b"x")

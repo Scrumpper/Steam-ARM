@@ -1,3 +1,2 @@
 *.deb
 /build/
-__pycache__/

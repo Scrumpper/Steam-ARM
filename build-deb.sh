@@ -1,9 +1,9 @@
 #!/bin/sh
 # build-deb.sh: assemble the package tree from the files in this repository and build
-# steam-arm-setup_2.3.2_arm64.deb with dpkg-deb. Same sources and dpkg-deb version give a byte-identical package.
+# steam-arm-setup_3.0_arm64.deb with dpkg-deb. Same sources and dpkg-deb version give a byte-identical package.
 set -e
 
-VERSION=2.3.2
+VERSION=3.0
 PKG=steam-arm-setup
 DEB="${PKG}_${VERSION}_arm64.deb"
 

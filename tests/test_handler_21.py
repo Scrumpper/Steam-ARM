@@ -286,7 +286,7 @@ check("renderer thread does not block the handler", "RESULT" in r["log"])
 # renderer functions alone (definitions only, from the handler source)
 tree = ast.parse(src)
 keep = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.Import, ast.ImportFrom))
-        or (isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("GFX_LIB", "GUEST_MESA", "HELPER_PREFIX", "HELPER_COMM", "NON_GPU_DRM", "FEX_COMM", "_GPU_FAMILY", "PI_FAMILIES", "MALI_FAMILIES", "GPU_OUTRANK")
+        or (isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("GFX_LIB", "GUEST_MESA", "IDLE_CPU", "HELPER_PREFIX", "HELPER_COMM", "NON_GPU_DRM", "FEX_COMM", "_GPU_FAMILY", "PI_FAMILIES", "MALI_FAMILIES", "GPU_OUTRANK")
                                                for t in n.targets))]
 ns = {}
 exec(compile(ast.Module(body=keep, type_ignores=[]), "handler-defs", "exec"), ns)
@@ -356,7 +356,9 @@ GL.glXMakeCurrent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
 GL.glXMakeCurrent(d, w, ctx)
 GL.glGetString.restype = ctypes.c_char_p
 print(GL.glGetString(0x1F01).decode(), flush=True)
-time.sleep(float(sys.argv[1]))
+end = time.time() + float(sys.argv[1])
+while time.time() < end:  # draws like a game: llvmpipe keeps the process busy
+    GL.glClear(0x4000); GL.glFinish()
 '''
 if os.environ.get("DISPLAY"):
     pf = os.path.join(TMP, "probe.py")

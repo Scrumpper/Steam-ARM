@@ -1,0 +1,5 @@
+Raspberry Pi OS (trixie) host Mesa from archive.raspberrypi.com, newer than driver archive Mesa 26.1.8 (3.0 E4).
+host-mesa.status   dpkg status of Pi archive Mesa packages, version 26.2.2-1~bpo13+0~rpt1 (arm64 Packages index)
+host-mesa.files    host library names from those packages (libgallium carries the full package version)
+rfs-archive-26.1.8.list  pre-release layout: archive files laid over the x86-64 RootFS (PSTATE installed.list)
+rfs-distro-mesa.list     RootFS distro Mesa saved in PSTATE distro-mesa.tar (representative Ubuntu 24.04 names)

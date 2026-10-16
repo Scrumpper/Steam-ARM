@@ -1,0 +1,11 @@
+usr/lib/aarch64-linux-gnu/libgallium-26.2.2-1~bpo13+0~rpt1.so
+usr/lib/aarch64-linux-gnu/dri/v3d_dri.so
+usr/lib/aarch64-linux-gnu/dri/vc4_dri.so
+usr/lib/aarch64-linux-gnu/dri/panfrost_dri.so
+usr/lib/aarch64-linux-gnu/dri/libdril_dri.so
+usr/lib/aarch64-linux-gnu/libEGL_mesa.so.0.0.0
+usr/lib/aarch64-linux-gnu/libGLX_mesa.so.0.0.0
+usr/lib/aarch64-linux-gnu/libgbm.so.1.0.0
+usr/lib/aarch64-linux-gnu/libvulkan_broadcom.so
+usr/lib/aarch64-linux-gnu/libvulkan_panfrost.so
+usr/share/vulkan/icd.d/broadcom_icd.aarch64.json

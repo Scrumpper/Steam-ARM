@@ -54,7 +54,9 @@ sudo bash steam-arm-install.sh [options]          (package: sudo steam-arm-setup
    |    package guard: apt and dpkg inside emulation refuse to run
    +- 4 components: glx-lax, vk-spoof, gpu-in-emulation (second tree
    |    /opt/fex-rootfs/Ubuntu_24_04-mali: hard links plus Mali Mesa, route B;
-   |    published archive (download, or local copy), or custom archive),
+   |    published archive (download, or local copy), or custom archive;
+   |    extra Mesa trees /opt/fex-rootfs/Ubuntu_24_04-mali-<version> when picked,
+   |    from SHA-256 pinned archives),
    |    controller rules, menu entries, icons, tray,
    |    kde-input-prompt (KDE Plasma; off by default),
    |    page-size (Pi 5 class, or Pi with page size other than 4K)
@@ -71,13 +73,27 @@ steam-arm (launcher, desktop account only, refuses root)
 +- before client start, client closed: automatic Windows build rule
 |    (steam-arm-autobuild.py) sets Proton ARM64 for matching titles through
 |    steam-arm-compatmap.py, once per title
++- own fixes: drop signal of each read at start (steam-arm-entry.py patches,
+|    logged; --detect prints same lines): FEX tool version (thunk paths, code
+|    cache), launch wrapper stand-in (FEX tool edit), private GLX copy built
+|    patched or not (glx-lax), Vulkan features of GPU (vk-spoof), client type,
+|    guestos link; retired fix is not applied
++- game-only settings (vk-spoof layer on, shader-cache layer off): native client
+|    -> block in Valve's game environment file ~/.config/steam/env/gfx.txt of
+|    client home, set by Valve's launch wrapper at each game start; x86 client
+|    -> launcher environment. Settings launch options override per title
+|    (PROTON_DXVK_D3D8, Pi PROTON_USE_WINED3D) stay launcher environment
 +- one client start at once (start lock): start during first start or before
 |    client window runs shows progress notice and exits, client untouched
 +- starts client (Big Picture or desktop mode)
 +- client exits after applying its own update -> started again, at most twice
-+- keeps Valve's FEX tool set up (forwarding on, per-title hook) when tool changes:
-|    waits until tool files stay unchanged for 2 s, then edits them;
-|    sha of each edited file in <file>.steam-arm-sha, removed again by uninstall
++- native client: launch wrapper stand-in (linuxarm64/steam-launch-wrapper,
+|    Valve's program kept as <name>.real) set at start and again after client
+|    update; starts through Valve's FEX tool -> steam-arm-run.py -> launch
+|    handler -> Valve's launch wrapper; other starts go straight to Valve's
+|    program. Valve's FEX tool files stay unedited; edits of earlier versions
+|    put back. Fallback without stand-in: FEX tool edit (forwarding on,
+|    per-title hook), sha of each edited file in <file>.steam-arm-sha
 +- marks PhysX install step done in Proton prefixes; frees /dev/shm every minute
 +- x86 client: steam.sh through system FEX (x86 bash of root filesystem), host
 |    bubblewrap for runtime containers (steam-arm-pv-bwrap), client browser on
@@ -91,7 +107,14 @@ steam-arm (launcher, desktop account only, refuses root)
 |                                         vk-spoof reports features DXVK needs
 |    GE-Proton build (optional), when picked per game, takes place of Valve's
 |    ARM64 Proton; same runtime container, same host Vulkan driver
-+- Play: x86 Linux title -> Valve's FEX tool -> launch handler, per title:
++- Play: x86 Linux title -> launch handler (stand-in) -> Valve's FEX tool, per title:
+     FEX settings through FEX_APP_CONFIG: Valve's per-title keys (appinfo,
+       Steam's FEX setting) as Valve's tool writes them, plus thunks on, own
+       FEXServer socket, FEX log off; FEX_APP_CONFIG launch option wins
+     FEX tool before 2609 (probe thunk-paths active): thunk paths of runtime
+       container in title's compatdata/<appid>/fex-emu/ThunksDB.json (FEX reads
+       it after Valve's); removed once probe retires fix
+     LD_PRELOAD (overlay, MangoHud) placed after FEX tool arguments (env)
      reads title profile, GFX_DEFAULT, GPU family
      detects engine: Unity, Godot (embedded PCK, else .pck beside game), Java (bundled
        runtime, LWJGL), 32-bit, Source 2, GoldSrc (note only); Godot rules skip
@@ -102,7 +125,9 @@ steam-arm (launcher, desktop account only, refuses root)
        skipped once, desktop notice (STEAM_ARM_AUTO_BUILD=0 starts it)
      profile multiblock=on|off sets FEX Multiblock for title
      profile diskcache=on|off sets FEX code cache for title (FEX tool 2609.1+);
-       cache deleted once when FEX tool or game build changed
+       cache deleted once when FEX tool or game build changed; FEX tool 2610+
+       turns cache on for every title (1 GB cap): diskcache=on adds nothing,
+       cache deleted after game build change only, diskcache=off turns it off
      applies rules; launch options set by user win ("launch option kept" in log);
      log lines show values in effect (Unity GL, Godot renderer and GL)
      picks graphics route:
@@ -115,6 +140,8 @@ steam-arm (launcher, desktop account only, refuses root)
                                                 Java 21+: Multiblock off)
        32-bit -vulkan on Mali G610           -> B (keeps -vulkan)
        other titles                          -> A
+     route B tree: profile mesa=<version> with that tree installed -> extra tree;
+       else second tree (log line); route A: mesa= logged, nothing else
      route A: FEX forwards OpenGL and Vulkan to system Mesa (glx-lax for threads)
      route B: x86 Mesa inside emulation drives GPU directly; Multiblock set by
               FEX_APP_CONFIG launch option kept (Steam's per-title FEX setting
@@ -122,6 +149,22 @@ steam-arm (launcher, desktop account only, refuses root)
               replaced ("overridden for Mali route" in log)
      -> Steam runtime container -> FEX -> title -> GPU
      renderer check (background, up to 180 s): GPU device title holds, or
-       "GPU forwarding not active: rendering on CPU (llvmpipe)" in log;
+       "GPU forwarding not active: rendering on CPU (llvmpipe)" in log (busy
+       title, no GPU memory); idle title without GPU memory: no verdict;
        CPU_NOTICE=on: desktop notice too (GoldSrc titles excluded)
+     run history (RUN_HISTORY=on): start line from launch handler, end line
+       (exit status, run time, renderer verdict) from steam-arm-run.py, in
+       client folder .local/state/steam-arm/runs.log, newest 200 lines;
+       steam-arm-config report run reads it with handler logs of /tmp
+     automatic tuning (autotune=fix, off by default; steam-arm-autotune.py):
+       profile layers: included < tuned.conf (results) < /etc < personal
+       start: stamp (FEX tool, game build, Mesa, GPU family, client type),
+         keys set by hand skipped, trial counted, one notice
+       during run: renderer check up to 300 s; hang check reads /proc: under
+         0.02 s CPU per s for 90 s before GPU memory -> hang, one notice;
+         GPU memory later in same start clears it
+         (stop with Steam's Stop); never signals game
+       end (steam-arm-run.py): verdict crash / hang / CPU / no graphics / good;
+         bad -> next start tries one knob from best found (gfx, multiblock,
+         gl32), good -> kept; at most 4 trials per stamp
 ```
