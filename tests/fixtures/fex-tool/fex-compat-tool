@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+# Synthetic test fixture written from scratch: layout and app config rules the suites check, no third-party code.
+import os
+import sys
+
+GUEST_ROOTFS = "/usr/share/guestos/fex-mesa"
+# Steam's per-title FEX setting: listed keys on, every other key off (string values)
+COMPAT_KEYS = (("Config", "TSOEnabled"), ("Config", "Multiblock"), ("ThunksDB", "GL"), ("ThunksDB", "Vulkan"))
+
+
+def generate_app_config():
+    cfg = {"Config": {}, "ThunksDB": {}}
+    for key in ("TSOEnabled", "Multiblock"):
+        v = os.environ.get("STEAM_FEX_" + key.upper())
+        if v is not None:
+            cfg["Config"][key] = v == "1"
+    if "STEAM_COMPAT_FEX_CONFIG" in os.environ:
+        on = os.environ["STEAM_COMPAT_FEX_CONFIG"].split(",")
+        for group, key in COMPAT_KEYS:
+            name = key if group == "Config" else "ThunksDB_" + key
+            cfg[group][key] = "1" if name + ":1" in on else "0"
+    return cfg
+
+
+def run(argv):
+    if 'LD_PRELOAD' in os.environ:
+        del os.environ['LD_PRELOAD']
+    os.execvp(argv[0], argv)
+
+
+if __name__ == "__main__":
+    run(sys.argv[2:])

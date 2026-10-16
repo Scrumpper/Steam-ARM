@@ -1,0 +1,78 @@
+name: tests
+
+# Full test suite (tests/run-all.sh) and release gates (tools/release-gates.sh) on arm64 for every push and pull
+# request. Earlier releases for comparison cases come from git history; amd64 Debian rootfs for chroot cases from
+# Docker Hub (cached per week). Suite and gate logs uploaded when a step fails.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Tool and log folders
+        run: |
+          echo "SARM_TOOLS_DIR=$RUNNER_TEMP/sarm-tools" >> "$GITHUB_ENV"
+          echo "SARM_LOGDIR=$RUNNER_TEMP/test-logs" >> "$GITHUB_ENV"
+
+      - name: Packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            dash gcc libc6-dev libvulkan-dev desktop-file-utils python3-pil python3-pip \
+            qemu-user-static binfmt-support whiptail dialog file zstd curl python3-gi gir1.2-gdkpixbuf-2.0
+          python3 -m pip install --user --break-system-packages --quiet shellcheck-py==0.11.0.1
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # chroot cases: rootless user namespaces (Ubuntu limits them through AppArmor) and amd64 binaries through qemu
+      - name: User namespaces and amd64 emulation
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo update-binfmts --enable qemu-x86_64 2>/dev/null || true
+          grep -H . /proc/sys/fs/binfmt_misc/qemu-x86_64 | grep -E 'enabled|flags'
+          unshare -r true && echo "user namespaces: ok"
+
+      - name: Week number for rootfs cache
+        id: week
+        run: echo "w=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Debian rootfs cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sarm-tools/trixie-slim-rootfs
+          key: debian-trixie-slim-amd64-${{ steps.week.outputs.w }}
+
+      - name: Debian rootfs
+        run: bash tools/gates/fetch-debian.sh trixie-slim
+
+      - name: Test suite
+        run: |
+          set -o pipefail
+          mkdir -p "$SARM_LOGDIR"
+          bash tests/run-all.sh 2>&1 | tee "$SARM_LOGDIR/run-all.txt"
+
+      - name: Release gates
+        if: success() || failure()
+        run: |
+          set -o pipefail
+          mkdir -p "$SARM_LOGDIR"
+          bash tools/release-gates.sh 2>&1 | tee "$SARM_LOGDIR/release-gates.txt"
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-logs
+          path: ${{ runner.temp }}/test-logs
+          if-no-files-found: warn
