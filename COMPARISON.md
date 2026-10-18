@@ -18,7 +18,7 @@ Legend: ✅ yes  ⚠️ partly, or with conditions  ❌ no  ❓ not publicly ver
 | Windows on ARM, Prism      | ❌ x86 under Prism          | ✅ host                   | ❌                                  | ✅ Snapdragon X                                                 | ❌                                     | ✅ native to Windows            |
 | macOS on Apple Silicon     | ✅ since 2025-06 beta       | ✅ host                   | ❌                                  | ❌                                                              | ✅                                     | ✅                              |
 
-Reading table: routes that run **native** client are this package (Armv8.0 CPUs: x86
+This package sets up Steam Frame's own ARM64 client. Reading table: routes that run **native** client are this package (Armv8.0 CPUs: x86
 client under FEX), Android and handheld projects, UbuntuAsahi, and macOS. Of those, everything except this one targets
 Adreno or Apple GPUs. Routes that cover Mali at all run **x86** client under
 emulation, or fail on driver.
