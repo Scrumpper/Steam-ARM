@@ -39,7 +39,7 @@ others.
 
 - Change cell only on report that names hardware, driver and what was run.
 - Add each report to table above, with date and source.
-- Other routes' cells cite their project's own issue tracker or release notes.
+- Other routes' cells link to their project's own issue tracker or release notes.
 - Change **Last updated** date.
 
 This project is not affiliated with, endorsed by or sponsored by Valve Corporation. Steam,

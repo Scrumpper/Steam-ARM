@@ -5,7 +5,7 @@ Installs Valve's native ARM64 Steam client and supporting pieces
 Vulkan compatibility layer and controller access rules) on ARM64
 Debian or Ubuntu family system with Mesa graphics stack.
 
-Nothing is downloaded during package installation. All downloads happen
+Nothing is downloaded at package installation. All downloads happen
 when setup command below is run.
 
 ## Usage
@@ -25,7 +25,7 @@ upgrading package leave game library, sign-in and settings untouched.
 
     sudo steam-arm-setup --remove
 
-Removes what setup added and keeps client folder with games unless deletion
+Removes what setup added and retains client folder with games unless deletion
 is confirmed. `--remove --purge` also deletes client folder and x86 root
 filesystem setup downloaded, after typed confirmation. Then
 `sudo apt remove steam-arm-setup`.

@@ -5,7 +5,7 @@
 Confirmed by inspection of installer:
 
 - ARM64 system.
-- Debian or Ubuntu family distribution, since installer uses `apt`. Setup stops before any
+- Debian or Ubuntu family distribution, since installer uses `apt`. Setup halts before any
   change without `apt-get`, `apt-cache`, `dpkg` or package architecture `arm64`.
 - Ubuntu 25.10 or newer, Debian 13 or newer, or distribution built on them: Ubuntu 24.04
   and Debian 12 lack SDL3 packages client needs. Setup checks host packages with
@@ -46,7 +46,7 @@ Output on test device, RK3588 board with Mali-G610 GPU (family `mali-csf-v10`):
 | OpenGL renderer | `Mali-G610 MC4 (Panfrost)`, Mesa 26.1.4      | `llvmpipe`: no GPU acceleration; titles run on CPU or not at all      |
 | Vulkan driver   | `panvk`, device `Mali-G610 MC4`, Mesa 26.1.4 | no Vulkan device: titles built for Linux only, no Windows titles      |
 | Distribution    | `ubuntu`, `resolute`                         | `debian`, `trixie`: PPA added as apt source; older Debian, see below  |
-| Page size       | `4096`                                       | `16384` or `65536`: setup stops and names fix, see Raspberry Pi below |
+| Page size       | `4096`                                       | `16384` or `65536`: setup halts and names fix, see Raspberry Pi below |
 
 Mesa on tested device comes from `kisak-mesa` PPA. Older Mesa releases carry earlier
 PanVK; when `vulkaninfo` lists no `panvk` device on Mali-G610, newer Mesa from that PPA
@@ -72,7 +72,7 @@ device. On Armbian, three choices at download time decide result:
   has Panthor depends on build, so check with `lsmod` above.
 - **Userland.** Ubuntu based images fit installer's tested path. Debian 13 (trixie) based
   images get FEX PPA as plain apt source (see Debian systems); Debian 12 based images lack
-  SDL3 packages client needs, and setup stops there before any change.
+  SDL3 packages client needs, and setup halts there before any change.
 - **Mesa.** Image's stock Mesa may predate PanVK support in use here; `vulkaninfo` check
   above shows it.
 
@@ -83,7 +83,7 @@ Reports from these boards are welcome.
 Installer picks GPU family from kernel driver, Mali GPU id, device tree and PCI vendor;
 `--detect` prints it, `GPU_FAMILY=id` sets it by hand (kept for later runs,
 `GPU_FAMILY=auto` detects again). Family sets default state of three components; all
-other components keep their own defaults. Detection method and family notes: `README.md`,
+other components retain their own defaults. Detection method and family notes: `README.md`,
 GPU detection.
 
 | Family                                                | GPU                             | `vk-spoof` | `gpu-in-emulation` | `glx-lax` | Status   | Note                                                                                            |
@@ -132,7 +132,7 @@ those titles lose `-vulkan` unless profile says `vk32=keep`.
 | `physx-skip`                                              | Generic       | On by default. Marks PhysX install step of Windows titles done; off removes no files.                      |
 | `map-count`                                               | Generic       | Raises `vm.max_map_count`; applies to any Linux system running Proton.                                     |
 | `xpad-dedup`                                              | Generic       | Applies to any system where kernel exposes duplicate joystick node for pad.                                |
-| `pad-hidraw`                                              | Generic       | Valve's `steam-devices` rules plus pads from kernel `xpad` list; any udev system.                          |
+| `pad-hidraw`                                              | Generic       | Valve's `steam-devices` rules and pads from kernel `xpad` list; any udev system.                           |
 | `pad-xbox`                                                | Generic       | Applies to any XInput pad from maker other than Microsoft.                                                 |
 | `desktop`                                                 | Generic       | Application menu entry and window rule (KDE Plasma 6 or 5); no hardware dependency.                        |
 | `desktop-mode`, `icon-bigpicture`, `icon-desktop`, `tray` | Generic       | Menu entry, desktop icons and tray icon; no hardware dependency.                                           |
@@ -189,11 +189,11 @@ fail.
 | Debian release              | glibc | PPA series (FEX build needs)     | Result                                                             |
 |-----------------------------|-------|----------------------------------|--------------------------------------------------------------------|
 | 13 trixie (Raspberry Pi OS) | 2.41  | noble, Ubuntu 24.04 (glibc 2.38) | FEX and every host package resolve for arm64 (container test)      |
-| 12 bookworm                 | 2.36  | jammy, Ubuntu 22.04 (glibc 2.34) | setup stops before any change: no `libsdl3-0`, `libgtk2.0-0t64`    |
+| 12 bookworm                 | 2.36  | jammy, Ubuntu 22.04 (glibc 2.34) | setup halts before any change: no `libsdl3-0`, `libgtk2.0-0t64`    |
 | testing, unstable           | 2.41+ | noble                            | untested                                                           |
-| 11 bullseye and older       | 2.31  | none                             | setup stops before any change: no SDL3 packages; upgrade to 13     |
+| 11 bullseye and older       | 2.31  | none                             | setup halts before any change: no SDL3 packages; upgrade to 13     |
 
-Signing key comes from `keyserver.ubuntu.com` by fingerprint `EDB98BFE8A2310DC9C4A376E76DBFEBEA206F5AC` (Launchpad's `signing_key_fingerprint` for `~fex-emu/+archive/ubuntu/fex`); setup checks that download holds this one key only, then writes `/etc/apt/keyrings/steam-arm-fex.gpg`. Existing FEX source is kept; one naming Debian release (left by `add-apt-repository` on Debian) is renamed to `.disabled`, since apt cannot update it. With `FEX` command already present, setup adds no source. To build FEX instead: FEX's `InstallFEX.py` or build guide, <https://github.com/FEX-Emu/FEX>. FEX from another source (`FEX` command not owned by `fex-emu` package) needs its x86 binfmt entries registered; setup then installs no FEX packages and reads thunk folders from FEX's own prefix, `/usr` or `/usr/local` (see `README.md`, Requirements). Tested with stubs only.
+Signing key is fetched from `keyserver.ubuntu.com` by fingerprint `EDB98BFE8A2310DC9C4A376E76DBFEBEA206F5AC` (Launchpad's `signing_key_fingerprint` for `~fex-emu/+archive/ubuntu/fex`); setup checks that download holds this one key only, then writes `/etc/apt/keyrings/steam-arm-fex.gpg`. Existing FEX source is kept; one naming Debian release (left by `add-apt-repository` on Debian) is renamed to `.disabled`, since apt cannot update it. With `FEX` command already present, setup adds no source. To build FEX instead: FEX's `InstallFEX.py` or build guide, <https://github.com/FEX-Emu/FEX>. FEX from another source (`FEX` command not owned by `fex-emu` package) needs its x86 binfmt entries registered; setup then installs no FEX packages and reads thunk folders from FEX's own prefix, `/usr` or `/usr/local` (see `README.md`, Requirements). Tested with stubs only.
 
 ## Non-Mali GPUs
 
@@ -203,7 +203,7 @@ Published driver archive of `gpu-in-emulation` carries Mali drivers only; on non
 
 Automatic Windows build applies on `mali-csf-v10` only; other families show it as suggestion.
 
-`glx-lax` addresses Mesa client library limit and applies to any Mesa based driver, not only Mali's, so it remains relevant on non-Mali GPUs that use Mesa.
+`glx-lax` addresses Mesa client library limit and applies to any Mesa based driver, not only Mali's, so it stays useful on non-Mali GPUs that use Mesa.
 
 ## Other ARM64 systems
 
@@ -301,7 +301,7 @@ is no display stack to speak of.
 system service manager, which several components require.
 
 **Apple Silicon under Asahi.** Honeykrisp is functional at Vulkan 1.3, but kernel runs 16K
-pages and setup stops. Emulation half needs 4K page guest such as `muvm`, which this package
+pages and setup halts. Emulation half needs 4K page guest such as `muvm`, which this package
 does not set up. `STEAM_ARM_IGNORE_PAGESIZE=1` skips check on non-4K host kernel; use it only
 when x86 side runs inside separate 4K page guest that check cannot see. On 16K host without
 such guest, emulation fails. Untested.
@@ -363,7 +363,7 @@ kernel is there for performance, so change costs several percent on other worklo
 **Distribution.** Raspberry Pi OS is Debian based (`ID=debian` in `/etc/os-release`). On
 Raspberry Pi OS built on Debian 13 (trixie), setup adds FEX PPA as apt source with its
 Ubuntu 24.04 build (see Debian systems). Raspberry Pi OS built on Debian 12 (bookworm)
-lacks SDL3 packages client needs; host package check stops setup there before any change. Ubuntu for Raspberry
+lacks SDL3 packages client needs; host package check halts setup there before any change. Ubuntu for Raspberry
 Pi fits installer's tested path.
 
 **Graphics.** Mesa drives Pi GPU with v3d (OpenGL) and V3DV (Vulkan). GPU family detection
@@ -437,7 +437,7 @@ and stay off unless set by hand.
 2. **CPU or GPU limit.** MangoHud on x86 Linux title, launch option
    `MANGOHUD_CONFIG=fps,frametime,frame_timing,cpu_stats,core_load mangohud %command%`.
    One core near 100% while frame rate stays low: CPU limit. Lower in-game resolution:
-   frame rate rises with GPU limit, stays with CPU limit. `vcgencmd get_throttled` prints
+   frame rate goes up with GPU limit, stays with CPU limit. `vcgencmd get_throttled` prints
    `throttled=0x0` when board has not throttled; other values mean power or heat limit.
 3. **Vsync steps.** At 60 Hz with vsync and double buffering, frame times fall on 16.7 ms
    or 33.3 ms. Frame time graph alternating between these two bands means title misses
@@ -452,7 +452,7 @@ and stay off unless set by hand.
    <https://www.raspberrypi.com/news/a-new-release-of-raspberry-pi-os/>.
 6. **CPU governor (opt-in).** Raspberry Pi kernel default is `ondemand`
    (`CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND=y` in `bcm2712_defconfig`,
-   <https://github.com/raspberrypi/linux>). `performance` keeps cores at top clock, with
+   <https://github.com/raspberrypi/linux>). `performance` holds cores at top clock, with
    more heat and power. Until next reboot:
    `echo performance | sudo tee /sys/devices/system/cpu/cpufreq/policy0/scaling_governor`;
    back with `ondemand` in same command. `steam-arm-config` Information shows governor in
