@@ -1,7 +1,7 @@
 # Steam ARM
 
 **Steam Frame's Steam client on ARM64 Linux** · Valve's native ARM64 build made for Steam Frame,
-from Valve's own update channel · x86 Linux titles through FEX · Windows titles through ARM64
+from Valve's update channel · x86 Linux titles through FEX · Windows titles through ARM64
 Proton · one installer script · settings menu `steam-arm-config`
 
 Same client Steam Frame runs, set up on other ARM64 Linux devices: single-board computers, TV
