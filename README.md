@@ -249,7 +249,9 @@ Sections:
 8. Maintenance: Update / Repair (setup again with same parts), view logs, hardware
    report, free `/dev/shm` now, back up settings, restore settings (see Settings backup
    and restore), check for new version (see Updating), caches, report how last game ran
-   and run history (see Run report and run history). Hardware report holds
+   and run history (see Run report and run history), upgrade to newest release, show what
+   is new, go back to previous version, previous versions kept and check when menu opens
+   (see Updating). Hardware report holds
    system, status, notes, detection, profiles, renderer lines, last game start, last 20
    launcher log lines, start, update and error lines of client's bootstrap log, closing
    block of newest setup log, and groups of game account next to groups of its running
@@ -300,14 +302,20 @@ Command line, same settings from scripts:
 | `ge-proton [status\|check]`            | GE-Proton builds installed; newest ARM64 release        |
 | `ge-proton install\|remove ...`        | Install or remove GE-Proton build (see GE-Proton)       |
 | `update-check`                         | Newest GitHub release compared with this version        |
+| `upgrade [--yes] [--allow-older]`      | Download, check and install newest release (see Updating) |
+| `upgrade --check\|--file ZIP\|--list`  | Compare only; install from zip; list snapshots          |
+| `upgrade --rollback [VERSION]`         | Go back to saved version (see Rollback protection)      |
+| `snapshot-keep [1-5]`                  | Earlier versions kept; no value: state                  |
+| `update-check-on-open [on\|off]`       | Check at menu start, once daily; no value: state        |
 | `help fixing`                          | Prints `Fixing a game` page                             |
 | `--help`                               | Usage                                                   |
 
 Profiles from menu and command line go to `/etc/steam-arm/titles.conf`. Logs of setup
 runs started from menu: `~/.cache/steam-arm/`. `STEAM_ARM_INSTALLER=file` names setup
-script menu runs (default: `steam-arm-setup`, else
-`/usr/local/share/steam-arm/steam-arm-install.sh`, which setup writes, else
-`steam-arm-install.sh` beside menu app).
+script menu runs (default: among `steam-arm-setup`,
+`/usr/local/share/steam-arm/steam-arm-install.sh`, which setup writes, and
+`steam-arm-install.sh` beside menu app, one whose version equals installed version, else
+newest of them; older package never runs over newer install).
 
 ### Run report and run history
 
@@ -1183,16 +1191,99 @@ no input. Keep game in foreground on host during Remote Play session.
 
 ## Updating
 
-Run newer `steam-arm-install.sh`, or Maintenance, Update / Repair in `steam-arm-config`.
-Client, library, sign-in, component choices and GPU family set by hand are kept. To
-remove one component, re-run with that component deselected.
+### From 2.3.1, 2.3.2 or 3.0
 
-Maintenance, Check for new version (or `steam-arm-config update-check`) asks GitHub API
-(`releases/latest`, which lists no drafts and no pre-releases) for newest release and
-compares its version with installed one. Newer release: menu shows its page and
-installer command; nothing downloads, and nothing checks on its own. No network, request
-limit (HTTP 403) and unreadable answers each give their own message. Update / Repair
-runs installed copy of installer, so newer version needs newer `steam-arm-install.sh`.
+Update / Repair in these versions runs installed copy, so it reinstalls same version.
+Upgrade to 3.1 once by hand:
+
+1. Download `Steam.ARM.3.1.zip` and `Steam.ARM.3.1.zip.sha256` from release page.
+2. Check zip: `sha256sum -c Steam.ARM.3.1.zip.sha256` prints `OK`.
+3. Unpack, open folder `Steam ARM 3.1` in terminal, run `sudo bash steam-arm-install.sh --keep`.
+
+Client, games, sign-in, component choices and settings are kept. Setup saves copy of
+previous version first (Maintenance, Go back to previous version).
+
+### From 3.1 on
+
+Maintenance, Upgrade to newest release (or `sudo steam-arm-config upgrade`) downloads newest
+release, checks its SHA-256 and runs its installer with earlier choices kept. Main screen
+names newer release once Check for new version has found one. Nothing checks or downloads
+on its own.
+
+Package install (`steam-arm-setup`): build package of new release from source, install it
+with apt, then run `sudo steam-arm-setup --keep`.
+
+Upgrade steps, in order; any failed check stops it before setup runs:
+
+1. Refusals: package install (package steps shown), unfinished earlier change, setup run in
+   progress, Steam running for game account (menu offers `Close Steam`).
+2. GitHub API `releases/latest` (no drafts, no pre-releases): tag, asset
+   `Steam.ARM.<version>.zip`, its `.sha256` file, size and GitHub's own SHA-256 digest when
+   listed. Same version: nothing to do. Older release than installed: nothing to do;
+   `--allow-older` permits it with warning.
+3. Free space: download folder `/var/cache/steam-arm` needs three times zip size plus 20 MB,
+   `/var/lib/steam-arm` twice last snapshot size plus 20 MB.
+4. Download over HTTPS only, at most 32 MB, into `/var/cache/steam-arm/upgrade/<version>.part`
+   (root only); cut download leaves nothing behind, next try starts fresh.
+5. Checks: size equals size GitHub lists, `.sha256` line is `<sha256>  Steam.ARM.<version>.zip`,
+   zip hash equals that line and GitHub's digest.
+6. Unpack: every member under `Steam ARM <version>/`, no absolute path, no `..`, no link, at
+   most 64 members and 16 MB; `steam-arm-install.sh` holds `SA_VERSION=<version>` and parses.
+7. Setup of new version runs with `--keep`. It saves installed version first (see Rollback
+   protection), then installs, then writes itself as installed copy, so Update / Repair runs
+   new version from then on.
+
+`steam-arm-config upgrade --check` (same as `update-check`) only compares; `--file ZIP` takes
+downloaded zip with `ZIP.sha256` beside it (no network); `--yes` skips question. Exit status:
+0 done (or newer release found with `--check`), 1 nothing to do, 2 network, check or disk
+failure, 3 refused, else status of setup. Log of each run: `~/.cache/steam-arm/upgrade-*.log`
+(root's folder when run through sudo), also Maintenance, View logs, Last upgrade or rollback.
+
+Older installer run over newer install (3.1 and later) stops before any change with message
+naming installed version; `--allow-older` permits it. Going back to saved version needs no
+such option (see Rollback protection).
+
+Optional: Maintenance, Check for new release when this menu opens (`UPDATE_CHECK_ON_OPEN=on`,
+off by default) asks GitHub at most once daily at menu start, with 8 s limit, and only
+stores result for main screen line.
+
+### Rollback protection
+
+Before every version change, setup 3.1 and later saves installed version to
+`/var/lib/steam-arm/snapshots/<version>-<date>/` (root only); 2.3.1 and 3.0 installs get this
+from 3.1 setup they upgrade to. Snapshot holds installed copy of setup and settings menu, all of
+`/etc/steam-arm`, every program, rule, menu entry and icon setup owns (with mode and SHA-256 per
+path, missing ones recorded), and settings backup made by that version's own menu. `MANIFEST`
+lists SHA-256 of every member; `MANIFEST.sha256` guards it. Client folder, games, saves,
+sign-in, x86-64 RootFS, Mali and extra Mesa trees, driver archive and distribution packages are
+never in snapshot. Snapshot that cannot be written stops setup before any change
+(`--no-snapshot` skips it, for full disks only).
+
+Maintenance, Go back to previous version (or `sudo steam-arm-config upgrade --rollback [VERSION]`)
+lists snapshots, newest first, with date, reason, size and check result; damaged snapshot is
+shown, cannot be chosen and can be deleted there. Going back saves current version first,
+restores chosen snapshot, then runs its setup with `--keep`. Settings changed since then stay in
+snapshot of current version. `upgrade --list` prints snapshots and version changes
+(`/var/lib/steam-arm/history.log`); `upgrade --snapshot` saves installed version by hand.
+
+Unfinished change: setup writes `/var/lib/steam-arm/upgrade.state` before first change and
+removes it after success. File present while no setup runs (failed setup, power loss, closed
+terminal): next menu start and `upgrade --rollback` offer restore of saved version or new
+setup run; next setup run prints warning line, launcher log names it at each start;
+nothing restores on its own.
+
+Automatic deletion, after successful upgrade or rollback and when setting changes: kept are
+installed version plus newest snapshot of each of last 2 earlier versions (Maintenance,
+Previous versions kept, or `steam-arm-config snapshot-keep 1..5`; `SNAPSHOT_KEEP` in
+`/etc/steam-arm/steam-arm.conf`, part of setup choices in backups). Deleted: older
+snapshots, damaged ones and half-written leftovers. Never deleted: snapshot of unfinished
+change and newest snapshot of version before current one. Each deletion prints version,
+date, size and freed space.
+
+Run newer `steam-arm-install.sh` by hand at any time, or Maintenance, Update / Repair to
+run setup of installed version again. Client, library, sign-in, component choices and GPU
+family set by hand are kept. To remove one component, re-run with that component
+deselected.
 
 Install, Update / Repair and component changes refuse to run while Steam ARM runs for
 game account (message `Steam is running for '<user>'`); close client first (menu offers

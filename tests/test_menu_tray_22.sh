@@ -125,7 +125,7 @@ fnline(){ fn "$1" "$CFG" | grep -n "$2" | head -1 | cut -d: -f1; }
 check "run_installer: close_steam before need_root" "[ -n \"\$(fnline run_installer close_steam)\" ] && [ \$(fnline run_installer close_steam) -lt \$(fnline run_installer need_root) ]"
 check "graphics compat, Remote Play apply, Restore use close_steam" "fn graphics_compat '$CFG' | grep -q 'close_steam \"Graphics\"' && fn menu_remoteplay '$CFG' | grep -q 'close_steam \"Remote Play\"' && fn maint_restore '$CFG' | grep -q 'close_steam \"Restore settings\"'"
 check "no 'Close Steam ARM first' dead end left in menu" "! grep -q 'Close Steam ARM first' '$CFG' && ! grep -q 'Retry Back' '$CFG'"
-check "CLI compat/restore name steam-arm --shutdown" "[ \$(grep -c 'close it first (as \$(game_user): steam-arm --shutdown)' '$CFG') = 2 ]"
+check "CLI compat, restore, upgrade, rollback name steam-arm --shutdown" "[ \$(grep -c 'close it first (as \$(game_user): steam-arm --shutdown)' '$CFG') = 4 ] && fn cli_restore '$CFG' | grep -q 'steam-arm --shutdown' && fn up_refuse '$CFG' | grep -q 'steam-arm --shutdown'"
 check "installer stop texts name steam-arm --shutdown" "[ \$(grep -c 'or steam-arm --shutdown' '$INST') -ge 4 ] && ! grep -q 'or Stop Steam in the tray), then' '$INST'"
 check "no SIGKILL in settings menu or tray" "! grep -E 'SIGKILL|kill -9|-KILL' '$CFG' '$TRAY' | grep -qv 'never SIGKILL'"
 
@@ -151,9 +151,10 @@ echo "$*" > /dev/null
 printf '%s' "$BODY" > "$o"; printf '%s' "$CODE"
 EOF
 chmod +x "$U/bin/curl"
-uc(){ OUT=$(cd "$T" && env PATH="$U/bin:$PATH" CODE="$1" BODY="$2" bash "$CFG" update-check 2>&1); RC=$?; }
+uc(){ OUT=$(cd "$T" && env PATH="$U/bin:$PATH" HOME="$T" XDG_CACHE_HOME="$T/cache" CODE="$1" BODY="$2" bash "$CFG" update-check 2>&1); RC=$?; }
 uc 200 "{\"tag_name\": \"steam-arm-v$NV\", \"html_url\": \"https://github.com/Scrumpper/Steam-ARM/releases/tag/steam-arm-v$NV\", \"draft\": false}"
-check "update-check: newer release -> version, URL, installer hint, rc 0" "[ $RC = 0 ] && has 'Newer release: Steam ARM $NV (installed: $V)' && has 'releases/tag/steam-arm-v$NV' && has 'sudo bash steam-arm-install.sh --keep'"
+check "update-check: newer release -> version, URL, upgrade command, rc 0" "[ $RC = 0 ] && has 'Newer release: Steam ARM $NV (installed: $V)' && has 'releases/tag/steam-arm-v$NV' && has 'sudo steam-arm-config upgrade'"
+check "update-check: result stored in account's cache, not in home of person running tests" "grep -q '^VERSION=$NV\$' '$T/cache/steam-arm/release-check'"
 uc 200 "{\"tag_name\": \"steam-arm-v$V\", \"html_url\": \"https://github.com/x\"}"
 check "update-check: same version -> newest, rc 0" "[ $RC = 0 ] && has 'Steam ARM $V is the newest release.'"
 uc 200 '{"tag_name": "steam-arm-v2.1", "html_url": "https://github.com/x"}'
@@ -180,8 +181,8 @@ uc 200 "{\"tag_name\": \"steam-arm-v$NV-hotfix\", \"html_url\": \"https://github
 check "update-check: suffixed tag ($NV-hotfix) -> newer release with full tag" "[ $RC = 0 ] && has 'Newer release: Steam ARM $NV-hotfix (installed: $V)'"
 uc 200 '{"tag_name": "steam-arm-v2.1-hotfix", "html_url": "https://github.com/x"}'
 check "update-check: older suffixed tag -> this is newer" "[ $RC = 0 ] && has 'newer than the newest release (2.1-hotfix)'"
-check "update-check: endpoint releases/latest, timeout set, no download" "grep -q '^SA_RELEASE_API=https://api.github.com/repos/Scrumpper/Steam-ARM/releases/latest\$' '$CFG' && fn update_check '$CFG' | grep -q -- '--max-time' && ! fn update_check '$CFG' | grep -v 'echo' | grep -qE 'wget|curl .*-O |tar |bash '"
-check "Check for new version: Maintenance item and CLI only (no automatic check)" "fn menu_maintenance '$CFG' | grep -q '7 \"Check for new version\"' && [ \$(grep -c '\\bupdate_check\\b' '$CFG') = 3 ] && [ \$(grep -c 'maint_update_check' '$CFG') = 2 ] && fn menu_maintenance '$CFG' | grep -q '7) maint_update_check;;'"
+check "update-check: endpoint releases/latest, timeout set, no download" "grep -q '^SA_RELEASE_API=https://api.github.com/repos/Scrumpper/Steam-ARM/releases/latest\$' '$CFG' && fn rel_fetch '$CFG' | grep -q -- '--max-time' && ! fn update_check '$CFG' | grep -v 'echo' | grep -qE 'wget|curl|tar |bash ' && ! fn rel_fetch '$CFG' | grep -qE 'wget|curl .*-O |tar |bash '"
+check "Check for new version: Maintenance item, CLI and opt-in check at menu start only" "fn menu_maintenance '$CFG' | grep -q '7 \"Check for new version\"' && [ \$(grep -c '\\bupdate_check\\b' '$CFG') = 5 ] && fn up_check_open '$CFG' | grep -q 'check_on_open)\" = on ] || return 0' && [ \$(grep -c 'maint_update_check' '$CFG') = 2 ] && fn menu_maintenance '$CFG' | grep -q '7) maint_update_check;;'"
 
 # ---------- item 18: hardware report ----------
 R=$T/rep; mkdir -p "$R/ah/.local/share/Steam/logs" "$R/cache" "$R/bin"

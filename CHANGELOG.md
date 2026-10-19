@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.1] - Unreleased
+
+### Added
+
+- Upgrade to newest release: Maintenance, Upgrade to newest release (shown once Check for new version finds newer release; main screen names it), or `sudo steam-arm-config upgrade [--yes]`. Downloads `Steam.ARM.<version>.zip` and its `.sha256` file from GitHub over HTTPS only (at most 32 MB), checks size GitHub lists, sidecar form, SHA-256 against sidecar and GitHub's asset digest, unpacks with path, link, count and size rules, checks `SA_VERSION` and syntax of its setup, then runs that setup with `--keep`. Free space checked before download. `--file ZIP` takes zip downloaded by hand with `ZIP.sha256` beside it; `--check` compares only (same as `update-check`). Refused while Steam runs, during another setup run or unfinished change. Package installs (`steam-arm-setup`) get package build steps; package files are never written. Log per run in `~/.cache/steam-arm/upgrade-*.log`, also under View logs.
+- Rollback protection: setup saves installed version before each version change to `/var/lib/steam-arm/snapshots/<version>-<date>/`: installed copies of setup and settings menu, `/etc/steam-arm`, every owned program, rule, menu entry and icon (mode and SHA-256 per path, missing ones recorded) and settings backup made by that version's menu, with SHA-256 manifest. Client folder, games, sign-in, x86-64 RootFS, Mali and extra Mesa trees and distribution packages are never included. Snapshot that cannot be written stops setup before any change; `--no-snapshot` skips it for full disks. Upgrades by hand from 2.3.1 and 3.0 get it from 3.1 setup.
+- Go back to previous version: Maintenance item, or `sudo steam-arm-config upgrade --rollback [VERSION]`. Snapshots listed newest first with date, reason, size and check result; damaged snapshot cannot be chosen and can be deleted there. Current version saved first, chosen snapshot restored, its setup run with `--keep`. `upgrade --list` prints snapshots and version changes (`/var/lib/steam-arm/history.log`); `upgrade --snapshot` and setup option `--snapshot` save installed version by hand.
+- Unfinished change: `/var/lib/steam-arm/upgrade.state` written before first change of version change, removed after success. Present while no setup runs: next menu start and `upgrade --rollback` offer restore of saved version or new setup run, next setup run names it; nothing restores on its own.
+- Automatic deletion of snapshots after successful upgrade or rollback and when setting changes: installed version plus newest snapshot of last 2 earlier versions kept (Maintenance, Previous versions kept, `steam-arm-config snapshot-keep 1..5`, `SNAPSHOT_KEEP` in settings file and backups); older, damaged and half-written ones deleted, each named with date, size and freed space. Snapshot of unfinished change and newest snapshot of version before current one never deleted.
+- Downgrade protection: setup over newer install stops before any change unless `--allow-older`; upgrade never installs older release by itself (`--allow-older` permits it with warning). Going back through snapshot needs no option.
+- Check for new release when menu opens, off by default (Maintenance item, `steam-arm-config update-check-on-open on|off`, `UPDATE_CHECK_ON_OPEN`): at most once daily, 8 s limit, result stored for main screen line only.
+- Show what is new: release notes of newest release from last check.
+
+### Changed
+
+- Update / Repair and other setup runs from settings menu pick setup script whose version equals installed version (package command, installed copy, file beside menu), else newest of them. Old package next to newer zip install no longer runs older setup.
+- Check for new version names upgrade command (package installs: package build steps) in place of manual installer command, and stores result for main screen line.
+- Information and run report name client channel: `stable`, `Valve ARM channel (set by Steam Frame mode)`, `beta (Steam Beta Participation)`, else raw name; run report adds raw name in brackets.
+- `--remove` deletes `/var/lib/steam-arm` (snapshots, records) and `/var/cache/steam-arm` (upgrade downloads).
+- Settings file keys `SNAPSHOT_KEEP`, `UPDATE_CHECK_ON_OPEN` (part of setup choices in backups; earlier versions skip them) and `INSTALLED_FROM`.
+
 ## [3.0] - 2026-10-16
 
 ### Added

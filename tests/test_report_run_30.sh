@@ -181,7 +181,7 @@ check "R15 sign-in file present but unreadable: report not made" "grep -q 'RC=1'
 
 # ---------------- menu screens ----------------
 ui "menu_maintenance" BACK
-check "M1 Maintenance: items 11 Report how last game ran, 12 Run history (now: off)" "grep -q '^MENU Maintenance|.* 11 Report how last game ran 12 Run history (now: off)\$' <<<\"\$OUT\""
+check "M1 Maintenance: items 11 Report how last game ran, 12 Run history (now: off), version items after them" "grep -q '^MENU Maintenance|.* 11 Report how last game ran 12 Run history (now: off) 14 Show what is new' <<<\"\$OUT\""
 ui "menu_maintenance" 11 BACK BACK
 check "M2 Back from report screen: Maintenance again, cursor on 11" "grep -q '^MENU Report how last game ran|Report of one game start' <<<\"\$OUT\" && [ \$(grep -c '^MENU Maintenance' <<<\"\$OUT\") = 2 ] && grep '^MENU Maintenance' <<<\"\$OUT\" | tail -n 1 | grep -q -- '--default 11 '"
 rm -f "$R"/tmp/steam-arm-report-*.md
@@ -201,7 +201,7 @@ sed -i '/^RUN_HISTORY=/d' "$R/etc/steam-arm/steam-arm.conf"
 ui "maint_runhistory" yes
 check "M7 Run history: turn on (text names file, 200 lines, no backups); setting on" "grep -q '^YESNO Run history|Run history: off' <<<\"\$OUT\" && grep -q 'runs.log' <<<\"\$OUT\" && grep -q 'not part of backups' <<<\"\$OUT\" && grep -q '^RUN_HISTORY=on' \"$R/etc/steam-arm/steam-arm.conf\" && grep -q '^MSG Maintenance|Run history: on' <<<\"\$OUT\""
 ui "menu_maintenance" BACK
-check "M7 label follows: Run history (now: on)" "grep -q '12 Run history (now: on)\$' <<<\"\$OUT\""
+check "M7 label follows: Run history (now: on)" "grep -q '12 Run history (now: on) 14 Show what is new' <<<\"\$OUT\""
 ui "maint_runhistory" no
 check "M8 Back from Run history: unchanged" "grep -q '^RUN_HISTORY=on' \"$R/etc/steam-arm/steam-arm.conf\" && ! grep -q '^MSG' <<<\"\$OUT\""
 cp "$RL" "$T/runs.bak"

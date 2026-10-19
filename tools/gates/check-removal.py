@@ -6,7 +6,8 @@ mkdir, touch, tee, curl -o, wget -O, dd of=), heredoc bodies and the embedded se
 resolves simple VAR=/path assignments, and checks each against --remove (remove_all, retire_other and the helpers
 they call): literal path or variable (whole path, not a prefix of a longer one), glob, removed folder, or a listed
 keep-by-design reason. Helpers in RUNTIME write in the client folder when run; setup writing one needs its cleanup
-call in removal code. Exit 1 on any uncovered path. Internal release tooling."""
+call in removal code. Folders the settings menu writes as root (MENU_DIRS) must be deleted by removal.
+Exit 1 on any uncovered path. Internal release tooling."""
 import fnmatch
 import os
 import re
@@ -55,6 +56,8 @@ LINE_KEEP = [(r'mv "\$1/steamrtarm64" "\$2"', "client program folder ($D) inside
 # writers whose name comes from a loop: every listed removal glob must be in the removal text
 COVERS = [(r"^/usr/share/icons/hicolor/.*/apps/\$n\.png$",
            ["/usr/share/icons/hicolor/*/apps/steam-arm.png", "/usr/share/icons/hicolor/*/apps/steam-arm-desktop.png"])]
+# folders the settings menu writes as root (snapshots, version records, upgrade downloads): removal deletes them
+MENU_DIRS = ("/var/lib/steam-arm", "/var/cache/steam-arm")
 # helper path, removal call that undoes its run-time writes
 RUNTIME = [("/usr/local/lib/steam-arm-geproton.py", r"steam-arm-geproton\.py remove-all"),
            ("/usr/local/lib/steam-arm-x86client.py", r"steam-arm-x86client\.py restore")]
@@ -239,6 +242,10 @@ def main():
         if re.search(r"(?m)^cat > %s <<" % re.escape(helper), text) and not re.search(call, rm_text):
             fails += 1
             rows.append("FAIL runtime writes of %s not removed (no %s call in removal code)" % (helper, call.replace("\\", "")))
+    for d in MENU_DIRS:
+        if d not in rm_dirs:
+            fails += 1
+            rows.append("FAIL %s (written by settings menu) not deleted by removal (rm -rf)" % d)
     print("\n".join(rows))
     print("removal drift: %d written paths, %d not covered by --remove" % (len(seen), fails))
     sys.exit(1 if fails else 0)

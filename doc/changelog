@@ -1,3 +1,30 @@
+steam-arm-setup (3.1) UNRELEASED; urgency=low
+
+  * Upgrade to newest release from settings menu (Maintenance) or
+    steam-arm-config upgrade: zip and .sha256 from GitHub over HTTPS,
+    size, SHA-256 and GitHub digest checked, safe unpack, setup of new
+    version run with --keep; --file ZIP for downloaded zip. Package
+    installs get package build steps; package files are never written.
+  * Rollback protection: setup saves installed version to
+    /var/lib/steam-arm/snapshots before each version change (installer
+    and menu copies, /etc/steam-arm, owned files, settings backup,
+    SHA-256 manifest); snapshot failure stops setup before any change.
+    Maintenance, Go back to previous version, or upgrade --rollback.
+    Unfinished change offered for restore, never restored on its own.
+  * Automatic deletion of snapshots after successful upgrade or rollback:
+    installed version plus 2 earlier versions kept (SNAPSHOT_KEEP 1 to
+    5); damaged and half-written ones deleted.
+  * Downgrade protection: setup over newer install stops before any
+    change unless --allow-older.
+  * Update / Repair runs setup script of installed version (older package
+    no longer runs over newer install).
+  * Optional check for new release at menu start, off by default.
+  * Client channel shown by name (stable, Valve ARM channel of Steam Frame
+    mode, Steam Beta Participation).
+  * --remove deletes /var/lib/steam-arm and /var/cache/steam-arm.
+
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 00:00:00 +0000
+
 steam-arm-setup (3.0) stable; urgency=low
 
   * Run report: Maintenance, Report how last game ran, or steam-arm-config

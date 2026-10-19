@@ -181,7 +181,7 @@ CFG = SRC[SRC.index("menu_app(){ cat <<'STEAMARMCONFIG'\n"):]
 check("B8 menu reads runs.log at the handler's path", "SA_RUNS_REL=.local/state/steam-arm/runs.log" in CFG
       and 'os.path.join(os.path.expanduser("~"), ".local/state/steam-arm/runs.log")' in H)
 check("B8 backup: runs.log not a backup part; RUN_HISTORY switch is a setup key", ".local/state" not in
-      CFG[CFG.index("bk_path(){"):CFG.index("bk_expand(){")] and "CPU_NOTICE RUN_HISTORY\"" in CFG)
+      CFG[CFG.index("bk_path(){"):CFG.index("bk_expand(){")] and "CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN\"" in CFG)
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("%d PASS, %d FAIL" % (PASSES[0], len(FAILS)))

@@ -1,7 +1,7 @@
 #!/bin/bash
 # steam-arm-setup: installs Valve's native ARM64 Steam client (x86 client through FEX on CPUs without Armv8.1 atomics), with host packages, RootFS, launcher, optional components; run as root, then launch via steam-arm. See --help.
 set -u
-SA_VERSION=3.0
+SA_VERSION=3.1
 # Banner: self-contained (no board helper needed); TTY-gated, honours NO_COLOR.
 steam_banner() {
     [ -t 1 ] || return 0
@@ -1217,7 +1217,7 @@ menu_app(){ cat <<'STEAMARMCONFIG'
 # steam-arm-config: menu-driven settings for Steam ARM (built-in screens, dialog, whiptail or plain prompts). See --help.
 set -u
 
-SA_VERSION=3.0
+SA_VERSION=3.1
 SA_DOCS=https://github.com/Scrumpper/Steam-ARM
 SA_CONF=/etc/steam-arm/steam-arm.conf
 SA_TITLES_SHARE=/usr/local/share/steam-arm/titles.conf
@@ -1360,15 +1360,24 @@ game_running(){
   [ -n "$u" ] && pgrep -u "$u" -f 'reaper SteamLaunch' >/dev/null 2>&1
 }
 
-# Installer: explicit env, packaged command, embedded copy, file beside this app.
+# Installer: explicit env; else among packaged command, installed copy and file beside this app the one whose
+# SA_VERSION equals installed VERSION, else the newest (an older package never runs over a newer install).
 find_installer(){
-  local d
+  local d c v want best="" bv=""
+  local -a cand=()
   if [ -n "${STEAM_ARM_INSTALLER:-}" ] && [ -f "$STEAM_ARM_INSTALLER" ]; then echo "$STEAM_ARM_INSTALLER"; return 0; fi
-  if have steam-arm-setup; then command -v steam-arm-setup; return 0; fi
-  [ -f "$SA_SHARE_INSTALLER" ] && { echo "$SA_SHARE_INSTALLER"; return 0; }
+  have steam-arm-setup && cand+=("$(command -v steam-arm-setup)")
+  [ -f "$SA_SHARE_INSTALLER" ] && cand+=("$SA_SHARE_INSTALLER")
   d=$(dirname "$(self_path)")
-  [ -f "$d/steam-arm-install.sh" ] && { echo "$d/steam-arm-install.sh"; return 0; }
-  return 1
+  [ -f "$d/steam-arm-install.sh" ] && cand+=("$d/steam-arm-install.sh")
+  [ ${#cand[@]} -gt 0 ] || return 1
+  want=$(conf_get VERSION)
+  for c in "${cand[@]}"; do
+    v=$(inst_ver "$c")
+    [ -n "$want" ] && [ "$v" = "$want" ] && { echo "$c"; return 0; }
+    if [ -z "$best" ] || { [ -n "$v" ] && { [ -z "$bv" ] || ver_gt "$v" "$bv"; }; }; then best=$c; bv=$v; fi
+  done
+  echo "$best"
 }
 # Run installer with args (caller adds sudo/env).
 installer_cmd(){
@@ -1650,6 +1659,20 @@ installed_version(){
 client_channel(){
   local b; b=$(head -1 "$(steam_dir)/package/beta" 2>/dev/null | trim)
   echo "${b:-stable}"
+}
+# Channel name for people: Valve's ARM channel of Steam Frame mode, Steam Beta Participation, else stable or raw name.
+client_channel_label(){
+  case "${1:-$(client_channel)}" in
+    ''|stable|steamdeck_stable) echo stable;;
+    linux_arm64_beta_*) echo "Valve ARM channel (set by Steam Frame mode)";;
+    publicbeta|steamdeck_publicbeta|*beta*) echo "beta (Steam Beta Participation)";;
+    *) echo "${1:-$(client_channel)}";;
+  esac
+}
+# Label with raw name in brackets when it differs (reports keep exact data).
+client_channel_full(){
+  local r l; r=$(client_channel); l=$(client_channel_label "$r")
+  case "$l" in stable|"$r") echo "$l";; *) echo "${l%% (*} ($r)";; esac
 }
 fex_tool_ver(){
   local v; v=$(grep -o 'FEX-[0-9][0-9.]*' "$(steam_dir)/steamapps/common/FEX-Emu/VERSIONS.txt" 2>/dev/null | head -1)
@@ -3135,7 +3158,7 @@ Installed      yes, version $(installed_version)
 Client type    $(client_label)
 Game account   $(game_user)
 Client home    $(arm_home | tilde)
-Client channel $(client_channel)
+Client channel $(client_channel_label)
 FEX tool       $(fex_tool_row)
 Graphics       $(gfx_default_label "$(gfx_default)")
 Mali tree      $(mali_tree)
@@ -4263,6 +4286,11 @@ report_text(){
       && { echo "steamwebhelper.log:"; grep -a 'error while loading shared libraries' "$f" | tail -3; }
   fi
   echo
+  echo "== Versions"
+  echo "Installed      $(installed_version) ($(installed_from))"
+  state_pending && state_text && echo
+  [ -r "$SA_LIB/history.log" ] && tail -5 "$SA_LIB/history.log" | awk '{ print $1, $2 " -> " $3, $4, $5 }'
+  echo
   echo "== Notes"; info_notes
   d=$(detect_raw)
   if [ -n "$d" ]; then echo; echo "== Setup --detect"; echo "$d"; fi
@@ -4475,13 +4503,13 @@ rr_proton(){
 }
 # rr_upstream APPID ENGINE: fields of the FEX, Proton and Steam client issue templates.
 rr_upstream(){
-  local ch v; ch=$(client_channel)
+  local v
   # shellcheck disable=SC2016
   v=$(rr_read sh -c 'sed -n "s/^[[:space:]]*\"version\"[[:space:]]*\"\([0-9]*\)\".*/\1/p" "$1"/package/steam_client_*.manifest' sh "$(steam_dir)" | head -1)
   printf '%-15s %s\n' OS "$(distro)" Kernel "$(uname -r)" CPU "$(cpu_info)" GPU "$(gpu_name) ($(gpu_family))" \
     "Kernel driver" "$(gpu_driver)" Mesa "$(mesa_ver)" Vulkan "$(vk_summary)" "Page size" "$(page_size)" \
     Memory "$(awk '/^MemTotal/ { printf "%.1f GB\n", $2 / 1048576 }' /proc/meminfo 2>/dev/null)" \
-    "Steam client" "${v:-unknown} ($(client_label), $( [ "$ch" = stable ] && echo "stable" || echo "beta"))" \
+    "Steam client" "${v:-unknown} ($(client_label), $(client_channel_full))" \
     "FEX tool" "$(fex_tool_row)" "FEX (system)" "$(fex_ver)" "RootFS" "$( [ -d "$SA_RFS" ] && basename "$SA_RFS" || echo none)" \
     "Executable" "${2:-not detected}" "Proton" "$(rr_proton "$1")"
 }
@@ -4693,13 +4721,14 @@ Turning off deletes recorded lines."
 maint_logs(){
   local c="" f
   while c=$(ui_menu "View logs" "Newest lines are at the end." --default "$c" \
-      1 "Launcher log" 2 "Last game start (emulation tool)" 3 "Last setup run"); do
+      1 "Launcher log" 2 "Last game start (emulation tool)" 3 "Last setup run" 4 "Last upgrade or rollback"); do
     case "$c" in
       1) f="$(arm_home)/steam-arm.log";;
       2) f=$(fexlogs | head -1);;
       3) f=$(setuplogs | head -1);;
+      4) f=$(find "$SA_CACHE" -maxdepth 1 -name 'upgrade-*.log' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-);;
     esac
-    if { [ -z "$f" ] || [ ! -e "$f" ]; } && [ "$c" = 3 ] && [ "$(id -u)" != 0 ]; then
+    if { [ -z "$f" ] || [ ! -e "$f" ]; } && { [ "$c" = 3 ] || [ "$c" = 4 ]; } && [ "$(id -u)" != 0 ]; then
       ui_msg "View logs" "No setup log of this account. Setup runs from sudo steam-arm-config are logged in the administrator's folder ($(r=$(getent passwd 0 | cut -d: -f6); echo "${r:-/root}")/.cache/steam-arm). Run sudo steam-arm-config to view them."
     elif [ -z "$f" ] || [ ! -e "$f" ]; then ui_msg "View logs" "No log found yet."
     elif [ ! -r "$f" ]; then ui_msg "View logs" "$(basename "$f") is not readable by this account. Run sudo steam-arm-config to read it."
@@ -4708,53 +4737,807 @@ maint_logs(){
     else ui_msg "View logs" "$(basename "$f") is empty."; fi
   done
 }
+# ===========================================================================
+# Upgrade, snapshots of earlier versions, rollback
+# ===========================================================================
 SA_RELEASE_API=https://api.github.com/repos/Scrumpper/Steam-ARM/releases/latest
-# Newest published release vs this version (asked by hand only; nothing downloads); status 0 newer, 1 not newer, 2 failed.
-update_check(){
-  local f code tag url v cur
-  cur=$(installed_version); case "$cur" in [0-9]*) ;; *) cur=$SA_VERSION;; esac
-  have curl || { echo "curl is not installed. Releases: $SA_DOCS/releases"; return 2; }
-  have python3 || { echo "python3 is not installed. Releases: $SA_DOCS/releases"; return 2; }
-  f=$(tmpf) || { echo "$TMP_FAIL"; return 2; }
-  code=$(curl -sS --max-time 20 -o "$f" -w '%{http_code}' -H 'Accept: application/vnd.github+json' "$SA_RELEASE_API" 2>/dev/null)
-  case "$code" in
-    200) ;;
-    403|429) rm -f "$f"; echo "GitHub refused the request (request limit for this address). Try again in an hour, or see $SA_DOCS/releases"; return 2;;
-    404) rm -f "$f"; echo "No published release found at $SA_DOCS/releases"; return 2;;
-    000|'') rm -f "$f"; echo "GitHub could not be reached (offline, or address blocked). Releases: $SA_DOCS/releases"; return 2;;
-    *) rm -f "$f"; echo "GitHub answered with HTTP $code. Releases: $SA_DOCS/releases"; return 2;;
-  esac
-  read -r tag url < <(python3 -c 'import json, sys
-d = json.load(open(sys.argv[1], encoding="utf-8"))
-t = str(d.get("tag_name") or "-").split() or ["-"]
-print(t[0], (str(d.get("html_url") or "").split() or ["-"])[0])' "$f" 2>/dev/null)
-  rm -f "$f"
-  v=${tag#steam-arm-}; v=${v#v}
-  # 2.3-hotfix style tags: number part compared, full tag shown
-  [[ "${v%%-*}" =~ ^[0-9]+(\.[0-9]+)*$ ]] && [[ "$v" =~ ^[0-9.]+(-[A-Za-z0-9.]+)?$ ]] \
-    || { echo "Release answer not understood (tag ${tag:-none}). Releases: $SA_DOCS/releases"; return 2; }
-  case "$url" in https://github.com/*) ;; *) url="$SA_DOCS/releases";; esac
-  # 2.2.0 and 2.2 are the same version
-  local a=${v%%-*} b=$cur
-  while [[ "$a" == *.0 ]]; do a=${a%.0}; done
-  while [[ "$b" == *.0 ]]; do b=${b%.0}; done
-  if [ "$a" = "$b" ] && [ "$v" = "${v%%-*}" ]; then
-    echo "Steam ARM $cur is the newest release."; return 1
-  fi
-  if [ "$a" != "$b" ] && [ "$(printf '%s\n%s\n' "$b" "$a" | sort -V | tail -1)" = "$b" ]; then
-    echo "Steam ARM $cur is newer than the newest release ($v)."; return 1
-  fi
-  echo "Newer release: Steam ARM $v (installed: $cur)."
-  echo "$url"
-  echo
-  echo "Download that release, unpack it and run its installer:"
-  echo "  sudo bash steam-arm-install.sh --keep"
-  echo "(Update / Repair here runs the installed copy, version $cur.)"
+SA_DL_PREFIX=https://github.com/Scrumpper/Steam-ARM/releases/download/
+SA_CURL_PROTO=(--proto "=https" --proto-redir "=https")
+SA_LIB=/var/lib/steam-arm
+SA_UPCACHE=/var/cache/steam-arm
+SA_MENU_BIN=/usr/local/bin/steam-arm-config
+SA_LOCK=/run/steam-arm-setup.lock
+SA_PKG_INST=/usr/share/steam-arm-setup/install.sh
+SA_ZIP_MAX=33554432
+SA_SNAP_FMT=1
+# Version without hotfix suffix and trailing .0 parts (2.2.0 = 2.2).
+ver_norm(){ local v=${1%%-*}; while [[ "$v" == *.0 ]]; do v=${v%.0}; done; echo "$v"; }
+# Status 0 when version $1 is newer than $2.
+ver_gt(){
+  local a b; a=$(ver_norm "$1"); b=$(ver_norm "$2")
+  [ "$a" != "$b" ] && [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -1)" = "$a" ]
+}
+ver_ok(){ [[ "$1" =~ ^[0-9]+(\.[0-9]+)*$ ]]; }
+# SA_VERSION of a setup script (package command: its install.sh).
+inst_ver(){
+  local f=$1; [ "$f" = "$(command -v steam-arm-setup 2>/dev/null)" ] && [ -n "$f" ] && f=$SA_PKG_INST
+  sed -n 's/^SA_VERSION=//p' "$f" 2>/dev/null | head -1
+}
+snap_keep(){ local k; k=$(conf_get SNAPSHOT_KEEP); case "$k" in [1-5]) echo "$k";; *) echo 2;; esac; }
+check_on_open(){ case "$(conf_get UPDATE_CHECK_ON_OPEN)" in on) echo on;; *) echo off;; esac; }
+installed_from(){ case "$(conf_get INSTALLED_FROM)" in package) echo package;; *) echo script;; esac; }
+pkg_installed(){ dpkg-query -W -f='${Status}' steam-arm-setup 2>/dev/null | grep -q 'ok installed'; }
+# Status 0 when no setup run holds the setup lock.
+lock_free(){ [ -e "$SA_LOCK" ] || return 0; ( exec 9<"$SA_LOCK" && flock -n 9 ) 2>/dev/null; }
+mb(){ awk -v b="${1:-0}" 'BEGIN { printf "%.1f MB\n", b / 1048576 }'; }
+# Programs, rules, menu entries and icons setup writes (retired names included); globs and folders expanded by snap_paths.
+sa_owned_paths(){
+  local gh; gh=$(game_home)
+  printf '%s\n' /usr/local/bin/steam-arm /usr/local/bin/steam-arm-remoteplay /usr/local/bin/steam-arm-compatmap \
+    /usr/local/bin/steam-arm-icon /usr/local/bin/steam-arm-tray /usr/local/bin/steam-arm-config \
+    /usr/local/lib/steam-arm-handler.py /usr/local/lib/steam-arm-fexpatch.py /usr/local/lib/steam-arm-compatmap.py \
+    /usr/local/lib/steam-arm-physx.py /usr/local/lib/steam-arm-kde-input /usr/local/lib/steam-arm-launchopts.py \
+    /usr/local/lib/steam-arm-autobuild.py /usr/local/lib/steam-arm-appinfo.py /usr/local/lib/steam-arm-geproton.py \
+    /usr/local/lib/steam-arm-x86client.py /usr/local/lib/steam-arm-run.py /usr/local/lib/steam-arm-pv-bwrap \
+    /usr/local/lib/steam-arm-python3 /usr/local/lib/steam-arm-entry.py /usr/local/lib/steam-arm-autotune.py \
+    /usr/local/lib/steam-arm-glx-lax-patch.py /usr/local/lib/steam-arm-glx-lax.src /usr/local/lib/steam-arm-glx-lax.stat \
+    /usr/local/lib/steam-arm-glx-lax.state /usr/local/lib/steam-arm-vk-spoof.c /usr/local/lib/steam-arm-nopkg \
+    /usr/local/sbin/steam-arm-glx-lax /usr/local/sbin/steam-arm-xpad-dedup /usr/local/sbin/steam-arm-pad-xbox \
+    /usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0 /usr/lib/aarch64-linux-gnu/libVkLayer_steam_arm_spoof.so \
+    /usr/share/vulkan/implicit_layer.d/VkLayer_steam_arm_spoof.json \
+    /etc/udev/rules.d/71-steam-arm-xpad-dedup.rules /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules \
+    /etc/sudoers.d/steam-arm /etc/apt/apt.conf.d/80steam-arm-glx-lax /etc/sysctl.d/zz-steam-arm.conf \
+    /etc/systemd/system/steam-arm-pad-xbox.service /etc/systemd/system/steam-arm-fex-binfmt.service \
+    /usr/share/applications/steam-arm.desktop /usr/share/applications/steam-arm-desktop.desktop \
+    /usr/share/applications/steam-arm-config.desktop /usr/local/share/steam-arm/titles.conf \
+    '/usr/share/icons/hicolor/*/apps/steam-arm.png' '/usr/share/icons/hicolor/*/apps/steam-arm-desktop.png' \
+    /opt/fex-rootfs/Ubuntu_24_04/graphics_provider.json
+  # written only with setup's mark in them
+  grep -qs 'installed by steam-arm-setup' /etc/udev/rules.d/60-steam-input.rules && echo /etc/udev/rules.d/60-steam-input.rules
+  grep -qs steam-arm /usr/local/bin/steamos-session-select && echo /usr/local/bin/steamos-session-select
+  grep -qsF '# steam-arm-setup mangohud shim' /usr/local/bin/mangohud && echo /usr/local/bin/mangohud
+  [ -n "$gh" ] && printf '%s\n' "$gh/.fex-emu/Config.json" "$gh/.config/autostart/steam-arm-tray.desktop" \
+    "$gh/Desktop/Steam ARM.desktop" "$gh/Desktop/Steam ARM (Desktop mode).desktop"
   return 0
 }
+# Owned paths that exist: one file or link per line (installer copy and menu travel as own members).
+snap_paths(){
+  local p f
+  while IFS= read -r p; do
+    case "$p" in *'*'*) compgen -G "$p";; *) echo "$p";; esac
+  done < <(sa_owned_paths) | while IFS= read -r f; do
+    [ "$f" = "$SA_MENU_BIN" ] || [ "$f" = "$SA_SHARE_INSTALLER" ] && continue
+    if [ -d "$f" ] && [ ! -L "$f" ]; then find "$f" \( -type f -o -type l \) 2>/dev/null
+    elif [ -e "$f" ] || [ -L "$f" ]; then echo "$f"; fi
+  done | sort -u
+}
+snap_root(){ echo "$SA_LIB/snapshots"; }
+# Snapshot folders, newest first (name VERSION-YYYYmmddTHHMMSSZ[-N]).
+snap_names(){
+  local d; d=$(snap_root)
+  [ -d "$d" ] || return 0
+  find "$d" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%f\n' 2>/dev/null \
+    | awk 'match($0, /[0-9]{8}T[0-9]{6}Z(-[0-9]+)?$/) { print substr($0, RSTART) "\t" $0 }' | sort -r | cut -f2
+}
+snap_val(){ sed -n "s/^$2=//p" "$(snap_root)/$1/MANIFEST" 2>/dev/null | head -1; }
+snap_bytes(){ du -sb "$(snap_root)/$1" 2>/dev/null | cut -f1; }
+# Verified: MANIFEST hash, every member hash, files.tar.gz listing equals present lines of paths.txt. SNAP_BAD names the first failure.
+snap_verify(){
+  local d m h n mem want
+  d="$(snap_root)/$1"; SNAP_BAD=""
+  [ -f "$d/MANIFEST" ] && [ -f "$d/MANIFEST.sha256" ] || { SNAP_BAD=MANIFEST; return 1; }
+  [ "$(sha256sum < "$d/MANIFEST" | cut -c1-64)" = "$(head -c 64 "$d/MANIFEST.sha256")" ] || { SNAP_BAD=MANIFEST; return 1; }
+  [ "$(sed -n 's/^FORMAT=//p' "$d/MANIFEST" | head -1)" = "$SA_SNAP_FMT" ] || { SNAP_BAD="MANIFEST format"; return 1; }
+  n=0
+  while read -r h m; do
+    [ -n "$m" ] || continue
+    case "$m" in */*|.*) SNAP_BAD=MANIFEST; return 1;; esac
+    [ -f "$d/$m" ] && [ "$(sha256sum < "$d/$m" | cut -c1-64)" = "$h" ] || { SNAP_BAD=$m; return 1; }
+    n=$((n + 1))
+  done < <(grep -E '^[0-9a-f]{64}  [A-Za-z0-9._-]+$' "$d/MANIFEST")
+  for mem in installer.sh etc.tar.gz files.tar.gz paths.txt; do
+    grep -qE "^[0-9a-f]{64}  ${mem//./\\.}\$" "$d/MANIFEST" || { SNAP_BAD=$mem; return 1; }
+  done
+  want=$(sed -n 's/^present [^ ]* [^ ]* \/\(.*\)$/\1/p' "$d/paths.txt" | sort)
+  [ "$(tar -tzf "$d/files.tar.gz" 2>/dev/null | sort)" = "$want" ] || { SNAP_BAD=files.tar.gz; return 1; }
+  [ "$n" -ge 4 ]
+}
+# Settings backup made by that version's own menu; status 1 when it has none or it fails.
+snap_settings(){
+  local out cfg=$1 dir=$2 gu=$3 f
+  [ -f "$cfg" ] || return 1
+  mkdir -p "$dir/bk" || return 1
+  out=$(cd / && timeout 120 env -u SUDO_USER bash "$cfg" backup "$dir/bk" ${gu:+--account "$gu"} </dev/null 2>&1) || return 1
+  f=$(printf '%s\n' "$out" | sed -n 's/^Saved to //p' | tail -1)
+  [ -f "$f" ] && mv -f "$f" "$dir/settings.tar.gz" && rm -rf "$dir/bk"
+}
+# snap_make REASON: snapshot of installed version; SNAP_NAME, else SNAP_ERR.
+snap_make(){
+  local reason=$1 v root tmp stamp inst="" c f m gu set=yes etcd bytes
+  SNAP_NAME="" SNAP_ERR=""
+  v=$(conf_get VERSION); ver_ok "${v%%-*}" || { SNAP_ERR="installed version unknown"; return 1; }
+  for c in "$SA_SHARE_INSTALLER" "$SA_PKG_INST"; do [ "$(inst_ver "$c")" = "$v" ] && { inst=$c; break; }; done
+  [ -n "$inst" ] || { SNAP_ERR="no setup script of version $v found"; return 1; }
+  root=$(snap_root)
+  { [ ! -L "$SA_LIB" ] && [ ! -L "$root" ] && mkdir -p "$root" && chmod 755 "$SA_LIB" "$root"; } 2>/dev/null \
+    || { SNAP_ERR="$root could not be created"; return 1; }
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  tmp=$(mktemp -d "$root/.tmp-$stamp-XXXXXX") || { SNAP_ERR="no space in $root"; return 1; }
+  chmod 700 "$tmp"
+  etcd=$(dirname "$SA_CONF"); gu=$(conf_get GAMEUSER)
+  if ! { cp -p "$inst" "$tmp/installer.sh" \
+         && { [ ! -f "$SA_MENU_BIN" ] || cp -p "$SA_MENU_BIN" "$tmp/config.sh"; } \
+         && tar -czf "$tmp/etc.tar.gz" -C / "${etcd#/}" 2>/dev/null; }; then
+    rm -rf "$tmp"; SNAP_ERR="copy failed (disk full?)"; return 1
+  fi
+  snap_paths > "$tmp/list"
+  while IFS= read -r f; do
+    if [ -L "$f" ]; then printf 'present 777 %s %s\n' "$(readlink "$f" | sha256sum | cut -c1-64)" "$f"
+    else printf 'present %s %s %s\n' "$(stat -c %a "$f")" "$(sha256sum < "$f" | cut -c1-64)" "$f"; fi
+  done < "$tmp/list" > "$tmp/paths.txt"
+  # owned paths missing now: deleted again on restore
+  while IFS= read -r f; do
+    case "$f" in *'*'*) continue;; esac
+    [ -e "$f" ] || [ -L "$f" ] || printf 'absent %s\n' "$f"
+  done < <(sa_owned_paths) >> "$tmp/paths.txt"
+  sed 's#^/##' "$tmp/list" | tr '\n' '\0' > "$tmp/list0"
+  if ! tar -czf "$tmp/files.tar.gz" -C / --null --verbatim-files-from -T "$tmp/list0" 2>/dev/null; then
+    rm -rf "$tmp"; SNAP_ERR="program files could not be packed (disk full?)"; return 1
+  fi
+  rm -f "$tmp/list" "$tmp/list0"
+  snap_settings "$tmp/config.sh" "$tmp" "$gu" || { rm -rf "$tmp/bk" "$tmp/settings.tar.gz"; set=none; }
+  bytes=$(du -sb "$tmp" | cut -f1)
+  { printf 'FORMAT=%s\nVERSION=%s\nCREATED=%s\nREASON=%s\nINSTALLED_FROM=%s\nGAMEUSER=%s\nSETTINGS=%s\nSIZE=%s\n' \
+      "$SA_SNAP_FMT" "$v" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason" "$(installed_from)" "$gu" "$set" "$bytes"
+    for m in installer.sh config.sh etc.tar.gz files.tar.gz paths.txt settings.tar.gz; do
+      [ -f "$tmp/$m" ] && printf '%s  %s\n' "$(sha256sum < "$tmp/$m" | cut -c1-64)" "$m"
+    done; } > "$tmp/MANIFEST" || { rm -rf "$tmp"; SNAP_ERR="MANIFEST could not be written (disk full?)"; return 1; }
+  sha256sum < "$tmp/MANIFEST" | cut -c1-64 > "$tmp/MANIFEST.sha256" || { rm -rf "$tmp"; SNAP_ERR="disk full"; return 1; }
+  SNAP_NAME="$v-$stamp"; c=1
+  while [ -e "$root/$SNAP_NAME" ]; do c=$((c + 1)); SNAP_NAME="$v-$stamp-$c"; done
+  mv "$tmp" "$root/$SNAP_NAME" || { rm -rf "$tmp"; SNAP_ERR="rename failed"; SNAP_NAME=""; return 1; }
+  if ! snap_verify "$SNAP_NAME"; then
+    rm -rf "${root:?}/$SNAP_NAME"; SNAP_ERR="check of new snapshot failed ($SNAP_BAD)"; SNAP_NAME=""; return 1
+  fi
+  [ "$set" = none ] && echo "  snapshot of $v: no settings backup (menu of $v has none, or it failed)"
+  return 0
+}
+# Snapshot NAME back in place: /etc/steam-arm, owned files, installer copy, menu. SNAP_ERR on failure.
+snap_restore(){
+  local d t etcd p f gh
+  d="$(snap_root)/$1"; SNAP_ERR=""
+  snap_verify "$1" || { SNAP_ERR="snapshot damaged ($SNAP_BAD)"; return 1; }
+  if grep -qE '^present [^ ]+ [^ ]+ (/usr/share/steam-arm-setup/|/usr/bin/steam-arm-setup$)' "$d/paths.txt"; then
+    SNAP_ERR="snapshot names package files"; return 1
+  fi
+  etcd=$(dirname "$SA_CONF")
+  t=$(mktemp -d "$(dirname "$etcd")/.steam-arm-restore.XXXXXX") || { SNAP_ERR="no space for $etcd"; return 1; }
+  if ! tar -xzpf "$d/etc.tar.gz" -C "$t" 2>/dev/null || [ ! -d "$t/${etcd#/}" ]; then rm -rf "$t"; SNAP_ERR="etc.tar.gz could not be unpacked"; return 1; fi
+  # paths of this version the snapshot does not hold, or marks absent (game home left alone)
+  gh=$(game_home)
+  sed -n 's/^present [^ ]* [^ ]* //p' "$d/paths.txt" > "$t/.present"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    case "$p" in "${gh:-//}"/*) continue;; esac
+    grep -qxF -- "$p" "$t/.present" || rm -f "$p"
+  done < <(snap_paths)
+  rm -f "$t/.present"
+  while IFS= read -r p; do case "$p" in "${gh:-//}"/*) ;; *) rm -rf "$p";; esac; done < <(sed -n 's/^absent //p' "$d/paths.txt")
+  if ! tar -xzpf "$d/files.tar.gz" -C / 2>/dev/null; then rm -rf "$t"; SNAP_ERR="files.tar.gz could not be unpacked"; return 1; fi
+  rm -rf "$etcd.steam-arm-old"
+  if ! { { [ ! -e "$etcd" ] || mv "$etcd" "$etcd.steam-arm-old"; } && mv "$t/${etcd#/}" "$etcd"; }; then
+    rm -rf "$t"; SNAP_ERR="$etcd could not be replaced"; return 1
+  fi
+  rm -rf "$t" "$etcd.steam-arm-old"
+  for f in installer.sh:"$SA_SHARE_INSTALLER" config.sh:"$SA_MENU_BIN"; do
+    [ -f "$d/${f%%:*}" ] || continue
+    p=${f#*:}; mkdir -p "$(dirname "$p")" || { SNAP_ERR="$p could not be written"; return 1; }
+    if ! { t=$(mktemp "$p.XXXXXX") && cp "$d/${f%%:*}" "$t" && chmod 755 "$t" && mv -f "$t" "$p"; }; then
+      rm -f "$t"; SNAP_ERR="$p could not be written"; return 1
+    fi
+  done
+  return 0
+}
+state_file(){ echo "$SA_LIB/upgrade.state"; }
+state_get(){ sed -n "s/^$1=//p" "$(state_file)" 2>/dev/null | head -1; }
+state_write(){ local f; f=$(state_file); mkdir -p "$SA_LIB" && printf '%s\n' "$@" > "$f.new" && chmod 644 "$f.new" && mv -f "$f.new" "$f"; }
+state_clear(){ rm -f "$(state_file)"; }
+# Unfinished version change: state file present and no setup run holds the lock.
+state_pending(){ [ -f "$(state_file)" ] && lock_free; }
+state_text(){
+  local k; k=$(state_get KIND)
+  if [ "$k" = rollback ]; then printf 'Going back from %s to %s did not finish (started %s).' "$(state_get FROM)" "$(state_get TO)" "$(state_get STARTED)"
+  else printf 'Upgrade from %s to %s did not finish (started %s).' "$(state_get FROM)" "$(state_get TO)" "$(state_get STARTED)"; fi
+}
+hist_add(){ mkdir -p "$SA_LIB" 2>/dev/null && printf '%s %s %s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$4" "${5:--}" >> "$SA_LIB/history.log" && chmod 644 "$SA_LIB/history.log"; }
+# Snapshot rows: NAME, VERSION, date, reason, size, verified|damaged (member); tab separated.
+snap_rows(){
+  local n st
+  for n in $(snap_names); do
+    if snap_verify "$n"; then st=verified; else st="damaged ($SNAP_BAD)"; fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$n" "$(snap_val "$n" VERSION | grep . || echo "${n%%-*}")" "$(snap_val "$n" CREATED | cut -c1-10)" \
+      "$(snap_val "$n" REASON | grep . || echo unknown)" "$(mb "$(snap_bytes "$n")")" "$st"
+  done
+}
+reason_label(){ case "$1" in "upgrade "*) echo "before upgrade to ${1#upgrade }";; "rollback "*) echo "before going back to ${1#rollback }";; manual) echo "saved by hand";; *) echo "$1";; esac; }
+# Protected: snapshot of unfinished change, newest snapshot of a version other than installed (active rollback target).
+snap_protected(){
+  local n cur; cur=$(conf_get VERSION)
+  state_get SNAPSHOT
+  for n in $(snap_names); do [ "$(snap_val "$n" VERSION)" != "$cur" ] && snap_verify "$n" && { echo "$n"; break; }; done
+}
+# snap_prune [--in-setup]: leftovers, damaged, older per version, versions beyond SNAPSHOT_KEEP. Prints one line per deletion.
+snap_prune(){
+  local root n v d cur keep prot seen="" kept=0 b freed=0 why any=0 p
+  root=$(snap_root); [ -d "$root" ] || return 0
+  if [ "${1:-}" != --in-setup ]; then lock_free || { echo "Another setup run is in progress; nothing deleted."; return 1; }; fi
+  find "$root" -mindepth 1 -maxdepth 1 -name '.tmp-*' -exec rm -rf {} + 2>/dev/null
+  [ -d "$SA_UPCACHE/upgrade" ] && find "$SA_UPCACHE/upgrade" -mindepth 1 -maxdepth 1 -name '*.part' -exec rm -rf {} + 2>/dev/null
+  cur=$(conf_get VERSION); keep=$(snap_keep); prot=$(snap_protected)
+  for n in $(snap_names); do
+    v=$(snap_val "$n" VERSION); why=""; p=0
+    printf '%s\n' "$prot" | grep -qxF -- "$n" && p=1
+    if [ "$p" = 0 ] && ! snap_verify "$n"; then why="damaged"
+    elif printf '%s\n' "$seen" | grep -qxF -- "$v"; then [ "$p" = 1 ] || why="older copy of $v"
+    else
+      seen="$seen"$'\n'"$v"
+      if [ "$v" != "$cur" ]; then kept=$((kept + 1)); [ "$kept" -gt "$keep" ] && [ "$p" = 0 ] && why="beyond $keep earlier versions"; fi
+    fi
+    [ -n "$why" ] || continue
+    b=$(snap_bytes "$n"); d=$(snap_val "$n" CREATED | cut -c1-10)
+    [ -n "$d" ] || d=$(printf '%s' "$n" | sed -n 's/.*-\([0-9]\{4\}\)\([0-9][0-9]\)\([0-9][0-9]\)T[0-9]\{6\}Z\(-[0-9]*\)\{0,1\}$/\1-\2-\3/p')
+    rm -rf "${root:?}/$n" || continue
+    freed=$((freed + ${b:-0})); any=1
+    echo "Deleted snapshot ${v:-${n%%-*}} (${d:-date unknown}, $(mb "$b"), $why)."
+  done
+  [ "$any" = 1 ] && echo "Freed $(mb "$freed")."
+  return 0
+}
+# ---------- release check ----------
+# rel_fetch [TIMEOUT]: newest release from GitHub API. REL_TAG REL_VER REL_URL REL_ZIP REL_ZIP_URL REL_ZIP_SIZE REL_DIGEST
+# REL_SHA_URL REL_NOTES (file); status 2 with REL_ERR on failure.
+rel_fetch(){
+  local f code r
+  REL_TAG="" REL_VER="" REL_URL="" REL_ZIP="" REL_ZIP_URL="" REL_ZIP_SIZE="" REL_DIGEST="" REL_SHA_URL="" REL_ERR=""
+  have curl || { REL_ERR="curl is not installed. Releases: $SA_DOCS/releases"; return 2; }
+  have python3 || { REL_ERR="python3 is not installed. Releases: $SA_DOCS/releases"; return 2; }
+  f=$(tmpf) || { REL_ERR=$TMP_FAIL; return 2; }
+  REL_NOTES="$f.notes"
+  code=$(curl -sS --max-time "${1:-20}" "${SA_CURL_PROTO[@]}" -o "$f" -w '%{http_code}' -H 'Accept: application/vnd.github+json' "$SA_RELEASE_API" 2>/dev/null)
+  case "$code" in
+    200) ;;
+    403|429) rm -f "$f"; REL_ERR="GitHub refused the request (request limit for this address). Try again in an hour, or see $SA_DOCS/releases"; return 2;;
+    404) rm -f "$f"; REL_ERR="No published release found at $SA_DOCS/releases"; return 2;;
+    000|'') rm -f "$f"; REL_ERR="GitHub could not be reached (offline, or address blocked). Upgrade from a downloaded zip: steam-arm-config upgrade --file ZIP. Releases: $SA_DOCS/releases"; return 2;;
+    *) rm -f "$f"; REL_ERR="GitHub answered with HTTP $code. Releases: $SA_DOCS/releases"; return 2;;
+  esac
+  r=$(python3 -I -c 'import json, re, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+w = lambda x: (str(x or "").split() or ["-"])[0]
+tag = w(d.get("tag_name"))
+v = re.sub(r"^v", "", re.sub(r"^steam-arm-", "", tag))
+z = s = {}
+for a in d.get("assets") or []:
+    n = str(a.get("name") or "")
+    if n == "Steam.ARM.%s.zip" % v: z = a
+    if n == "Steam.ARM.%s.zip.sha256" % v: s = a
+dg = str(z.get("digest") or "")
+dg = dg[7:] if re.fullmatch(r"sha256:[0-9a-f]{64}", dg) else "-"
+print("\t".join([tag, w(d.get("html_url")), w(z.get("browser_download_url")), str(int(z.get("size") or 0)), dg,
+                 w(s.get("browser_download_url")), str(int(s.get("size") or 0))]))
+b = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", str(d.get("body") or ""))[:65536]
+open(sys.argv[2], "w", encoding="utf-8").write(b)' "$f" "$REL_NOTES" 2>/dev/null)
+  rm -f "$f"
+  IFS=$'\t' read -r REL_TAG REL_URL REL_ZIP_URL REL_ZIP_SIZE REL_DIGEST REL_SHA_URL _ <<<"$r"
+  REL_VER=${REL_TAG#steam-arm-}; REL_VER=${REL_VER#v}
+  # 2.3-hotfix style tags: number part compared, full tag shown
+  if [ -z "$r" ] || ! { [[ "${REL_VER%%-*}" =~ ^[0-9]+(\.[0-9]+)*$ ]] && [[ "$REL_VER" =~ ^[0-9.]+(-[A-Za-z0-9.]+)?$ ]]; }; then
+    rm -f "$REL_NOTES"; REL_ERR="Release answer not understood (tag ${REL_TAG:-none}). Releases: $SA_DOCS/releases"; return 2
+  fi
+  case "$REL_URL" in https://github.com/*) ;; *) REL_URL="$SA_DOCS/releases";; esac
+  REL_ZIP="Steam.ARM.$REL_VER.zip"
+  case "$REL_ZIP_URL" in "$SA_DL_PREFIX"*) ;; *) REL_ZIP_URL="";; esac
+  case "$REL_SHA_URL" in "$SA_DL_PREFIX"*) ;; *) REL_SHA_URL="";; esac
+  [ "$REL_DIGEST" = - ] && REL_DIGEST=""
+  return 0
+}
+# Stored result of the last check: root's file, else this account's; newer CHECKED wins.
+rel_file(){ if [ "$(id -u)" = 0 ]; then echo "$SA_LIB/release-check"; else echo "$SA_CACHE/release-check"; fi; }
+rel_store(){
+  local f; f=$(rel_file)
+  { [ ! -L "$(dirname "$f")" ] && mkdir -p "$(dirname "$f")"; } 2>/dev/null || return 0
+  printf 'TAG=%s\nVERSION=%s\nSIZE=%s\nURL=%s\nDIGEST=%s\nCHECKED=%s\n' "$REL_TAG" "$REL_VER" "$REL_ZIP_SIZE" "$REL_URL" "$REL_DIGEST" "$(date +%s)" > "$f.new" 2>/dev/null \
+    && chmod 644 "$f.new" && mv -f "$f.new" "$f"
+  [ -f "$REL_NOTES" ] && cp "$REL_NOTES" "$(dirname "$f")/release-notes.md" 2>/dev/null && chmod 644 "$(dirname "$f")/release-notes.md" 2>/dev/null
+  return 0
+}
+rel_stored(){
+  local a="$SA_LIB/release-check" b="$SA_CACHE/release-check" ta tb
+  ta=$(sed -n 's/^CHECKED=//p' "$a" 2>/dev/null); tb=$(sed -n 's/^CHECKED=//p' "$b" 2>/dev/null)
+  if [ -n "$tb" ] && [ "${tb:-0}" -gt "${ta:-0}" ] 2>/dev/null; then echo "$b"; elif [ -n "$ta" ]; then echo "$a"; fi
+}
+rel_stored_get(){ local f; f=$(rel_stored); [ -n "$f" ] && sed -n "s/^$1=//p" "$f" | head -1; }
+# Newer release named by stored check, else empty.
+rel_newer(){
+  local v cur; v=$(rel_stored_get VERSION); cur=$(installed_version)
+  [[ "${v%%-*}" =~ ^[0-9]+(\.[0-9]+)*$ ]] || return 0
+  case "$cur" in [0-9]*) ;; *) return 0;; esac
+  if ver_gt "$v" "$cur" || { [ "$(ver_norm "$v")" = "$(ver_norm "$cur")" ] && [ "$v" != "${v%%-*}" ]; }; then echo "$v"; fi
+}
+# Newest published release vs this version (asked by hand only; nothing downloads); status 0 newer, 1 not newer, 2 failed.
+update_check(){
+  local cur
+  cur=$(installed_version); case "$cur" in [0-9]*) ;; *) cur=$SA_VERSION;; esac
+  rel_fetch "${1:-20}" || { echo "$REL_ERR"; return 2; }
+  rel_store
+  rm -f "$REL_NOTES"
+  local a b; a=$(ver_norm "$REL_VER"); b=$(ver_norm "$cur")
+  if [ "$a" = "$b" ] && [ "$REL_VER" = "${REL_VER%%-*}" ]; then
+    echo "Steam ARM $cur is the newest release."; return 1
+  fi
+  if ver_gt "$cur" "$REL_VER"; then
+    echo "Steam ARM $cur is newer than the newest release ($REL_VER)."; return 1
+  fi
+  echo "Newer release: Steam ARM $REL_VER (installed: $cur)."
+  echo "$REL_URL"
+  echo
+  if [ "$(installed_from)" = package ]; then up_pkg_text "$REL_VER"
+  else
+    echo "Upgrade: Maintenance > Upgrade to newest release, or"
+    echo "  sudo steam-arm-config upgrade"
+  fi
+  return 0
+}
+up_pkg_text(){ cat <<EOF
+Installed through package steam-arm-setup $(installed_version). Newest release: $1.
+Package update: build steam-arm-setup_$1_arm64.deb from tag steam-arm-v$1
+(build-deb.sh), then:
+  sudo apt install ./steam-arm-setup_$1_arm64.deb
+  sudo steam-arm-setup --keep
+EOF
+}
+# Main screen line: unfinished change, else newer release from stored check.
+up_notice(){
+  local v
+  if state_pending; then echo "$(state_text) Maintenance > Upgrade to newest release offers restore."; return; fi
+  v=$(rel_newer)
+  [ -n "$v" ] && echo "Steam ARM $v available (checked $(date -d "@$(rel_stored_get CHECKED)" +%Y-%m-%d 2>/dev/null)). Maintenance > Upgrade to newest release."
+  return 0
+}
+# At menu open with UPDATE_CHECK_ON_OPEN=on: one check, at most once per 24 h, 8 s timeout, result stored only.
+up_check_open(){
+  local t; [ "$(check_on_open)" = on ] || return 0
+  t=$(rel_stored_get CHECKED); [ -n "$t" ] && [ $(( $(date +%s) - t )) -lt 86400 ] 2>/dev/null && return 0
+  update_check 8 >/dev/null 2>&1
+  return 0
+}
+# ---------- upgrade ----------
+ulog(){ printf '%s\n' "$*"; [ -n "${UP_LOG:-}" ] && printf '%s\n' "$*" >> "$UP_LOG"; return 0; }
+up_log_open(){
+  UP_LOG=""
+  { [ ! -L "$SA_CACHE" ] && mkdir -p "$SA_CACHE" && chmod 700 "$SA_CACHE" \
+      && UP_LOG=$(mktemp --suffix=.log "$SA_CACHE/upgrade-$(date +%Y%m%d-%H%M%S)-XXXXXX"); } 2>/dev/null || UP_LOG=""
+}
+# Free space in MB of the file system holding $1 (nearest existing parent).
+free_mb(){ local p=$1; while [ ! -e "$p" ]; do p=$(dirname "$p"); done; df -Pm "$p" 2>/dev/null | awk 'NR == 2 { print $4 }'; }
+up_space(){
+  local need have s
+  need=$(( (3 * ${1:-0}) / 1048576 + 20 )); have=$(free_mb "$SA_UPCACHE")
+  [ "${have:-0}" -ge "$need" ] || { ulog "Not enough free space: $SA_UPCACHE has ${have:-0} MB, upgrade needs $need MB."; return 1; }
+  s=$(snap_names | head -1); [ -n "$s" ] && s=$(snap_bytes "$s")
+  if [ -n "$s" ]; then need=$(( 2 * s / 1048576 + 20 )); else need=36; fi
+  have=$(free_mb "$SA_LIB")
+  [ "${have:-0}" -ge "$need" ] || { ulog "Not enough free space: $SA_LIB has ${have:-0} MB, upgrade needs $need MB."; return 1; }
+}
+# Staging folder of version $1: $SA_UPCACHE/upgrade/$1.part (root only, never a link).
+up_stage(){
+  local u="$SA_UPCACHE/upgrade"
+  if [ -L "$SA_UPCACHE" ] || [ -L "$u" ]; then ulog "$u is a link. Delete the link, then try again."; return 1; fi
+  { mkdir -p "$u" && chmod 700 "$SA_UPCACHE" "$u"; } 2>/dev/null || { ulog "Could not create $u."; return 1; }
+  rm -rf "${u:?}/$1.part" "${u:?}/$1"
+  mkdir -m 700 "$u/$1.part" 2>/dev/null || { ulog "Could not create $u/$1.part."; return 1; }
+  UP_DIR="$u/$1.part"
+}
+up_get(){
+  local code; code=$(curl -sSL "${SA_CURL_PROTO[@]}" --max-filesize "$SA_ZIP_MAX" --retry 2 --max-time 300 -o "$2" -w '%{http_code}' "$1" 2>>"${UP_LOG:-/dev/null}")
+  case "$code" in
+    200) return 0;;
+    000|'') ulog "GitHub could not be reached (offline, or address blocked). Upgrade from a downloaded zip: steam-arm-config upgrade --file ZIP"; return 2;;
+    403|429) ulog "GitHub refused the request (request limit for this address). Try again in an hour."; return 2;;
+    404) ulog "Release $REL_VER has no installer zip. Releases: $SA_DOCS/releases"; return 2;;
+    *) ulog "GitHub answered with HTTP $code."; return 2;;
+  esac
+}
+# up_verify ZIP SIDECAR VERSION [SIZE] [DIGEST]: nothing extracted before all pass.
+up_verify(){
+  local z=$1 s=$2 v=$3 size=${4:-} dg=${5:-} got h
+  if [ -n "$size" ] && [ "$size" != 0 ]; then
+    got=$(stat -c %s "$z" 2>/dev/null)
+    [ "$got" = "$size" ] || { ulog "Download incomplete (${got:-0} of $size bytes). Try again."; return 2; }
+  fi
+  { [ "$(wc -l < "$s")" -le 1 ] && grep -qE "^[0-9a-f]{64}  Steam\\.ARM\\.${v//./\\.}\\.zip\$" "$s"; } \
+    || { ulog "Checksum file of Steam.ARM.$v.zip is not in the expected form (<sha256>  Steam.ARM.$v.zip). Nothing was installed."; return 2; }
+  h=$(sha256sum < "$z" | cut -c1-64)
+  ulog "sha256 $h  Steam.ARM.$v.zip"
+  if [ "$h" != "$(cut -c1-64 "$s")" ] || { [ -n "$dg" ] && [ "$h" != "$dg" ]; }; then
+    ulog "Checksum of Steam.ARM.$v.zip does not match its .sha256 file. Nothing was installed. Try again later; if it persists, report it."; return 2
+  fi
+}
+# up_extract ZIP DIR VERSION: members under "Steam ARM V/", no absolute, .. or links, at most 64 members and 16 MB.
+up_extract(){
+  local r
+  r=$(python3 -I -c 'import os, stat, sys, zipfile
+z, out, top = sys.argv[1], sys.argv[2], "Steam ARM %s/" % sys.argv[3]
+try:
+    zf = zipfile.ZipFile(z)
+    ms = zf.infolist()
+except Exception:
+    print("zip"); sys.exit(1)
+if len(ms) > 64 or sum(m.file_size for m in ms) > 16777216:
+    print("size"); sys.exit(1)
+for m in ms:
+    n = m.filename
+    if not n.startswith(top) or n.startswith("/") or ".." in n.split("/") or "\\" in n \
+       or stat.S_ISLNK(m.external_attr >> 16):
+        print(n); sys.exit(1)
+for m in ms:
+    try:
+        zf.extract(m, out)
+    except Exception:
+        print(m.filename); sys.exit(1)
+' "$1" "$2" "$3" 2>&1) || { ulog "Zip could not be unpacked completely (${r:-unknown}). Nothing was installed."; return 2; }
+  r="$2/Steam ARM $3/steam-arm-install.sh"
+  [ -f "$r" ] || { ulog "Zip could not be unpacked completely (steam-arm-install.sh). Nothing was installed."; return 2; }
+  [ "$(grep -c "^SA_VERSION=$3\$" "$r")" = 2 ] || { ulog "Zip could not be unpacked completely (SA_VERSION of steam-arm-install.sh is not $3). Nothing was installed."; return 2; }
+  bash -n "$r" 2>/dev/null || { ulog "Zip could not be unpacked completely (steam-arm-install.sh does not parse). Nothing was installed."; return 2; }
+  UP_INST=$r
+}
+# Refusals before any download; status 3.
+up_refuse(){
+  is_installed || { ulog "Steam ARM is not installed. Install it with steam-arm-config, Install / Setup."; return 3; }
+  if state_pending; then ulog "$(state_text) Resolve it first: steam-arm-config upgrade --rollback (restore), or run setup again."; return 3; fi
+  lock_free || { ulog "Another setup run is in progress."; return 3; }
+  steam_running && { ulog "Steam ARM is running; close it first (as $(game_user): steam-arm --shutdown)."; return 3; }
+  return 0
+}
+# up_run YES FILE OLDER: check, plan, download, verify, unpack, run that release's setup with --keep.
+up_run(){
+  local yes=$1 file=$2 older=$3 cur v a rc u
+  local -a ao=(); [ "$older" = 1 ] && ao=(--allow-older)
+  cur=$(installed_version)
+  if [ "$(installed_from)" = package ]; then
+    if [ -n "$file" ]; then v=$(basename "$file" | sed -n 's/^Steam[. ]ARM[. ]\(.*\)\.zip$/\1/p'); else rel_fetch >/dev/null 2>&1; v=$REL_VER; fi
+    up_pkg_text "${v:-newest}"; return 3
+  fi
+  up_refuse || return $?
+  if [ -n "$file" ]; then
+    v=$(basename "$file" | sed -n 's/^Steam[. ]ARM[. ]\(.*\)\.zip$/\1/p')
+    ver_ok "${v%%-*}" || { ulog "File name is not Steam.ARM.<version>.zip: $file"; return 2; }
+    [ -f "$file" ] && [ -f "$file.sha256" ] || { ulog "Zip with its .sha256 file beside it needed: $file, $file.sha256"; return 2; }
+    REL_VER=$v REL_ZIP_SIZE=$(stat -c %s "$file") REL_DIGEST=""
+  else
+    rel_fetch || { ulog "$REL_ERR"; return 2; }
+    rel_store
+    v=$REL_VER
+    ulog "Newest release: $REL_TAG, asset $REL_ZIP (${REL_ZIP_SIZE:-0} bytes${REL_DIGEST:+, digest sha256:$REL_DIGEST})"
+    [ -n "$REL_ZIP_URL" ] && [ -n "$REL_SHA_URL" ] || { ulog "Release $v has no installer zip. Releases: $SA_DOCS/releases"; return 2; }
+  fi
+  if [ "$(ver_norm "$v")" = "$(ver_norm "$cur")" ] && [ "$v" = "${v%%-*}" ]; then
+    ulog "Steam ARM $cur, newest release, is already installed."; return 1
+  fi
+  if ver_gt "$cur" "$v"; then
+    if [ "$older" != 1 ]; then
+      if [ -n "$file" ]; then ulog "Installed $cur is newer than this zip ($v). Nothing to do."; return 3; fi
+      ulog "Installed $cur is newer than newest release ($v). Nothing to do."
+      return 1
+    fi
+    ulog "Warning: $v is older than installed $cur (--allow-older). Maintenance > Go back to previous version restores a saved copy."
+  fi
+  up_space "${REL_ZIP_SIZE:-0}" || return 2
+  if [ "$yes" != 1 ]; then
+    if [ -t 0 ]; then
+      printf 'Install Steam ARM %s over %s? Setup runs with choices of last run; %s is saved first. [y/N] ' "$v" "$cur" "$cur"; read -r a
+      case "$a" in y|Y|yes|YES) ;; *) ulog "Nothing changed."; return 1;; esac
+    else ulog "steam-arm-config: add --yes to upgrade without a terminal"; return 1; fi
+  fi
+  up_stage "$v" || return 2
+  if [ -n "$file" ]; then
+    { cp "$file" "$UP_DIR/zip" && cp "$file.sha256" "$UP_DIR/sha"; } || { ulog "Could not copy $file."; rm -rf "$UP_DIR"; return 2; }
+  else
+    ulog "Downloading $REL_ZIP"
+    up_get "$REL_ZIP_URL" "$UP_DIR/zip" || { rm -rf "$UP_DIR"; return 2; }
+    up_get "$REL_SHA_URL" "$UP_DIR/sha" || { rm -rf "$UP_DIR"; return 2; }
+  fi
+  up_verify "$UP_DIR/zip" "$UP_DIR/sha" "$v" "${REL_ZIP_SIZE:-}" "${REL_DIGEST:-}" || { rm -rf "$UP_DIR"; return 2; }
+  up_extract "$UP_DIR/zip" "$UP_DIR/x" "$v" || { rm -rf "$UP_DIR"; return 2; }
+  u=${UP_DIR%.part}
+  mv "$UP_DIR" "$u" || { rm -rf "$UP_DIR"; ulog "Could not rename $UP_DIR."; return 2; }
+  UP_INST="$u/x/Steam ARM $v/steam-arm-install.sh"
+  ulog "Running setup of $v: bash \"$UP_INST\" --keep$([ "$older" = 1 ] && echo ' --allow-older')"
+  { env STEAM_ARM_INSTALLER="$UP_INST" bash "$UP_INST" --keep "${ao[@]}" </dev/null 2>&1; echo "rc=$?" > "$u/rc"; } \
+    | tee -a "${UP_LOG:-/dev/null}"
+  rc=$(sed -n 's/^rc=//p' "$u/rc" 2>/dev/null); rc=${rc:-1}
+  if [ "$rc" = 0 ]; then
+    rm -rf "$u"
+    ulog "Steam ARM $v installed. Previous version $cur kept (Maintenance > Go back to previous version)."
+    pkg_installed && ulog "Package steam-arm-setup $(pkg_ver steam-arm-setup) stays installed and is older; remove it (sudo apt remove steam-arm-setup) or update it."
+    return 0
+  fi
+  if [ -f "$(state_file)" ] && [ "$(state_get TO)" = "$v" ]; then
+    ulog "Setup of $v stopped (status $rc). Restore $cur: sudo steam-arm-config upgrade --rollback"
+    ulog "Run $v setup again: sudo bash \"$UP_INST\" --keep"
+  else
+    rm -rf "$u"; ulog "Setup of $v stopped (status $rc). Nothing changed; $cur stays."
+  fi
+  return "$rc"
+}
+# Snapshot to go back to: state's (unfinished change), else newest verified one of version $1, else of a version other than installed.
+rb_pick(){
+  local n cur; cur=$(conf_get VERSION)
+  if [ -z "${1:-}" ] && state_pending && [ -n "$(state_get SNAPSHOT)" ]; then state_get SNAPSHOT; return; fi
+  [ -n "${1:-}" ] && [ -d "$(snap_root)/$1" ] && case "$1" in */*|.*) ;; *) echo "$1"; return;; esac
+  local dm=""
+  for n in $(snap_names); do
+    if [ -n "${1:-}" ]; then [ "$(snap_val "$n" VERSION)" = "$1" ] || continue
+    else [ "$(snap_val "$n" VERSION)" != "$cur" ] || continue; fi
+    snap_verify "$n" && { echo "$n"; return; }
+    [ -n "$dm" ] || dm=$n
+  done
+  # only damaged ones of that version: named, so going back reports it
+  [ -n "${1:-}" ] && echo "$dm"
+  return 0
+}
+# rb_run NAME YES: snapshot of current version (not for unfinished change), restore NAME, run its setup with --keep.
+rb_run(){
+  local n=$1 yes=$2 tv cur pend=0 csnap="" rc a inst
+  [ -n "$n" ] || { ulog "No earlier version kept. Snapshots: steam-arm-config upgrade --list"; return 1; }
+  is_installed || [ -f "$(state_file)" ] || { ulog "Steam ARM is not installed."; return 3; }
+  snap_verify "$n" || { ulog "Snapshot $n is damaged ($SNAP_BAD); going back to it is refused."; return 2; }
+  tv=$(snap_val "$n" VERSION); cur=$(conf_get VERSION)
+  state_pending && pend=1
+  steam_running && { ulog "Steam ARM is running; close it first (as $(game_user): steam-arm --shutdown)."; return 3; }
+  if [ "$yes" != 1 ]; then
+    if [ -t 0 ]; then
+      printf '%s\n' "$(rb_text "$n")"; printf 'Go back? [y/N] '; read -r a
+      case "$a" in y|Y|yes|YES) ;; *) ulog "Nothing changed."; return 1;; esac
+    else ulog "steam-arm-config: add --yes to go back without a terminal"; return 1; fi
+  fi
+  # lock held while files change; released before setup runs (setup takes it itself)
+  mkdir -p "$(dirname "$SA_LOCK")" 2>/dev/null
+  { exec 9>"$SA_LOCK" && flock -n 9; } 2>/dev/null || { exec 9>&-; ulog "Another setup run is in progress."; return 3; }
+  if [ "$pend" = 0 ]; then
+    snap_make "rollback $tv" || { exec 9>&-; ulog "Snapshot of $cur could not be written ($SNAP_ERR); nothing changed."; return 2; }
+    csnap=$SNAP_NAME; ulog "Current version $cur saved: $csnap"
+    state_write "FROM=$cur" "TO=$tv" KIND=rollback "SNAPSHOT=$csnap" "STARTED=$(date '+%Y-%m-%d %H:%M')" "PID=$$"
+  else
+    ulog "$(state_text) Restoring $tv."
+  fi
+  snap_restore "$n" || { exec 9>&-; ulog "Restore of $tv failed ($SNAP_ERR)."; return 2; }
+  exec 9>&-
+  ulog "Files of $tv restored from $n; running its setup."
+  inst=$SA_SHARE_INSTALLER
+  { env STEAM_ARM_INSTALLER="$inst" bash "$inst" --keep </dev/null 2>&1; echo "rc=$?" > "$SA_LIB/.rb-rc"; } | tee -a "${UP_LOG:-/dev/null}"
+  rc=$(sed -n 's/^rc=//p' "$SA_LIB/.rb-rc" 2>/dev/null); rm -f "$SA_LIB/.rb-rc"; rc=${rc:-1}
+  if [ "$rc" = 0 ]; then
+    if [ -f "$(state_file)" ]; then
+      hist_add "$(state_get FROM)" "$tv" "$([ "$pend" = 1 ] && echo restore || echo rollback)" ok "$n"; state_clear
+    fi
+    ulog "Steam ARM $tv restored."
+    snap_prune | while IFS= read -r a; do ulog "$a"; done
+    return 0
+  fi
+  ulog "Setup of $tv stopped (status $rc). Restored files stay. Run $tv setup again: sudo bash $inst --keep${csnap:+; return to $cur: sudo steam-arm-config upgrade --rollback $cur}"
+  return "$rc"
+}
+rb_text(){
+  local n=$1; printf 'Programs, rules and system settings return to %s as of %s. Client, games, sign-in and x86 RootFS stay. Settings changed since then stay in snapshot of %s.' \
+    "$(snap_val "$n" VERSION)" "$(snap_val "$n" CREATED | cut -c1-10)" "$(installed_version)"
+}
+# Called by setup 3.1 and newer before its first change: snapshot of installed version when version changes.
+up_setup_begin(){
+  local to=$1 nosnap=$2 from
+  from=$(conf_get VERSION)
+  [ -n "$from" ] && is_installed || return 0
+  if [ -f "$(state_file)" ] && [ "$(state_get TO)" = "$to" ]; then
+    echo "  unfinished change to $to: continuing (snapshot $(state_get SNAPSHOT | grep . || echo none) kept)"; return 0
+  fi
+  [ "$from" = "$to" ] && return 0
+  if [ "$nosnap" = 1 ]; then
+    echo "  no snapshot of $from (--no-snapshot)"
+    state_write "FROM=$from" "TO=$to" KIND=upgrade SNAPSHOT= "STARTED=$(date '+%Y-%m-%d %H:%M')" "PID=$PPID"; return 0
+  fi
+  snap_make "upgrade $to" || { echo "Snapshot of $from could not be written ($SNAP_ERR); nothing changed."; return 1; }
+  state_write "FROM=$from" "TO=$to" KIND=upgrade "SNAPSHOT=$SNAP_NAME" "STARTED=$(date '+%Y-%m-%d %H:%M')" "PID=$PPID"
+  echo "  previous version $from saved: $(snap_root)/$SNAP_NAME"
+}
+# Called by setup 3.1 and newer after success: record, clear state, prune.
+up_setup_end(){
+  local to=$1
+  [ -f "$(state_file)" ] || return 0
+  hist_add "$(state_get FROM)" "$to" "$(state_get KIND)" ok "$(state_get SNAPSHOT)"
+  [ "$(state_get KIND)" = upgrade ] && [ "$(state_get FROM)" != "$to" ] \
+    && echo "  Previous version $(state_get FROM) kept (Maintenance > Go back to previous version)."
+  state_clear
+  snap_prune --in-setup | sed 's/^/  /'
+  return 0
+}
+cli_upgrade(){
+  local yes=0 file="" mode=run older=0 rbv="" insetup=0 nosnap=0 to="" rc
+  local -a orig=("$@")
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --check) mode=check; shift;;
+      --yes) yes=1; shift;;
+      --file) cli_need $# "$1" || return 2; file=$2; shift 2;;
+      --list) mode=list; shift;;
+      --rollback) mode=rollback; shift; case "${1:-}" in ''|-*) ;; *) rbv=$1; shift;; esac;;
+      --allow-older) older=1; shift;;
+      --snapshot) mode=snapshot; shift;;
+      --rows) mode=rows; shift;;
+      --rb-text) cli_need $# "$1" || return 2; mode=rbtext; rbv=$2; shift 2;;
+      --setup-begin) cli_need $# "$1" || return 2; mode=begin; to=$2; shift 2;;
+      --setup-end) cli_need $# "$1" || return 2; mode=end; to=$2; shift 2;;
+      --no-snapshot) nosnap=1; shift;;
+      --in-setup) insetup=1; shift;;
+      *) echo "steam-arm-config: unknown option: $1 (see --help)" >&2; return 2;;
+    esac
+  done
+  if [ -n "$file" ]; then case "$file" in /*) ;; *) file="$PWD/$file";; esac; fi
+  case "$mode" in
+    check) update_check; rc=$?; return "$rc";;
+    begin) up_setup_begin "$to" "$nosnap"; return $?;;
+    end) up_setup_end "$to"; return 0;;
+  esac
+  cli_root upgrade "${orig[@]}"
+  case "$mode" in
+    rows) snap_rows; return 0;;
+    rbtext) [ -f "$(snap_root)/$rbv/MANIFEST" ] && case "$rbv" in */*|.*) ;; *) rb_text "$rbv";; esac; return 0;;
+    list)
+      local n v d r s st any=0
+      while IFS=$'\t' read -r n v d r s st; do
+        [ -n "$n" ] || continue; any=1
+        printf '%-8s %s  %-30s %8s  %s  %s\n' "$v" "$d" "$(reason_label "$r")" "$s" "$st" "$n"
+      done < <(snap_rows)
+      [ "$any" = 1 ] || echo "No snapshots kept in $(snap_root)."
+      [ -f "$SA_LIB/history.log" ] && { echo; echo "Version changes:"; tail -10 "$SA_LIB/history.log"; }
+      state_pending && { echo; state_text; echo; }
+      return 0;;
+    snapshot)
+      if [ "$insetup" != 1 ]; then lock_free || { echo "Another setup run is in progress." >&2; return 3; }; fi
+      is_installed || { echo "Steam ARM is not installed." >&2; return 1; }
+      snap_make manual || { echo "Snapshot could not be written ($SNAP_ERR)." >&2; return 2; }
+      echo "Saved: $(snap_root)/$SNAP_NAME"; return 0;;
+  esac
+  up_log_open
+  if [ "$mode" = rollback ]; then rb_run "$(rb_pick "$rbv")" "$yes"; rc=$?
+  else up_run "$yes" "$file" "$older"; rc=$?; fi
+  [ -n "$UP_LOG" ] && echo "Log: $UP_LOG"
+  return "$rc"
+}
+# ---------- menu screens ----------
+# Run this app's upgrade command as root on the progress screen; status of the command.
+up_self(){ ui_run "$1" "$2" as_root env STEAM_ARM_FROM_MENU=1 STEAM_ARM_PROGRESS="$([ "$DIALOG" = builtin ] && echo 1)" bash "$(self_path)" "${@:3}"; }
+up_log_new(){
+  if [ -L "$SA_CACHE" ] || ! { mkdir -p "$SA_CACHE" && chmod 700 "$SA_CACHE" && UP_MLOG=$(mktemp --suffix=.log "$SA_CACHE/upgrade-$(date +%Y%m%d-%H%M%S)-XXXXXX"); }; then
+    ui_msg "$1" "Could not create a log file in $SA_CACHE. Free some space, then try again."; return 1
+  fi
+}
+up_tail(){ strip_ansi < "$1" | grep -v '^[[:space:]]*$' | tail -"${2:-10}"; }
+maint_upgrade(){
+  local t="Upgrade to newest release" v cur out rc
+  if state_pending; then up_resolve; return; fi
+  cur=$(installed_version)
+  ui_info "$t" "Asking GitHub for the newest release..."
+  if ! rel_fetch; then ui_msg "$t" "$REL_ERR"; return; fi
+  rel_store; v=$REL_VER
+  if [ "$(installed_from)" = package ]; then ui_textstr "$t" "$(up_pkg_text "$v")"; return; fi
+  if [ "$(ver_norm "$v")" = "$(ver_norm "$cur")" ] && [ "$v" = "${v%%-*}" ]; then ui_msg "$t" "Steam ARM $cur, newest release, is already installed."; return; fi
+  if ver_gt "$cur" "$v"; then ui_msg "$t" "Installed $cur is newer than newest release $v. Nothing to do."; return; fi
+  ui_yesno "$t" "Steam ARM $v (installed: $cur), $(mb "${REL_ZIP_SIZE:-0}") download.
+
+Setup downloads Steam.ARM.$v.zip and its .sha256 file, checks both, then runs setup of $v with choices of last run. Before any change setup saves $cur (Maintenance > Go back to previous version). Client, games and sign-in stay." Upgrade Back defaultno || return
+  close_steam "$t" "Setup stops while it runs." || return
+  need_root || return
+  up_log_new "$t" || return
+  up_self "$t" "$UP_MLOG" upgrade --yes; rc=$?
+  status_line
+  if [ "$rc" = 0 ]; then
+    ui_textstr "$t: done" "$({ up_tail "$UP_MLOG" 12; echo; echo "Full output: $UP_MLOG"; } | tilde | pre_fold)"
+  elif state_pending && [ "$(state_get TO)" = "$v" ]; then
+    up_resolve "$(up_tail "$UP_MLOG" 8)"
+  else
+    ui_textstr "$t: not done" "$({ up_tail "$UP_MLOG" 10; echo; echo "Full output: $UP_MLOG (Maintenance > View logs)."; } | tilde | pre_fold)"
+  fi
+}
+# Unfinished change: Restore / Run setup again / Later.
+up_resolve(){
+  local t="Unfinished change" c from to kind stage="" rc
+  state_pending || return 0
+  from=$(state_get FROM); to=$(state_get TO); kind=$(state_get KIND)
+  [ "$kind" = upgrade ] && [ -f "$SA_UPCACHE/upgrade/$to/x/Steam ARM $to/steam-arm-install.sh" ] && stage="$SA_UPCACHE/upgrade/$to/x/Steam ARM $to/steam-arm-install.sh"
+  [ "$kind" = rollback ] && stage=$SA_SHARE_INSTALLER
+  local -a it=()
+  [ -n "$(state_get SNAPSHOT)" ] && it+=(restore "Restore $from")
+  [ -n "$stage" ] && it+=(again "Run $to setup again")
+  it+=(later Later)
+  c=$(ui_menu "$t" "$(state_text)${1:+
+
+$1}" --cancel Later "${it[@]}") || return 0
+  case "$c" in
+    restore) close_steam "$t" "Setup stops while it runs." || return; need_root || return; up_log_new "$t" || return
+             up_self "$t" "$UP_MLOG" upgrade --rollback --yes; rc=$?; status_line
+             ui_textstr "$t" "$({ up_tail "$UP_MLOG" 10; echo; echo "Full output: $UP_MLOG"; } | tilde | pre_fold)";;
+    again)   INST_ENV=(); STEAM_ARM_INSTALLER=$stage run_installer "Run $to setup again" --keep;;
+  esac
+}
+maint_whatsnew(){
+  local f t="Show what is new" n
+  f="$(dirname "$(rel_stored)")/release-notes.md"
+  if [ -n "$(rel_stored)" ] && [ -s "$f" ]; then
+    ui_textstr "$t: $(rel_stored_get TAG)" "$(cat "$f")"; return
+  fi
+  n=$(find_installer 2>/dev/null); n=$(dirname "${n:-/}")/CHANGELOG.md
+  if [ -f "$n" ]; then ui_textstr "$t" "$(awk '/^## \[/{c++} c == 1' "$n")"
+  else ui_msg "$t" "No release notes stored yet. Check for new version stores those of newest release; all releases: $SA_DOCS/releases"; fi
+}
+maint_rollback(){
+  local t="Go back to previous version" rows n v d r s st c rc
+  local -a it=()
+  need_root || return
+  ui_info "$t" "Checking snapshots..."
+  rows=$(snap_rows_root)
+  [ -n "$rows" ] || { ui_msg "$t" "No earlier version kept. Setup saves one before each version change."; return; }
+  while IFS=$'\t' read -r n v d r s st; do
+    case "$st" in verified) it+=("$n" "$v  $d  $(reason_label "$r")  $s");; *) it+=("del:$n" "$v  $d  $st (Delete damaged snapshot)");; esac
+  done <<<"$rows"
+  c=$(ui_menu "$t" "Snapshots, newest first. Kept: installed version plus $(snap_keep) earlier versions." "${it[@]}") || return
+  case "$c" in
+    del:*) ui_yesno "$t" "Delete damaged snapshot ${c#del:}?" Delete Back defaultno && as_root rm -rf "$(snap_root)/${c#del:}"; return;;
+  esac
+  ui_yesno "$t" "$(rb_text_root "$c")" "Go back" Back defaultno || return
+  close_steam "$t" "Setup stops while it runs." || return
+  up_log_new "$t" || return
+  up_self "$t" "$UP_MLOG" upgrade --rollback "$c" --yes; rc=$?
+  status_line
+  if [ "$rc" = 0 ]; then t="$t: done"; else t="$t: not done"; fi
+  ui_textstr "$t" "$({ up_tail "$UP_MLOG" 12; echo; echo "Full output: $UP_MLOG"; } | tilde | pre_fold)"
+}
+# Snapshot rows read as root (snapshot folders are closed to other accounts).
+snap_rows_root(){ if [ "$(id -u)" = 0 ]; then snap_rows; else as_root bash "$(self_path)" upgrade --rows 2>/dev/null; fi; }
+rb_text_root(){ if [ "$(id -u)" = 0 ]; then rb_text "$1"; else as_root bash "$(self_path)" upgrade --rb-text "$1" 2>/dev/null; fi; }
+maint_keep(){
+  local t="Previous versions kept" c out
+  c=$(ui_menu "$t" "Snapshots kept besides installed version (now: $(snap_keep)). Older ones are deleted after next upgrade or rollback, and now." --default "$(snap_keep)" \
+      1 "1 earlier version" 2 "2 earlier versions (default)" 3 "3 earlier versions" 4 "4 earlier versions" 5 "5 earlier versions") || return
+  out=$(need_root && as_root bash "$(self_path)" snapshot-keep "$c" 2>&1)
+  ui_msg "$t" "${out:-Kept: $c.}"
+}
+maint_checkopen(){
+  local t="Check for new release when this menu opens" n
+  if [ "$(check_on_open)" = on ]; then
+    ui_yesno "$t" "On: at most once a day, when this menu opens, Steam ARM asks GitHub for newest release (8 s limit) and shows a line on main screen. Nothing downloads or installs on its own." "Turn off" Back || return; n=off
+  else
+    ui_yesno "$t" "Off: Steam ARM asks GitHub only when Check for new version or Upgrade is picked. On: at most once a day when this menu opens (8 s limit); result shows as a line on main screen. Nothing downloads or installs on its own." "Turn on" Back defaultno || return; n=on
+  fi
+  self_root update-check-on-open "$n" && ui_msg "$t" "Check when this menu opens: $n."
+}
+cli_snapshot_keep(){
+  case "${1:-}" in [1-5]) ;; '') snap_keep; return 0;; *) echo "steam-arm-config: snapshot-keep takes 1 to 5" >&2; return 2;; esac
+  conf_set SNAPSHOT_KEEP "$1" || { echo "steam-arm-config: could not write $SA_CONF" >&2; return 1; }
+  echo "Kept: installed version plus $1 earlier versions."
+  snap_prune
+}
+cli_check_on_open(){
+  case "${1:-}" in on|off) conf_set UPDATE_CHECK_ON_OPEN "$1" || return 1; echo "Check when menu opens: $1";; '') check_on_open;; *) echo "steam-arm-config: update-check-on-open takes on or off" >&2; return 2;; esac
+}
 maint_update_check(){
-  ui_info "Check for new version" "Asking GitHub for the newest release..."
-  ui_msg "Check for new version" "$(update_check)"
+  local t="Check for new version" out rc c
+  ui_info "$t" "Asking GitHub for the newest release..."
+  out=$(update_check); rc=$?
+  if [ "$rc" = 0 ] && [ "$(installed_from)" != package ]; then
+    c=$(ui_menu "$t" "$out" upgrade "Upgrade now" whatsnew "Show what is new") || return
+    case "$c" in upgrade) maint_upgrade;; whatsnew) maint_whatsnew;; esac
+  else ui_msg "$t" "$out"; fi
 }
 maint_shm(){
   local before
@@ -5089,7 +5872,7 @@ SA_BK_PERSONAL="personal-profiles compat-tools fex mangohud personal-tuning"
 # tuned.conf lines: comments, blank, or appid with tuning keys only
 SA_TUNED_RE='^([0-9]{1,10}( +(gfx=(a|b)|multiblock=(on|off)|gl32=off))*)? *(#.*)?$'
 # steam-arm.conf keys restored; every other key is machine state (GPU_FAMILY only when GPU_FAMILY_SET=user).
-SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY"
+SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN"
 SA_BK_NAME='[A-Za-z0-9_+-][A-Za-z0-9._+-]*'
 part_label(){ case "$1" in
   setup) echo "Setup choices";; system-profiles) echo "System game profiles";;
@@ -5287,7 +6070,8 @@ rs_val(){ sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -1 | sed "s/^[\"']//; s/[\"
 rs_norm(){ tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -; }
 rs_valid(){ case "$1" in
   GFX_DEFAULT) case "$2" in auto|a|b|forward) return 0;; esac; return 1;;
-  AUTO_BUILD|CPU_NOTICE|RUN_HISTORY) case "$2" in on|off|"") return 0;; esac; return 1;;
+  AUTO_BUILD|CPU_NOTICE|RUN_HISTORY|UPDATE_CHECK_ON_OPEN) case "$2" in on|off|"") return 0;; esac; return 1;;
+  SNAPSHOT_KEEP) case "$2" in [1-5]|"") return 0;; esac; return 1;;
   GPU_FAMILY) [[ "$2" =~ ^[a-z0-9-]+$ ]];;
   *) [[ "$2" =~ ^[a-z0-9,-]*$ ]];;
 esac; }
@@ -5709,15 +6493,24 @@ maint_restore(){
     rs_menu "$f" && return
   done
 }
+# Items 13 to 17 (version changes) keep their tags whether shown or not; 13 shows with a newer release found or an unfinished change, 15 with a snapshot.
 menu_maintenance(){
-  local c=""
-  while c=$(ui_menu "Maintenance" "Keep Steam ARM working." --default "$c" \
+  local c="" v
+  local -a up=()
+  while :; do
+    up=(); v=$(rel_newer)
+    if state_pending; then up+=(13 "Upgrade to newest release (unfinished change: restore)")
+    elif [ -n "$v" ]; then up+=(13 "Upgrade to newest release ($v)"); fi
+    up+=(14 "Show what is new")
+    [ -n "$(snap_names)" ] && up+=(15 "Go back to previous version")
+    up+=(16 "Previous versions kept (now: $(snap_keep))" 17 "Check for new release when this menu opens (now: $(check_on_open))")
+    c=$(ui_menu "Maintenance" "Keep Steam ARM working." --default "$c" \
       1 "Update / Repair (run setup again, same parts)" 2 "View logs" \
       3 "Hardware report (for a compatibility report)" 4 "Free /dev/shm now" \
       5 "Back up settings" 6 "Restore settings" 7 "Check for new version" \
       8 "Caches (sizes, clear FEX code caches)" 9 "GE-Proton (ARM64), optional (now: $(ge_state))" \
       10 "Client type (now: $([ "$(client_type)" = x86 ] && echo x86 || echo native ARM64))" \
-      11 "Report how last game ran" 12 "Run history (now: $(run_history))"); do
+      11 "Report how last game ran" 12 "Run history (now: $(run_history))" "${up[@]}") || break
     case "$c" in
       1) if is_installed; then
            ui_yesno "Update / Repair" "Run setup again with the parts chosen at last setup?
@@ -5736,6 +6529,11 @@ Setup reinstalls packages, launcher, helpers and rules for those parts. Games, s
       10) maint_client;;
       11) maint_runreport;;
       12) maint_runhistory;;
+      13) maint_upgrade;;
+      14) maint_whatsnew;;
+      15) maint_rollback;;
+      16) maint_keep;;
+      17) maint_checkopen;;
     esac
   done
 }
@@ -5951,9 +6749,13 @@ offer_install(){
   ui_yesno "Steam ARM" "Steam ARM is not installed yet. Install it now?" Install Back && menu_setup
 }
 menu_main(){
-  local c=""
+  local c="" n
   status_line
-  while c=$(ui_menu "steam-arm-config" "Choose a section." --cancel Exit --default "$c" \
+  up_check_open
+  state_pending && up_resolve
+  while n=$(up_notice) && c=$(ui_menu "steam-arm-config" "Choose a section.${n:+
+
+$n}" --cancel Exit --default "$c" \
       1 "Information" 2 "Install / Setup" 3 "Components" 4 "Graphics" 5 "Games" \
       6 "Controllers" 7 "Remote Play" 8 "Maintenance" 9 "Uninstall" 10 "Help / About"); do
     case "$c" in
@@ -6076,7 +6878,28 @@ Commands
                             move to TAG, or setting removed (Linux build,
                             else Steam's default Proton); Steam closed
   update-check              ask GitHub for the newest release and compare
-                            it with this version (nothing downloads)
+                            it with this version (nothing downloads);
+                            same as upgrade --check
+  upgrade [--yes] [--allow-older]
+                            download newest release (Steam.ARM.<V>.zip
+                            and .sha256 from GitHub), check size and
+                            SHA-256, run its setup with --keep; installed
+                            version saved first; asks unless --yes
+  upgrade --check           newest release vs installed (nothing
+                            downloads); exit 0 newer, 1 not, 2 failed
+  upgrade --file ZIP        same from a downloaded zip with ZIP.sha256
+                            beside it
+  upgrade --list            snapshots of earlier versions: version,
+                            date, reason, size, verified or damaged
+  upgrade --rollback [VER]  go back to newest snapshot (or that of VER):
+                            current version saved, files restored, its
+                            setup run with --keep
+  upgrade --snapshot        save installed version now
+  snapshot-keep [1-5]       earlier versions kept (default 2); older
+                            snapshots deleted at once
+  update-check-on-open [on|off]
+                            ask GitHub at most once a day when menu opens
+                            (off by default); no value: state
   help fixing              what helps a game that does not start or
                             draws wrong, and what cannot be fixed
   --help                    this text
@@ -6086,10 +6909,12 @@ Environment
                             menu front end (default: builtin screens when
                             python3 with curses is present, else dialog,
                             else whiptail, else plain prompts)
-  STEAM_ARM_INSTALLER=file  setup script to run (default: steam-arm-setup,
-                            else $SA_SHARE_INSTALLER,
-                            else steam-arm-install.sh beside this app);
-                            the installer sets it when it opens this menu
+  STEAM_ARM_INSTALLER=file  setup script to run (default: one of
+                            steam-arm-setup, $SA_SHARE_INSTALLER,
+                            steam-arm-install.sh beside this app whose
+                            version equals installed version, else newest
+                            of them); installer sets it when it opens
+                            this menu
   STEAM_ARM_ALLOW_ARMV80=1  native ARM64 client on Armv8.0 CPU in place of
                             x86 client (Install / Setup); passed on to setup
 
@@ -6097,12 +6922,15 @@ Files
   $SA_CONF      settings (GFX_DEFAULT=auto|a|b;
                             forward is read as a; AUTO_BUILD=on|off;
                             CPU_NOTICE=on|off; RUN_HISTORY=on|off;
+                            SNAPSHOT_KEEP=1..5; UPDATE_CHECK_ON_OPEN=on|off;
                             CLIENT=arm64|x86 set by
                             setup, Maintenance > Client type)
+  $SA_LIB/snapshots  earlier versions (Go back)
+  $SA_LIB/history.log  version changes
   $SA_TITLES_ETC        game profiles written here
   ~/steam-arm-report.txt    hardware report (report command)
   ~/steam-arm-report-*.md   run reports (report run command)
-  ~/.cache/steam-arm/       logs of setup runs started here
+  ~/.cache/steam-arm/       logs of setup and upgrade runs started here
 
 Documentation: $SA_DOCS
 Not affiliated with Valve Corporation. Steam, Proton, Steam Deck and
@@ -6413,6 +7241,9 @@ main(){
     cache)       shift; cli_cache "$@";;
     ge-proton)   shift; cli_ge "$@";;
     update-check) update_check; [ $? = 2 ] && exit 1; exit 0;;
+    upgrade)     shift; cli_upgrade "$@"; exit $?;;
+    snapshot-keep) [ -n "${2:-}" ] && cli_root "$@"; shift; cli_snapshot_keep "$@";;
+    update-check-on-open) [ -n "${2:-}" ] && cli_root "$@"; shift; cli_check_on_open "$@";;
     ''|menu)
       if [ ! -t 0 ] || [ ! -t 1 ]; then echo "steam-arm-config: the menu needs a terminal; see --help" >&2; exit 1; fi
       ui_pick; menu_main;;
@@ -6423,6 +7254,19 @@ main(){
 main "$@"
 STEAMARMCONFIG
 }
+# Status 0 when version $1 is newer than $2 (trailing .0 and hotfix suffix ignored).
+sa_ver_gt(){
+  local a=${1%%-*} b=${2%%-*}
+  while [[ "$a" == *.0 ]]; do a=${a%.0}; done
+  while [[ "$b" == *.0 ]]; do b=${b%.0}; done
+  [ "$a" != "$b" ] && [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -1)" = "$a" ]
+}
+# Embedded settings menu run from a temporary copy: snapshots and records of version changes.
+sa_menu_call(){
+  local t; t=$(mktemp "${SA_TMP:-/tmp}/steam-arm-config.XXXXXX") || return 1
+  CLEANUP+=("$t"); menu_app > "$t" && bash "$t" "$@"
+}
+SA_STATE=/var/lib/steam-arm/upgrade.state
 usage(){
   local c mark
   echo "Steam ARM $SA_VERSION installer"
@@ -6479,6 +7323,13 @@ Options
   --client-check    download newest native client package and check whether it runs
                     on this CPU (prints result, changes nothing; status 0 runs,
                     1 still needs Armv8.1, 2 check failed); needs installed setup
+  --allow-older     run although installed version is newer than this installer
+                    (without it setup stops before any change); going back to a
+                    saved version: steam-arm-config, Maintenance, Go back
+  --no-snapshot     version change without saving installed version first (for a
+                    full disk); by default setup saves it to /var/lib/steam-arm/snapshots
+                    and stops when that fails
+  --snapshot        save installed version to /var/lib/steam-arm/snapshots, then exit
 
 Always installed: host packages, x86-64 root filesystem, client package, launcher,
 settings menu steam-arm-config.
@@ -6681,7 +7532,7 @@ client_check(){
 # Other variant of this installer: its launcher reads its own settings path.
 OTHER_CONF=/etc/h96/steam-arm.conf
 other_variant(){ grep -qs "$OTHER_CONF" /usr/local/bin/steam-arm; }
-MODE=ask; REPLACE_OTHER=0; PURGE=0; HELP=0; PASS_STDIN=0; ARGC=$#; CLIENT_CHECK=0
+MODE=ask; REPLACE_OTHER=0; PURGE=0; HELP=0; PASS_STDIN=0; ARGC=$#; CLIENT_CHECK=0; ALLOW_OLDER=0; NO_SNAPSHOT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --detect-other) if other_variant; then echo "other variant: present"; exit 0; fi; echo "other variant: none"; exit 1;;
@@ -6702,6 +7553,9 @@ while [ $# -gt 0 ]; do
     --client)   OPT_CLIENT="${2:-}"; shift;;
     --client=*) OPT_CLIENT="${1#*=}";;
     --client-check) CLIENT_CHECK=1;;
+    --allow-older) ALLOW_OLDER=1;;
+    --no-snapshot) NO_SNAPSHOT=1;;
+    --snapshot) MODE=snapshot;;
     --list)     for c in $COMPONENTS; do printf '  %-16s %s\n' "$c" "$(desc_of "$c")"; done; exit 0;;
     -h|--help)  HELP=1; break;;
     *) die "unknown option: $1 (see --help)";;
@@ -6781,6 +7635,19 @@ if [ "$ARGC" = 0 ] && [ -t 0 ] && [ -t 1 ]; then
     exit $?
   fi
 fi
+# --snapshot: installed version saved by this installer's menu code (it refuses while a setup run holds the lock).
+if [ "$MODE" = snapshot ] && [ "$HELP" = 0 ]; then
+  [ "$(id -u)" = 0 ] || die "run as root: sudo bash steam-arm-install.sh --snapshot"
+  sa_menu_call upgrade --snapshot; exit $?
+fi
+# Older installer over newer install: stop before any change unless --allow-older (going back restores VERSION first).
+if [ "$HELP" = 0 ] && [ "$MODE" != remove ] && [ "$MODE" != detect ] && [ "$CLIENT_CHECK" = 0 ]; then
+  IV=$(conf_get VERSION)
+  if [ -n "$IV" ] && [ -x /usr/local/bin/steam-arm ] && sa_ver_gt "$IV" "$SA_VERSION"; then
+    [ "$ALLOW_OLDER" = 1 ] || die "Steam ARM $IV is installed; this installer is $SA_VERSION. To go back use Maintenance > Go back to previous version, or run again with --allow-older."
+    warn "Steam ARM $IV is installed; installing older $SA_VERSION (--allow-older)."
+  fi
+fi
 [ "$MODE" = remove ] || gpu_pick
 [ "$HELP" = 1 ] && { usage; exit 0; }
 GPU_VK=""
@@ -6813,6 +7680,10 @@ case "$GAMEUSER" in -*|*[!A-Za-z0-9._@-]*) die "GAMEUSER='$GAMEUSER' is not a us
 if [ "$(id -u)" = 0 ]; then
   { exec 8>/run/steam-arm-setup.lock && flock -n 8; } 2>/dev/null \
     || die "another steam-arm-setup run is in progress. Wait for it to finish, then run this again."
+fi
+# Change of another version that did not finish (setup lock was free): named, restore offered by the settings menu.
+if [ "$MODE" != remove ] && [ -f "$SA_STATE" ] && [ "$(sed -n 's/^TO=//p' "$SA_STATE" | head -1)" != "$SA_VERSION" ]; then
+  warn "change from $(sed -n 's/^FROM=//p' "$SA_STATE" | head -1) to $(sed -n 's/^TO=//p' "$SA_STATE" | head -1) did not finish; restore: sudo steam-arm-config upgrade --rollback"
 fi
 known(){ for c in $COMPONENTS_ALL; do [ "$c" = "$1" ] && return 0; done; return 1; }
 # Component whose files are in place (install from before selection was saved in $CONF).
@@ -7215,6 +8086,8 @@ remove_all(){
   # reads the kwinrulesrc record in /etc/steam-arm
   [ -n "$uh" ] && kwin_rule_remove
   rm -rf /usr/local/share/steam-arm /etc/steam-arm
+  # snapshots of earlier versions, records of version changes, upgrade downloads
+  rm -rf /var/lib/steam-arm /var/cache/steam-arm
   rm -rf "$NOPKG"
   if [ -d "$PSTATE" ]; then
     legacy_mesa_restore && { restored="${restored:+$restored, }distro Mesa in $RFS"; [ "$other" = 0 ] && gp_rm=1; }
@@ -7428,6 +8301,11 @@ else
 fi
 [ "$(id -u)" = 0 ] || die "run as root"
 steam_up && steam_up_die
+# Version change: installed version saved (and change recorded) before the first change; failure stops here.
+if [ -n "$(conf_get VERSION)" ] && [ "$(conf_get VERSION)" != "$SA_VERSION" ] || [ -f "$SA_STATE" ]; then
+  sa_menu_call upgrade --setup-begin "$SA_VERSION" $([ "$NO_SNAPSHOT" = 1 ] && echo --no-snapshot) \
+    || die "installed version not saved; nothing changed. Free space in /var/lib/steam-arm, or run again with --no-snapshot."
+fi
 # Client folder marker (--remove deletes only a marked folder): folder new or empty, or the client folder of an earlier install.
 # ARMHOME_FOREIGN=1 in the conf: folder held other files at first setup; it never gets the marker.
 ARMHOME_MARK=1; ARMHOME_FOREIGN=0
@@ -9158,6 +10036,11 @@ conf_set GPU_FAMILY_SET "$GPU_SRC"
 # Graphics for x86 titles: auto = forwarding plus the handler's rules; a (or forward) = forwarding only; b = every title on Mali drivers.
 [ -n "$(conf_get GFX_DEFAULT)" ] || conf_set GFX_DEFAULT auto
 conf_set VERSION "$SA_VERSION"
+# Package or script: settings menu upgrades script installs only (packages update through apt).
+if [ "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null)" = /usr/share/steam-arm-setup/install.sh ] \
+   && dpkg-query -S /usr/share/steam-arm-setup/install.sh 2>/dev/null | grep -q '^steam-arm-setup:'; then
+  conf_set INSTALLED_FROM package
+else conf_set INSTALLED_FROM script; fi
 # Client type (machine state, not in settings backups): arm64 or x86, auto or user, last native check.
 conf_set CLIENT "$CLIENT"
 conf_set CLIENT_SET "$CLIENT_SET"
@@ -12843,6 +13726,8 @@ LOG="$ARMHOME/steam-arm.log"
 [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ] && mv -f "$LOG" "$LOG.1" 2>/dev/null
 lwarn(){ echo "steam-arm: $*" >&2; printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG" 2>/dev/null; }
 llog(){ printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG" 2>/dev/null; }
+# Unfinished version change: one log line per start, no dialog (settings menu offers restore).
+[ -f /var/lib/steam-arm/upgrade.state ] && llog "warning: Steam ARM change from $(sed -n 's/^FROM=//p' /var/lib/steam-arm/upgrade.state | head -1) to $(sed -n 's/^TO=//p' /var/lib/steam-arm/upgrade.state | head -1) did not finish; steam-arm-config offers restore"
 # notice ID SUMMARY BODY TIMEOUT_MS: send (ID 0) or replace a desktop notification; prints its id.
 notice(){
   if command -v gdbus >/dev/null 2>&1; then
@@ -16196,6 +17081,8 @@ say "     settings menu: steam-arm-config (menu entry \"Steam ARM Settings\")"
 
 # ---------------------------------------------------------------------------
 say "11/11  done"
+# Version change finished: record, earlier snapshots pruned.
+[ -f "$SA_STATE" ] && { sa_menu_call upgrade --setup-end "$SA_VERSION" || true; }
 if [ "$CLIENT" = x86 ]; then
   SUM_GAMES="x86 Linux titles run through emulation; Windows titles through x86 Proton the client
                  downloads. Client: Valve's x86 client through emulation ($(x86_why);

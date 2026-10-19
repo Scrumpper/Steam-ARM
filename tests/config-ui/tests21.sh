@@ -99,8 +99,11 @@ check "restore flow passes Next to summary" "grep -q 'ui_textstr \"Restore setti
 WIZ=". $T/harness.sh --help >/dev/null; DIALOG=builtin; comp_recommended(){ echo x; }; setup_account(){ return 1; }"
 out=$(FAKE_NOT_INSTALLED=1 python3 $T/ptydrive.py "$WIZ; menu_setup" '\r' '\r' '\r' '\x1b' '\x1b' '\x1b' | head -1)
 check "wizard: Back walks parts > Vulkan > page size > hardware" "[ \"\$out\" = 'SCREENS Install / Setup|Install: hardware|Install: page size|Install: Vulkan|Install: parts|Install: Vulkan|Install: page size|Install: hardware' ]"
-out=$(FAKE_NOT_INSTALLED=1 python3 $T/ptydrive.py "$WIZ; vk_summary(){ sleep 3; echo 'Mali-G610, panvk, API 1.3'; }; menu_setup" '\r' '\r' @4 '\r' @4 '\x1b' @0.5 '\x1b' @5 | head -1)
+# each Vulkan load writes a line to M: Escs sent once the second load has started, not after fixed sleeps
+M=$(mktemp)
+out=$(FAKE_NOT_INSTALLED=1 python3 $T/ptydrive.py "$WIZ; vk_summary(){ echo x >> $M; sleep 3; echo 'Mali-G610, panvk, API 1.3'; }; menu_setup" '\r' '\r' "^$M:1" @3.5 '\r' @4 '\x1b' "^$M:2" '!\x1b' @0.3 '!\x1b' @5 | head -1)
 check "wizard: Esc typed while Vulkan loads does not skip it" "[ \"\${out##*|}\" = 'Install: Vulkan' ]"
+rm -f "$M"
 C=$(mktemp)
 out=$(FAKE_NOT_INSTALLED=1 python3 $T/ptydrive.py "$WIZ; detect_raw(){ [ \"\$DETECT_DONE\" = 1 ] || echo run >> $C; DETECT_DONE=1; echo 'family: mali-csf-v10'; }; menu_setup" '\r' '\r' '\r' '\x1b' '\x1b' '\x1b' | head -1)
 check "wizard: detection runs once for the whole walk" "[ \"\$(wc -l < $C)\" = 1 ]"

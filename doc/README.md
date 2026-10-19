@@ -21,6 +21,13 @@ terminal.
 Installed games are kept. Re-running setup, changing components and
 upgrading package leave game library, sign-in and settings untouched.
 
+## Update
+
+Build package of new release from its source tag (`build-deb.sh`), install it
+with `sudo apt install ./steam-arm-setup_<version>_arm64.deb`, then run
+`sudo steam-arm-setup --keep`. Setup saves installed version first; settings
+menu Maintenance, Go back to previous version, returns to it.
+
 ## Uninstall
 
     sudo steam-arm-setup --remove
