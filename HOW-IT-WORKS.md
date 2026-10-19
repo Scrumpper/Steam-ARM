@@ -1,5 +1,7 @@
 # Steam ARM: how it works
 
+Client: Steam Frame's Steam client, Valve's native ARM64 build, set up on host.
+
 Overview of what runs where: setup command, GPU detection, component defaults,
 launcher, per-title launch handler and graphics routes. Details per step: `README.md`.
 

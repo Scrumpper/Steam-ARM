@@ -14,7 +14,7 @@ This requires `dpkg-deb` and produces `steam-arm-setup_<version>_arm64.deb`.
 
 1. Build package with `./build-deb.sh`.
 2. Install built package: `sudo dpkg -i steam-arm-setup_*_arm64.deb`.
-3. Run `steam-arm-setup --list` and confirm component list matches change.
+3. Run `steam-arm-setup --list` and verify component list matches change.
 4. Run `steam-arm-setup --help` and confirm usage text is correct.
 5. Remove package: `sudo apt-get purge steam-arm-setup`.
 
