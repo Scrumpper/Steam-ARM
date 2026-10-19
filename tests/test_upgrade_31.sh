@@ -303,7 +303,7 @@ uh upgrade --yes --allow-older
 check "U13 --allow-older: warning, setup of 2.9 runs" "[ $RC = 0 ] && has 'Warning: 2.9 is older than installed 3.0' && [ \"\$(cv)\" = 2.9 ]"
 fresh 3.0 0; mkdir -p "$T/dl"; fx_zip 2.9 0 "$T/dl"
 uh upgrade --file "$T/dl/Steam.ARM.2.9.zip" --yes
-check "U13 --file with older zip: rc 3 refused" "[ $RC = 3 ] && has 'newer than this zip (2.9)'"
+check "U13 --file with older zip: rc 3 refused" "[ $RC = 3 ] && has 'newer than this file (2.9)'"
 fx_zip 3.1 1 "$T/dl"; uh upgrade --file "$T/dl/Steam.ARM.3.1.zip" --yes
 check "U13 --file with newer zip: offline upgrade, no network request" "[ $RC = 0 ] && [ \"\$(cv)\" = 3.1 ] && [ \$(snaps) = 1 ]"
 rm "$T/dl/Steam.ARM.2.9.zip.sha256"; fresh 3.0 0; uh upgrade --file "$T/dl/Steam.ARM.2.9.zip" --yes --allow-older
@@ -569,6 +569,126 @@ rm -f "$R/dpkg-owned"; ue "rb_text '$S'"; check "A9 no package: no package sente
 
 # A10 page-size block removal after snapshot step
 check "A10 Pi page-size block removed only after snapshot step" "a=\$(grep -n 'sa_menu_call upgrade --setup-begin' '$INST' | cut -d: -f1); b=\$(grep -n '^  ps_remove || die' '$INST' | cut -d: -f1); [ -n \"\$b\" ] && [ \$(grep -c '^  ps_remove || die' '$INST') = 1 ] && [ \$a -lt \$b ]"
+
+# ---------- P package asset: apt install from menu ----------
+# release with zip and package assets; package install of version $1 (setup stand-in at packaged path, dpkg owns it)
+relp(){ rm -f "$M/assets/"*; fx_zip "$1" 1 "$M/assets"; fx_deb "$1" "$M/assets"; fx_release "$1" "$M" "$UH_PORT"; mode ok; }
+pkgfresh(){
+  fresh "$1" "$2"; dpkg_stub; fx_apt; echo INSTALLED_FROM=package >> "$R/etc/steam-arm/steam-arm.conf"
+  fx_setup "$1" "$2" "$R/pkg/install.sh"; echo "$R/pkg/install.sh" > "$R/dpkg-owned"; echo "$1" > "$R/dpkg-ver"
+  printf '#!/bin/sh\nexec bash %s "$@"\n' "$R/pkg/install.sh" > "$R/pbin/steam-arm-setup"; chmod 755 "$R/pbin/steam-arm-setup"
+  rm -f "$R/apt.log" "$R/apt-fail"
+}
+pkgfresh 3.0 0; relp 3.1
+uh upgrade --check
+check "P1 check, package install, release with package asset: upgrade command, no build steps" "[ $RC = 0 ] && has 'Package steam-arm-setup_3.1_arm64.deb attached to release.' && has 'sudo steam-arm-config upgrade' && ! has 'Package update: build' && grep -qs '^DEB=yes\$' $R/ucache/release-check $R/lib/release-check"
+d0=$(dl); uh upgrade --yes
+check "P1 package upgrade: rc 0, installed message names package and previous version" "[ $RC = 0 ] && has 'Steam ARM 3.1 installed (package steam-arm-setup 3.1). Previous version 3.0 kept (Maintenance > Go back to previous version).'"
+check "P1 package and sidecar downloaded (2 requests), zip not" "[ \$(dl) = \$(( d0 + 2 )) ] && tail -2 $M/requests | grep -q 'steam-arm-setup_3.1_arm64.deb\$' && tail -2 $M/requests | grep -q 'steam-arm-setup_3.1_arm64.deb.sha256\$' && ! tail -2 $M/requests | grep -q 'zip'"
+check "P1 plan shown before install (snapshot, apt-get, setup)" "has 'Plan: 1. save 3.0' && has '2. apt-get install steam-arm-setup_3.1_arm64.deb' && has '3. steam-arm-setup --keep'"
+check "P1 apt-get: install -y, noninteractive, conffiles kept local, lock timeout, staged file path, no downgrade flag" "grep -q '^apt-get install -y -o DPkg::Lock::Timeout=120 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold $R/cache/upgrade/3.1/steam-arm-setup_3.1_arm64.deb\$' $R/apt.log && grep -q 'frontend=noninteractive' $R/apt.log && ! grep -q allow-downgrades $R/apt.log"
+check "P1 snapshot of 3.0 made and setup lock held before apt-get runs; state file written" "grep -qx 'snapshots=1 lock=held state=yes frontend=noninteractive' $R/apt.log && grep -qx 'REASON=upgrade 3.1' $R/lib/snapshots/3.0-*/MANIFEST && grep -qx 'INSTALLED_FROM=package' $R/lib/snapshots/3.0-*/MANIFEST"
+check "P1 steam-arm-setup --keep ran after apt (packaged 3.1 setup), VERSION 3.1" "[ \"\$(tail -1 $R/setup.log)\" = 'setup 3.1 --keep' ] && [ \"\$(cv)\" = 3.1 ] && grep -qx 'SA_VERSION=3.1' $R/pkg/install.sh"
+check "P1 one snapshot (setup continued state, no second one), state cleared, history, staging gone" "[ \$(snaps) = 1 ] && [ ! -f $R/lib/upgrade.state ] && grep -qE ' 3\\.0 3\\.1 upgrade ok 3\\.0-' $R/lib/history.log && [ -z \"\$(ls -A $R/cache/upgrade 2>/dev/null)\" ]"
+check "P1 upgrade log names package asset and sha256" "grep -q 'Package asset: steam-arm-setup_3.1_arm64.deb' $R/ucache/upgrade-*.log && grep -q '^sha256 [0-9a-f]\\{64\\}  steam-arm-setup_3.1_arm64.deb\$' $R/ucache/upgrade-*.log"
+
+pkgfresh 3.0 0; relp 3.1; echo "$(printf '0%.0s' $(seq 1 64))  steam-arm-setup_3.1_arm64.deb" > "$M/assets/steam-arm-setup_3.1_arm64.deb.sha256"; fx_release 3.1 "$M" "$UH_PORT"
+uh upgrade --yes
+check "P2 sidecar hash wrong: rc 2, checksum text, apt not run, no snapshot, staging gone" "[ $RC = 2 ] && has 'Checksum of steam-arm-setup_3.1_arm64.deb does not match its .sha256 file. Nothing was installed.' && [ ! -f $R/apt.log ] && [ \$(snaps) = 0 ] && [ \"\$(cv)\" = 3.0 ] && [ -z \"\$(ls -A $R/cache/upgrade 2>/dev/null)\" ]"
+relp 3.1; sed -i 's/_arm64.deb$/_arm64.deb.other/' "$M/assets/steam-arm-setup_3.1_arm64.deb.sha256"; fx_release 3.1 "$M" "$UH_PORT"
+uh upgrade --yes; check "P2 sidecar names other file: rc 2, form text, apt not run" "[ $RC = 2 ] && has 'not in the expected form' && [ ! -f $R/apt.log ]"
+rm -f "$M/assets/"*; fx_zip 3.1 1 "$M/assets"; fx_deb 3.1 "$M/assets"; FX_DEB_DIGEST="sha256:$(printf 'a%.0s' $(seq 1 64))" fx_release 3.1 "$M" "$UH_PORT"
+uh upgrade --yes
+check "P3 GitHub digest differs: rc 2, digest text, apt not run, no snapshot" "[ $RC = 2 ] && has \"does not match GitHub's digest\" && [ ! -f $R/apt.log ] && [ \$(snaps) = 0 ] && [ \"\$(cv)\" = 3.0 ]"
+rm -f "$M/assets/"*; fx_zip 3.1 1 "$M/assets"; fx_deb 3.1 "$M/assets"; FX_DEB_DIGEST=none fx_release 3.1 "$M" "$UH_PORT"
+d0=$(dl); uh upgrade --yes
+check "P3 package asset without GitHub digest: rc 2, nothing downloaded or installed" "[ $RC = 2 ] && has 'lists no GitHub digest' && [ \$(dl) = $d0 ] && [ ! -f $R/apt.log ]"
+relp 3.1; python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [a.update(size=a["size"]+5) for a in d["assets"] if a["name"].endswith(".deb")]; json.dump(d,open(sys.argv[1],"w"))' "$M/release.json"
+uh upgrade --yes; check "P3 package size differs from API size: rc 2, incomplete, apt not run" "[ $RC = 2 ] && has 'Download incomplete' && [ ! -f $R/apt.log ]"
+
+relp 3.1; python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["assets"]=[a for a in d["assets"] if not a["name"].startswith("steam-arm-setup")]; json.dump(d,open(sys.argv[1],"w"))' "$M/release.json"
+d0=$(dl); uh upgrade --yes
+check "P4 release without package asset: rc 3, build-from-tag steps, nothing downloaded, apt not run" "[ $RC = 3 ] && has 'Package update: build steam-arm-setup_3.1_arm64.deb (build-deb.sh).' && [ \$(dl) = $d0 ] && [ ! -f $R/apt.log ]"
+uh upgrade --check; check "P4 check without package asset: build steps, DEB=no stored" "has 'Package update: build' && grep -qs '^DEB=no\$' $R/ucache/release-check $R/lib/release-check"
+relp 3.1; python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [a.update(browser_download_url=a["browser_download_url"].replace("/steam-arm-setup_", "/x/../steam-arm-setup_")) for a in d["assets"] if a["name"].endswith(".deb")]; json.dump(d,open(sys.argv[1],"w"))' "$M/release.json"
+d0=$(dl); uh upgrade --yes
+check "P4 package address not exactly <downloads>/<tag>/<name>: package asset ignored, nothing downloaded" "[ $RC = 3 ] && has 'Package update: build' && [ \$(dl) = $d0 ]"
+relp 3.1; python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [a.update(name=a["name"].replace("3.1", "3.1;id")) for a in d["assets"] if a["name"].startswith("steam-arm-setup")]; json.dump(d,open(sys.argv[1],"w"))' "$M/release.json"
+uh upgrade --yes; check "P4 asset name not matching release version: ignored (no command from asset names)" "[ $RC = 3 ] && has 'Package update: build' && [ ! -f $R/apt.log ]"
+
+pkgfresh 3.0 0; mkdir -p "$T/pdl"; rm -f "$T/pdl/"*; fx_deb 3.1 "$T/pdl"; n0=$(reqs)
+uh upgrade --file "$T/pdl/steam-arm-setup_3.1_arm64.deb" --yes
+check "P5 --file package: rc 0, no network, apt got staged copy, setup ran" "[ $RC = 0 ] && [ \$(reqs) = $n0 ] && grep -q \"$R/cache/upgrade/3.1/steam-arm-setup_3.1_arm64.deb\\\$\" $R/apt.log && [ \"\$(cv)\" = 3.1 ]"
+pkgfresh 3.0 0; rm "$T/pdl/steam-arm-setup_3.1_arm64.deb.sha256"
+uh upgrade --file "$T/pdl/steam-arm-setup_3.1_arm64.deb" --yes
+check "P5 --file package without .sha256: rc 2, apt not run" "[ $RC = 2 ] && has '.sha256 file beside it needed' && [ ! -f $R/apt.log ]"
+fx_deb 3.1 "$T/pdl"; fresh 3.0 0; fx_apt; rm -f "$R/apt.log"
+uh upgrade --file "$T/pdl/steam-arm-setup_3.1_arm64.deb" --yes
+check "P5 --file package on zip install: rc 3, refused, apt not run" "[ $RC = 3 ] && has 'upgrade with that zip' && [ ! -f $R/apt.log ] && [ \"\$(cv)\" = 3.0 ]"
+cp "$T/pdl/steam-arm-setup_3.1_arm64.deb" "$T/pdl/steam-arm-setup_3.1\$(id)_arm64.deb"; pkgfresh 3.0 0
+uh upgrade --file "$T/pdl/steam-arm-setup_3.1\$(id)_arm64.deb" --yes
+check "P5 --file package name with shell characters: rc 2, refused" "[ $RC = 2 ] && has 'File name is not steam-arm-setup_<version>_arm64.deb' && [ ! -f $R/apt.log ]"
+
+rm -f "$M/assets/"*; fx_zip 3.1 1 "$M/assets"; fx_deb 3.1 "$M/assets"; FX_DEB_DIGEST="sha256:XYZ" fx_release 3.1 "$M" "$UH_PORT"
+d0=$(dl); uh upgrade --yes
+check "P3 malformed GitHub digest: treated as missing, refused, nothing downloaded" "[ $RC = 2 ] && has 'lists no GitHub digest' && [ \$(dl) = $d0 ] && [ ! -f $R/apt.log ]"
+relp 3.1; s1=$(cat "$M/assets/steam-arm-setup_3.1_arm64.deb.sha256"); printf '%s\n%s\n' "$s1" "$s1" > "$M/assets/steam-arm-setup_3.1_arm64.deb.sha256"; fx_release 3.1 "$M" "$UH_PORT"
+uh upgrade --yes; check "P2 sidecar with two lines: rc 2, form text, apt not run" "[ $RC = 2 ] && has 'not in the expected form' && [ ! -f $R/apt.log ]"
+relp 3.1; rm "$M/assets/steam-arm-setup_3.1_arm64.deb.sha256"; fx_deb 3.1 "$M/assets"; python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["assets"]=[a for a in d["assets"] if not a["name"].endswith(".deb.sha256")]; json.dump(d,open(sys.argv[1],"w"))' "$M/release.json"
+d0=$(dl); uh upgrade --yes
+check "P4 package asset without its .sha256 asset: ignored, build steps, nothing downloaded" "[ $RC = 3 ] && has 'Package update: build' && [ \$(dl) = $d0 ]"
+pkgfresh 3.0 0; mkdir -p "$T/pdl2"; rm -f "$T/pdl2/"*; fx_deb 3.1 "$T/pdl2" ctl-package=other-tool
+uh upgrade --file "$T/pdl2/steam-arm-setup_3.1_arm64.deb" --yes
+check "P5 --file package whose control names other package: rc 2, refused before lock, apt not run, no snapshot" "[ $RC = 2 ] && has 'is not package steam-arm-setup 3.1 for arm64 (control: other-tool/3.1/arm64)' && [ ! -f $R/apt.log ] && [ \$(snaps) = 0 ]"
+rm -f "$T/pdl2/"*; fx_deb 3.1 "$T/pdl2" ctl-arch=amd64; uh upgrade --file "$T/pdl2/steam-arm-setup_3.1_arm64.deb" --yes
+check "P5 --file package for other architecture: rc 2, apt not run" "[ $RC = 2 ] && has 'control: steam-arm-setup/3.1/amd64' && [ ! -f $R/apt.log ]"
+pkgfresh 3.2 1; rm -f "$T/pdl2/"*; fx_deb 3.1 "$T/pdl2"
+uh upgrade --file "$T/pdl2/steam-arm-setup_3.1_arm64.deb" --yes
+check "P6 --file older package without --allow-older: rc 3, apt not run" "[ $RC = 3 ] && has 'newer than this file (3.1)' && [ ! -f $R/apt.log ]"
+uh upgrade --file "$T/pdl2/steam-arm-setup_3.1_arm64.deb" --yes --allow-older
+check "P6 --file older package with --allow-older: apt --allow-downgrades, VERSION 3.1" "[ $RC = 0 ] && grep -q -- '--allow-downgrades' $R/apt.log && [ \"\$(cv)\" = 3.1 ]"
+check "P1b lock released before steam-arm-setup (setup stand-in takes lock as installer does) and apt runs without fd 9" "fn up_deb '$CFG' | grep -q '</dev/null 9>&- 2>&1' && grep -q 'flock -n 8' '$UH_FIX'"
+pkgfresh 3.0 0; relp 3.1; python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["assets"]=[a for a in d["assets"] if not a["name"].startswith("steam-arm-setup")]; json.dump(d,open(sys.argv[1],"w"))' "$M/release.json"
+OUT=$(PATH="$R/pbin:$PATH" UH_EVAL="$ST; maint_update_check" bash "$UH" 2>&1)
+check "P9 menu Check for new version, package without asset: message only, no Upgrade now" "has 'MSG Check for new version|' && has 'Package update: build' && ! has 'Upgrade now'"
+pkgfresh 3.0 0; relp 3.1; n0=$(reqs); ue 'up_check_open'
+check "P9 menu start with default settings: no request" "[ \$(reqs) = $n0 ]"
+
+pkgfresh 3.2 1; relp 3.1
+uh upgrade --yes
+check "P6 package 3.2, newest release 3.1: rc 1, nothing to do, apt not run" "[ $RC = 1 ] && has 'Installed 3.2 is newer than newest release (3.1). Nothing to do.' && [ ! -f $R/apt.log ]"
+uh upgrade --yes --allow-older
+check "P6 --allow-older: rc 0, apt-get --allow-downgrades, setup --keep --allow-older, VERSION 3.1" "[ $RC = 0 ] && grep -q '^apt-get install -y .* --allow-downgrades $R/cache/upgrade/3.1/steam-arm-setup_3.1_arm64.deb\$' $R/apt.log && [ \"\$(tail -1 $R/setup.log)\" = 'setup 3.1 --keep --allow-older' ] && [ \"\$(cv)\" = 3.1 ] && grep -qx 'REASON=upgrade 3.1' $R/lib/snapshots/3.2-*/MANIFEST"
+
+pkgfresh 3.0 0; relp 3.1; touch "$R/apt-fail"
+uh upgrade --yes; P7=$RC
+check "P7 apt-get fails: non-zero, restore named, snapshot kept, state left (TO 3.1), setup not run" "[ $P7 != 0 ] && has 'apt-get could not install steam-arm-setup_3.1_arm64.deb' && has 'Restore 3.0: sudo steam-arm-config upgrade --rollback' && [ \$(snaps) = 1 ] && grep -qx 'TO=3.1' $R/lib/upgrade.state && ! grep -qs 'setup 3.1' $R/setup.log && [ \"\$(cv)\" = 3.0 ]"
+OUT=$(PATH="$R/pbin:$PATH" UH_EVAL="$ST; maint_upgrade" bash "$UH" 2>&1)
+check "P7 menu Upgrade after failed apt: restore offered (Unfinished change, Restore 3.0)" "has 'MENU Unfinished change|' && has 'Restore 3.0' && ! has 'Run 3.1 setup again'"
+rm -f "$R/apt-fail"; uh upgrade --rollback --yes
+check "P7 restore after failed apt: 3.0 restored, state cleared, package files untouched by restore" "[ $RC = 0 ] && has 'Steam ARM 3.0 restored.' && [ ! -f $R/lib/upgrade.state ] && grep -qx 'SA_VERSION=3.0' $R/pkg/install.sh"
+pkgfresh 3.0 0; relp 3.1; FX_FAIL=1 uh upgrade --yes
+check "P7 packaged setup fails after apt: restore and setup-again named" "[ $RC != 0 ] && has 'Setup of 3.1 stopped' && has 'Run 3.1 setup again: sudo steam-arm-setup --keep'"
+OUT=$(PATH="$R/pbin:$PATH" UH_EVAL="$ST; maint_upgrade" bash "$UH" 2>&1)
+check "P7 menu after failed packaged setup: Restore 3.0 and Run 3.1 setup again" "has 'Restore 3.0' && has 'Run 3.1 setup again'"
+
+pkgfresh 3.0 0; relp 3.1; d0=$(dl)
+( flock "$R/run/steam-arm-setup.lock" sleep 3 ) & LP=$!; sleep 0.3
+uh upgrade --yes; wait "$LP"
+check "P8 setup lock held: rc 3, nothing downloaded, apt not run" "[ $RC = 3 ] && has 'Another setup run is in progress.' && [ \$(dl) = $d0 ] && [ ! -f $R/apt.log ]"
+touch "$R/steam-running"; uh upgrade --yes; rm -f "$R/steam-running"
+check "P8 Steam running: rc 3, apt not run" "[ $RC = 3 ] && has 'Steam ARM is running' && [ ! -f $R/apt.log ]"
+uh upgrade; check "P8 without --yes and without terminal: asks for --yes, nothing downloaded" "[ $RC = 1 ] && has 'add --yes' && [ \$(dl) = $d0 ]"
+
+pkgfresh 3.0 0; relp 3.1
+OUT=$(PATH="$R/pbin:$PATH" UH_EVAL="$ST; maint_upgrade" bash "$UH" 2>&1)
+check "P9 menu Upgrade, package with asset: confirm names package file, apt and setup; done screen" "has 'YESNO Upgrade to newest release|Steam ARM 3.1 (installed: 3.0, package steam-arm-setup)' && has 'steam-arm-setup_3.1_arm64.deb and its .sha256 file' && has 'steam-arm-setup --keep' && has 'TEXT Upgrade to newest release: done|' && [ \"\$(cv)\" = 3.1 ]"
+pkgfresh 3.0 0; relp 3.1
+OUT=$(PATH="$R/pbin:$PATH" UH_EVAL="$ST; maint_update_check" bash "$UH" 2>&1)
+check "P9 menu Check for new version, package with asset: Upgrade now offered" "has 'Upgrade now'"
+check "P9 no automatic network use: menu start calls only up_check_open (default off)" "[ \$(grep -c 'up_check_open' '$CFG') = 2 ] && fn check_on_open '$CFG' | grep -q 'echo off'"
+check "P10 zip path never writes package files: no apt-get outside up_deb, snap_restore refuses package paths" "[ \$(grep -c 'apt-get install -y' '$CFG') = 1 ] && fn up_deb '$CFG' | grep -q 'apt-get install -y' && fn snap_restore '$CFG' | grep -q 'usr/share/steam-arm-setup/'"
+check "P10 order in up_deb: verify before lock, lock before snapshot, snapshot before apt-get" "f=\$(fn up_deb '$CFG'); a=\$(grep -n 'up_verify ' <<<\"\$f\" | cut -d: -f1); b=\$(grep -n 'flock -n 9' <<<\"\$f\" | cut -d: -f1); c=\$(grep -n 'snap_make ' <<<\"\$f\" | cut -d: -f1); d=\$(grep -n 'apt-get install -y' <<<\"\$f\" | cut -d: -f1); [ \$a -lt \$b ] && [ \$b -lt \$c ] && [ \$c -lt \$d ]"
 
 # ---------- misc ----------
 check "M1 shipped menu has no test hooks (fake root only through harness overrides)" "! grep -qE 'UHR|UH_|SA_TEST|mockgh' '$CFG'"

@@ -1,6 +1,7 @@
 #!/bin/sh
 # build-deb.sh: assemble the package tree from the files in this repository and build
-# steam-arm-setup_3.1_arm64.deb with dpkg-deb. Same sources and dpkg-deb version give a byte-identical package.
+# steam-arm-setup_3.1_arm64.deb with dpkg-deb, plus its release sidecar steam-arm-setup_3.1_arm64.deb.sha256.
+# Same sources and dpkg-deb version give a byte-identical package.
 set -e
 
 VERSION=3.1
@@ -57,5 +58,7 @@ chmod 0644 "$TREE/DEBIAN/md5sums"
 
 find "$TREE" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 dpkg-deb --build -Zgzip --root-owner-group "$TREE" "$SCRIPT_DIR/$DEB"
+# release sidecar: one line "<sha256>  <file name>"
+(cd "$SCRIPT_DIR" && sha256sum "$DEB" > "$DEB.sha256")
 
-echo "build-deb.sh: built $SCRIPT_DIR/$DEB"
+echo "build-deb.sh: built $SCRIPT_DIR/$DEB and $DEB.sha256"

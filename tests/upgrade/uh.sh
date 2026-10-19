@@ -18,6 +18,7 @@ SA_CACHE=$R/ucache
 SA_MENU_BIN=$R/bin/steam-arm-config
 SA_SHARE_INSTALLER=$R/share/steam-arm-install.sh
 SA_PKG_INST=$R/pkg/install.sh
+SA_PKG_BIN=$R/pbin/steam-arm-setup
 SA_REPORT=$R/report.txt
 SA_RELEASE_API=http://127.0.0.1:${UH_PORT:-9}/repos/Scrumpper/Steam-ARM/releases/latest
 SA_DL_PREFIX=http://127.0.0.1:${UH_PORT:-9}/dl/

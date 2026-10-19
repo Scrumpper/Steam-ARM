@@ -8,7 +8,17 @@ Package is built with:
 ./build-deb.sh
 ```
 
-This requires `dpkg-deb` and produces `steam-arm-setup_<version>_arm64.deb`.
+This requires `dpkg-deb` and produces `steam-arm-setup_<version>_arm64.deb` plus
+`steam-arm-setup_<version>_arm64.deb.sha256` (one line, `<sha256>  <file name>`). Same
+sources and same `dpkg-deb` version give same bytes; `tools/release-gates.sh` builds twice
+and compares.
+
+## Release assets
+
+Each release lists `Steam.ARM.<version>.zip`, `Steam.ARM.<version>.zip.sha256`,
+`steam-arm-setup_<version>_arm64.deb`, `steam-arm-setup_<version>_arm64.deb.sha256` and docs.
+Settings menu upgrade depends on these names and on sidecar form; package installs upgrade
+from `.deb` asset.
 
 ## Testing change
 

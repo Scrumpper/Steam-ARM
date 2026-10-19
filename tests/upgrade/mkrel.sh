@@ -7,7 +7,12 @@
 #                           itself after --setup-begin); every call logged to $UHR/setup.log.
 #   fx_menu FILE            settings menu stand-in of an earlier version: backup DIR [--account U] writes a settings file
 #   fx_zip V PROTO DIR      DIR/Steam.ARM.V.zip with "Steam ARM V/steam-arm-install.sh" and README.md, plus .sha256
-#   fx_release V DIR PORT [DIGEST]  DIR/release.json naming both assets (digest: GitHub sha256 field, "none" leaves it out)
+#   fx_deb V DIR [CTL]      DIR/steam-arm-setup_V_arm64.deb stand-in (apt-get and dpkg-deb stubs read version; CTL line
+#                           such as ctl-package=x or ctl-arch=x changes control field dpkg-deb stub reports) plus .sha256
+#   fx_release V DIR PORT [DIGEST]  DIR/release.json naming zip assets, and package assets when DIR/assets holds them
+#                           (digest: GitHub sha256 field, "none" leaves it out; package digest from FX_DEB_DIGEST likewise)
+#   fx_apt                  dpkg-deb -f stand-in and apt-get stand-in in $UHR/pbin; apt-get: logs call, snapshot count, lock and state to $UHR/apt.log;
+#                           $UHR/apt-fail makes it fail; else package setup of that version goes to $UHR/pkg/install.sh
 fx_menu(){ cat > "$1" <<'EOF'
 #!/bin/bash
 # settings menu stand-in of an earlier release
@@ -27,6 +32,8 @@ fx_setup(){
     cat <<'EOF'
 R=$UHR
 echo "setup $SA_VERSION $*" >> "$R/setup.log"
+# one setup run at a time, as installer does
+mkdir -p "$R/run"; exec 8>"$R/run/steam-arm-setup.lock"; flock -n 8 || { echo "another steam-arm-setup run is in progress"; exit 1; }
 # setups before 3.1 stop at options they do not know
 if [ "$PROTO" != 1 ]; then for a in "$@"; do case "$a" in --keep) ;; *) echo "error: unknown option: $a (see --help)"; exit 1;; esac; done; fi
 older=0; for a in "$@"; do [ "$a" = --allow-older ] && older=1; done
@@ -74,11 +81,43 @@ for n in sys.argv[2:]: z.write(n)' "$d/Steam.ARM.$v.zip" "Steam ARM $v/steam-arm
   (cd "$d" && sha256sum "Steam.ARM.$v.zip" > "Steam.ARM.$v.zip.sha256")
   rm -rf "$w"
 }
+fx_deb(){
+  mkdir -p "$2"
+  printf 'fake package steam-arm-setup %s\n%s\n%s\n' "$1" "$RANDOM$RANDOM" "${3:-}" > "$2/steam-arm-setup_$1_arm64.deb"
+  (cd "$2" && sha256sum "steam-arm-setup_$1_arm64.deb" > "steam-arm-setup_$1_arm64.deb.sha256")
+}
+fx_apt(){ cat > "$UHR/pbin/apt-get" <<'EOF'
+#!/bin/bash
+R=$UHR
+echo "apt-get $*" >> "$R/apt.log"
+n=$(find "$R/lib/snapshots" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null | wc -l)
+if ( exec 7<"$R/run/steam-arm-setup.lock" && flock -n 7 ) 2>/dev/null; then l=free; else l=held; fi
+echo "snapshots=$n lock=$l state=$([ -f "$R/lib/upgrade.state" ] && echo yes || echo no) frontend=${DEBIAN_FRONTEND:-}" >> "$R/apt.log"
+[ -f "$R/apt-fail" ] && { echo "E: stub failure"; exit 100; }
+f=${!#}
+v=$(sed -n 's/^fake package steam-arm-setup //p' "$f")
+[ -n "$v" ] || { echo "E: not a package"; exit 100; }
+. "$UH_FIX"; fx_setup "$v" 1 "$R/pkg/install.sh"
+printf '#!/bin/sh\nexec bash %s "$@"\n' "$R/pkg/install.sh" > "$R/pbin/steam-arm-setup"; chmod 755 "$R/pbin/steam-arm-setup"
+echo "$R/pkg/install.sh" > "$R/dpkg-owned"; echo "$v" > "$R/dpkg-ver"
+EOF
+chmod 755 "$UHR/pbin/apt-get"
+cat > "$UHR/pbin/dpkg-deb" <<'EOF'
+#!/bin/sh
+[ "$1" = -f ] || exit 2
+f=$2
+case "$3" in
+  Package) sed -n 's/^ctl-package=//p' "$f" | grep . || echo steam-arm-setup;;
+  Version) sed -n 's/^fake package steam-arm-setup //p' "$f";;
+  Architecture) sed -n 's/^ctl-arch=//p' "$f" | grep . || echo arm64;;
+esac
+EOF
+chmod 755 "$UHR/pbin/dpkg-deb"; }
 fx_release(){
   local v=$1 d=$2 port=$3 dg=${4:-} z
   z="$d/assets/Steam.ARM.$v.zip"
   [ -n "$dg" ] || dg=sha256:$(sha256sum < "$z" | cut -c1-64)
-  python3 -I -c 'import json, os, sys
+  python3 -I -c 'import hashlib, json, os, sys
 v, d, port, dg = sys.argv[1:5]
 a = os.path.join(d, "assets")
 u = "http://127.0.0.1:%s/dl/steam-arm-v%s/" % (port, v)
@@ -87,6 +126,14 @@ z = {"name": "Steam.ARM.%s.zip" % v, "size": os.path.getsize(os.path.join(a, "St
 if dg != "none": z["digest"] = dg
 s = {"name": "Steam.ARM.%s.zip.sha256" % v, "size": os.path.getsize(os.path.join(a, "Steam.ARM.%s.zip.sha256" % v)),
      "browser_download_url": u + "Steam.ARM.%s.zip.sha256" % v}
+al = [z, s]
+k = "steam-arm-setup_%s_arm64.deb" % v
+if os.path.isfile(os.path.join(a, k)):
+    kb = open(os.path.join(a, k), "rb").read()
+    e = {"name": k, "size": len(kb), "browser_download_url": u + k}
+    kd = os.environ.get("FX_DEB_DIGEST") or "sha256:" + hashlib.sha256(kb).hexdigest()
+    if kd != "none": e["digest"] = kd
+    al += [e, {"name": k + ".sha256", "size": os.path.getsize(os.path.join(a, k + ".sha256")), "browser_download_url": u + k + ".sha256"}]
 json.dump({"tag_name": "steam-arm-v%s" % v, "html_url": "https://github.com/Scrumpper/Steam-ARM/releases/tag/steam-arm-v%s" % v,
-           "body": "## Steam ARM %s\n\n- notes line\n" % v, "assets": [z, s]}, open(os.path.join(d, "release.json"), "w"))' "$v" "$d" "$port" "$dg"
+           "body": "## Steam ARM %s\n\n- notes line\n" % v, "assets": al}, open(os.path.join(d, "release.json"), "w"))' "$v" "$d" "$port" "$dg"
 }

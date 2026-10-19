@@ -23,10 +23,16 @@ upgrading package leave game library, sign-in and settings untouched.
 
 ## Update
 
-Build package of new release from its source tag (`build-deb.sh`), install it
-with `sudo apt install ./steam-arm-setup_<version>_arm64.deb`, then run
-`sudo steam-arm-setup --keep`. Setup saves installed version first; settings
-menu Maintenance, Go back to previous version, returns to it.
+Settings menu Maintenance, Upgrade to newest release (or
+`sudo steam-arm-config upgrade`), downloads `steam-arm-setup_<version>_arm64.deb`
+of newest release with its `.sha256` file, checks both against GitHub's digest,
+saves installed version, installs package with apt and runs
+`sudo steam-arm-setup --keep`. By hand: download both files, check with
+`sha256sum -c steam-arm-setup_<version>_arm64.deb.sha256`, then
+`sudo apt install ./steam-arm-setup_<version>_arm64.deb` and
+`sudo steam-arm-setup --keep`. Releases before 3.1 list no package: build it from
+source tag (`build-deb.sh`). Settings menu Maintenance, Go back to previous
+version, returns to saved version.
 
 ## Uninstall
 

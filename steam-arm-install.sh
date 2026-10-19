@@ -4748,6 +4748,7 @@ SA_UPCACHE=/var/cache/steam-arm
 SA_MENU_BIN=/usr/local/bin/steam-arm-config
 SA_LOCK=/run/steam-arm-setup.lock
 SA_PKG_INST=/usr/share/steam-arm-setup/install.sh
+SA_PKG_BIN=/usr/bin/steam-arm-setup
 SA_ZIP_MAX=33554432
 SA_SNAP_FMT=1
 # Version without hotfix suffix and trailing .0 parts (2.2.0 = 2.2).
@@ -5015,10 +5016,12 @@ snap_prune(){
 }
 # ---------- release check ----------
 # rel_fetch [TIMEOUT]: newest release from GitHub API. REL_TAG REL_VER REL_URL REL_ZIP REL_ZIP_URL REL_ZIP_SIZE REL_DIGEST
-# REL_SHA_URL REL_NOTES (file in private folder REL_TMP; rel_done deletes it); status 2 with REL_ERR on failure.
+# REL_SHA_URL, package asset REL_DEB_URL REL_DEB_SIZE REL_DEB_DIGEST REL_DEB_SHA_URL (empty when release has none),
+# REL_NOTES (file in private folder REL_TMP; rel_done deletes it); status 2 with REL_ERR on failure.
 rel_fetch(){
   local f code r
   REL_TAG="" REL_VER="" REL_URL="" REL_ZIP="" REL_ZIP_URL="" REL_ZIP_SIZE="" REL_DIGEST="" REL_SHA_URL="" REL_ERR=""
+  REL_DEB_URL="" REL_DEB_SIZE="" REL_DEB_DIGEST="" REL_DEB_SHA_URL=""
   have curl || { REL_ERR="curl is not installed. Releases: $SA_DOCS/releases"; return 2; }
   have python3 || { REL_ERR="python3 is not installed. Releases: $SA_DOCS/releases"; return 2; }
   rel_done
@@ -5039,21 +5042,25 @@ d = json.load(open(sys.argv[1], encoding="utf-8"))
 w = lambda x: (str(x or "").split() or ["-"])[0]
 tag = w(d.get("tag_name"))
 v = re.sub(r"^v", "", re.sub(r"^steam-arm-", "", tag))
-z = s = {}
+z = s = k = ks = {}
 for a in d.get("assets") or []:
     n = str(a.get("name") or "")
     if n == "Steam.ARM.%s.zip" % v: z = a
     if n == "Steam.ARM.%s.zip.sha256" % v: s = a
-dg = str(z.get("digest") or "")
-dg = dg[7:] if re.fullmatch(r"sha256:[0-9a-f]{64}", dg) else "-"
-print("\t".join([tag, w(d.get("html_url")), w(z.get("browser_download_url")), str(int(z.get("size") or 0)), dg,
-                 w(s.get("browser_download_url")), str(int(s.get("size") or 0))]))
+    if n == "steam-arm-setup_%s_arm64.deb" % v: k = a
+    if n == "steam-arm-setup_%s_arm64.deb.sha256" % v: ks = a
+def dg(a):
+    x = str(a.get("digest") or "")
+    return x[7:] if re.fullmatch(r"sha256:[0-9a-f]{64}", x) else "-"
+print("\t".join([tag, w(d.get("html_url")), w(z.get("browser_download_url")), str(int(z.get("size") or 0)), dg(z),
+                 w(s.get("browser_download_url")), str(int(s.get("size") or 0)),
+                 w(k.get("browser_download_url")), str(int(k.get("size") or 0)), dg(k), w(ks.get("browser_download_url"))]))
 b = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", str(d.get("body") or ""))[:65536]
 fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
 with os.fdopen(fd, "w", encoding="utf-8") as o:
     o.write(b)' "$f" "$REL_NOTES" 2>/dev/null)
   rm -f "$f"
-  IFS=$'\t' read -r REL_TAG REL_URL REL_ZIP_URL REL_ZIP_SIZE REL_DIGEST REL_SHA_URL _ <<<"$r"
+  IFS=$'\t' read -r REL_TAG REL_URL REL_ZIP_URL REL_ZIP_SIZE REL_DIGEST REL_SHA_URL _ REL_DEB_URL REL_DEB_SIZE REL_DEB_DIGEST REL_DEB_SHA_URL <<<"$r"
   REL_VER=${REL_TAG#steam-arm-}; REL_VER=${REL_VER#v}
   # 2.3-hotfix style tags: number part compared, full tag shown
   if [ -z "$r" ] || ! { [[ "${REL_VER%%-*}" =~ ^[0-9]+(\.[0-9]+)*$ ]] && [[ "$REL_VER" =~ ^[0-9.]+(-[A-Za-z0-9.]+)?$ ]]; }; then
@@ -5061,9 +5068,15 @@ with os.fdopen(fd, "w", encoding="utf-8") as o:
   fi
   case "$REL_URL" in https://github.com/*) ;; *) REL_URL="$SA_DOCS/releases";; esac
   REL_ZIP="Steam.ARM.$REL_VER.zip"
-  case "$REL_ZIP_URL" in "$SA_DL_PREFIX"*) ;; *) REL_ZIP_URL="";; esac
-  case "$REL_SHA_URL" in "$SA_DL_PREFIX"*) ;; *) REL_SHA_URL="";; esac
+  # download addresses: exactly <release downloads>/<tag>/<asset name>
+  local b="$SA_DL_PREFIX$REL_TAG/" k="steam-arm-setup_${REL_VER}_arm64.deb"
+  [ "$REL_ZIP_URL" = "$b$REL_ZIP" ] || REL_ZIP_URL=""
+  [ "$REL_SHA_URL" = "$b$REL_ZIP.sha256" ] || REL_SHA_URL=""
+  [ "$REL_DEB_URL" = "$b$k" ] || REL_DEB_URL=""
+  [ "$REL_DEB_SHA_URL" = "$b$k.sha256" ] || REL_DEB_SHA_URL=""
+  [ -n "$REL_DEB_URL" ] && [ -n "$REL_DEB_SHA_URL" ] || REL_DEB_URL="" REL_DEB_SHA_URL=""
   [ "$REL_DIGEST" = - ] && REL_DIGEST=""
+  [ "$REL_DEB_DIGEST" = - ] && REL_DEB_DIGEST=""
   return 0
 }
 # Private folder for one release answer: root's under $SA_UPCACHE (0700, never a link), else tmpf -d.
@@ -5079,7 +5092,8 @@ rel_file(){ if [ "$(id -u)" = 0 ]; then echo "$SA_LIB/release-check"; else echo 
 rel_store(){
   local f; f=$(rel_file)
   { [ ! -L "$(dirname "$f")" ] && mkdir -p "$(dirname "$f")"; } 2>/dev/null || return 0
-  printf 'TAG=%s\nVERSION=%s\nSIZE=%s\nURL=%s\nDIGEST=%s\nCHECKED=%s\n' "$REL_TAG" "$REL_VER" "$REL_ZIP_SIZE" "$REL_URL" "$REL_DIGEST" "$(date +%s)" > "$f.new" 2>/dev/null \
+  printf 'TAG=%s\nVERSION=%s\nSIZE=%s\nURL=%s\nDIGEST=%s\nDEB=%s\nCHECKED=%s\n' "$REL_TAG" "$REL_VER" "$REL_ZIP_SIZE" "$REL_URL" "$REL_DIGEST" \
+    "$([ -n "$REL_DEB_URL" ] && echo yes || echo no)" "$(date +%s)" > "$f.new" 2>/dev/null \
     && chmod 644 "$f.new" && mv -f "$f.new" "$f"
   if [ -n "${REL_NOTES:-}" ] && [ -f "$REL_NOTES" ] && [ ! -L "$REL_NOTES" ]; then
     { cp "$REL_NOTES" "$f.notes.new" && chmod 644 "$f.notes.new" && mv -f "$f.notes.new" "$(dirname "$f")/release-notes.md"; } 2>/dev/null \
@@ -5116,14 +5130,15 @@ update_check(){
   echo "Newer release: Steam ARM $REL_VER (installed: $cur)."
   echo "$REL_URL"
   echo
-  if [ "$(installed_from)" = package ]; then up_pkg_text "$REL_VER"
+  if [ "$(installed_from)" = package ] && [ -z "$REL_DEB_URL" ]; then up_pkg_text "$REL_VER"
   else
+    [ "$(installed_from)" = package ] && echo "Package steam-arm-setup_${REL_VER}_arm64.deb attached to release."
     echo "Upgrade: Maintenance > Upgrade to newest release, or"
     echo "  sudo steam-arm-config upgrade"
   fi
   return 0
 }
-# Package steps for release $1 (newer than installed; $2=1: older, through --allow-older).
+# Package steps for release $1 without package asset (newer than installed; $2=1: older, through --allow-older).
 up_pkg_text(){
   if [ "${2:-0}" = 1 ]; then cat <<EOF
 Installed through package steam-arm-setup $(installed_version). Release $1 is older.
@@ -5184,29 +5199,34 @@ up_stage(){
   mkdir -m 700 "$u/$1.part" 2>/dev/null || { ulog "Could not create $u/$1.part."; return 1; }
   UP_DIR="$u/$1.part"
 }
+# up_get URL OUT [ASSET]: one release asset over HTTPS.
 up_get(){
   local code; code=$(curl -sSL "${SA_CURL_PROTO[@]}" --max-filesize "$SA_ZIP_MAX" --retry 2 --max-time 300 -o "$2" -w '%{http_code}' "$1" 2>>"${UP_LOG:-/dev/null}")
   case "$code" in
     200) return 0;;
-    000|'') ulog "GitHub could not be reached (offline, or address blocked). Upgrade from a downloaded zip: steam-arm-config upgrade --file ZIP"; return 2;;
+    000|'') ulog "GitHub could not be reached (offline, or address blocked). Upgrade from a downloaded file: steam-arm-config upgrade --file $([ -n "${3:-}" ] && echo "steam-arm-setup_${REL_VER}_arm64.deb" || echo ZIP)"; return 2;;
     403|429) ulog "GitHub refused the request (request limit for this address). Try again in an hour."; return 2;;
-    404) ulog "Release $REL_VER has no installer zip. Releases: $SA_DOCS/releases"; return 2;;
+    404) ulog "Release $REL_VER has no ${3:-installer zip}. Releases: $SA_DOCS/releases"; return 2;;
     *) ulog "GitHub answered with HTTP $code."; return 2;;
   esac
 }
-# up_verify ZIP SIDECAR VERSION [SIZE] [DIGEST]: nothing extracted before all pass.
+# up_verify FILE SIDECAR ASSET [SIZE] [DIGEST]: nothing extracted or installed before all pass.
 up_verify(){
-  local z=$1 s=$2 v=$3 size=${4:-} dg=${5:-} got h
+  local z=$1 s=$2 n=$3 size=${4:-} dg=${5:-} got h l
   if [ -n "$size" ] && [ "$size" != 0 ]; then
     got=$(stat -c %s "$z" 2>/dev/null)
     [ "$got" = "$size" ] || { ulog "Download incomplete (${got:-0} of $size bytes). Try again."; return 2; }
   fi
-  { [ "$(wc -l < "$s")" -le 1 ] && grep -qE "^[0-9a-f]{64}  Steam\\.ARM\\.${v//./\\.}\\.zip\$" "$s"; } \
-    || { ulog "Checksum file of Steam.ARM.$v.zip is not in the expected form (<sha256>  Steam.ARM.$v.zip). Nothing was installed."; return 2; }
+  l=$(head -c 512 "$s" 2>/dev/null)
+  { [ "$(wc -l < "$s")" -le 1 ] && [[ "$l" =~ ^[0-9a-f]{64}\ \ (.+)$ ]] && [ "${BASH_REMATCH[1]}" = "$n" ]; } \
+    || { ulog "Checksum file of $n is not in the expected form (<sha256>  $n). Nothing was installed."; return 2; }
   h=$(sha256sum < "$z" | cut -c1-64)
-  ulog "sha256 $h  Steam.ARM.$v.zip"
-  if [ "$h" != "$(cut -c1-64 "$s")" ] || { [ -n "$dg" ] && [ "$h" != "$dg" ]; }; then
-    ulog "Checksum of Steam.ARM.$v.zip does not match its .sha256 file. Nothing was installed. Try again later; if it persists, report it."; return 2
+  ulog "sha256 $h  $n"
+  if [ "$h" != "${l:0:64}" ]; then
+    ulog "Checksum of $n does not match its .sha256 file. Nothing was installed. Try again later; if it persists, report it."; return 2
+  fi
+  if [ -n "$dg" ] && [ "$h" != "$dg" ]; then
+    ulog "Checksum of $n does not match GitHub's digest of that file. Nothing was installed. Try again later; if it persists, report it."; return 2
   fi
 }
 # up_extract ZIP DIR VERSION: members under "Steam ARM V/", no absolute, .. or links, at most 64 members and 16 MB.
@@ -5248,41 +5268,53 @@ up_refuse(){
 }
 # up_run YES FILE OLDER: check, plan, download, verify, unpack, run that release's setup with --keep.
 up_run(){
-  local yes=$1 file=$2 older=$3 cur v a rc u pkg=0 down=0 osnap=""
+  local yes=$1 file=$2 older=$3 cur v a rc u pkg=0 deb=0 down=0 osnap=""
   local -a ao=()
   cur=$(installed_version)
-  # package installs: version compared first, then package steps (nothing downloads)
+  # package installs: versions compared first; package asset installed through apt, else package steps
   [ "$(installed_from)" = package ] && pkg=1
   if [ "$pkg" = 1 ]; then is_installed || { ulog "Steam ARM is not installed. Install it with steam-arm-config, Install / Setup."; return 3; }
   else up_refuse || return $?; fi
   if [ -n "$file" ]; then
-    v=$(basename "$file" | sed -n 's/^Steam[. ]ARM[. ]\(.*\)\.zip$/\1/p')
-    ver_ok "${v%%-*}" || { ulog "File name is not Steam.ARM.<version>.zip: $file"; return 2; }
-    if [ "$pkg" = 0 ]; then
-      [ -f "$file" ] && [ -f "$file.sha256" ] || { ulog "Zip with its .sha256 file beside it needed: $file, $file.sha256"; return 2; }
-      REL_VER=$v REL_ZIP_SIZE=$(stat -c %s "$file") REL_DIGEST=""
-    fi
+    case "$(basename "$file")" in
+      *.deb)
+        v=$(basename "$file" | sed -n 's/^steam-arm-setup_\(.*\)_arm64\.deb$/\1/p')
+        up_ver_name "$v" || { ulog "File name is not steam-arm-setup_<version>_arm64.deb: $file"; return 2; }
+        [ "$pkg" = 1 ] || { ulog "Steam ARM was set up from Steam.ARM.<version>.zip; upgrade with that zip (upgrade --file ZIP). Package files are installed by hand only: sudo apt install $file"; return 3; }
+        [ -f "$file" ] && [ -f "$file.sha256" ] || { ulog "Package with its .sha256 file beside it needed: $file, $file.sha256"; return 2; }
+        deb=1 REL_VER=$v REL_DEB_SIZE=$(stat -c %s "$file") REL_DEB_DIGEST="";;
+      *)
+        v=$(basename "$file" | sed -n 's/^Steam[. ]ARM[. ]\(.*\)\.zip$/\1/p')
+        up_ver_name "$v" || { ulog "File name is not Steam.ARM.<version>.zip: $file"; return 2; }
+        if [ "$pkg" = 0 ]; then
+          [ -f "$file" ] && [ -f "$file.sha256" ] || { ulog "Zip with its .sha256 file beside it needed: $file, $file.sha256"; return 2; }
+          REL_VER=$v REL_ZIP_SIZE=$(stat -c %s "$file") REL_DIGEST=""
+        fi;;
+    esac
   else
     rel_fetch || { ulog "$REL_ERR"; return 2; }
     rel_store; rel_done
     v=$REL_VER
     ulog "Newest release: $REL_TAG, asset $REL_ZIP (${REL_ZIP_SIZE:-0} bytes${REL_DIGEST:+, digest sha256:$REL_DIGEST})"
+    [ -n "$REL_DEB_URL" ] && ulog "Package asset: steam-arm-setup_${v}_arm64.deb (${REL_DEB_SIZE:-0} bytes${REL_DEB_DIGEST:+, digest sha256:$REL_DEB_DIGEST})"
     if [ "$pkg" = 0 ] && { [ -z "$REL_ZIP_URL" ] || [ -z "$REL_SHA_URL" ]; }; then
       ulog "Release $v has no installer zip. Releases: $SA_DOCS/releases"; return 2
     fi
+    [ "$pkg" = 1 ] && [ -n "$REL_DEB_URL" ] && deb=1
   fi
   if [ "$(ver_norm "$v")" = "$(ver_norm "$cur")" ] && [ "$v" = "${v%%-*}" ]; then
     ulog "Steam ARM $cur, newest release, is already installed."; return 1
   fi
   if ver_gt "$cur" "$v"; then
     if [ "$older" != 1 ]; then
-      if [ -n "$file" ]; then ulog "Installed $cur is newer than this zip ($v). Nothing to do."; return 3; fi
+      if [ -n "$file" ]; then ulog "Installed $cur is newer than this file ($v). Nothing to do."; return 3; fi
       ulog "Installed $cur is newer than newest release ($v). Nothing to do."
       return 1
     fi
     down=1
     ulog "Warning: $v is older than installed $cur (--allow-older). Maintenance > Go back to previous version restores a saved copy."
   fi
+  if [ "$deb" = 1 ]; then up_deb "$yes" "$file" "$v" "$cur" "$down"; return $?; fi
   if [ "$pkg" = 1 ]; then
     while IFS= read -r a; do ulog "$a"; done < <(up_pkg_text "$v" "$down")
     return 3
@@ -5302,7 +5334,7 @@ up_run(){
     up_get "$REL_ZIP_URL" "$UP_DIR/zip" || { rm -rf "$UP_DIR"; return 2; }
     up_get "$REL_SHA_URL" "$UP_DIR/sha" || { rm -rf "$UP_DIR"; return 2; }
   fi
-  up_verify "$UP_DIR/zip" "$UP_DIR/sha" "$v" "${REL_ZIP_SIZE:-}" "${REL_DIGEST:-}" || { rm -rf "$UP_DIR"; return 2; }
+  up_verify "$UP_DIR/zip" "$UP_DIR/sha" "Steam.ARM.$v.zip" "${REL_ZIP_SIZE:-}" "${REL_DIGEST:-}" || { rm -rf "$UP_DIR"; return 2; }
   up_extract "$UP_DIR/zip" "$UP_DIR/x" "$v" || { rm -rf "$UP_DIR"; return 2; }
   u=${UP_DIR%.part}
   mv "$UP_DIR" "$u" || { rm -rf "$UP_DIR"; ulog "Could not rename $UP_DIR."; return 2; }
@@ -5342,6 +5374,75 @@ up_run(){
   else
     rm -rf "$u"; ulog "Setup of $v stopped (status $rc). Nothing changed; $cur stays."
   fi
+  return "$rc"
+}
+# Version part of an asset file name: number, optional hotfix suffix.
+up_ver_name(){ [[ "$1" =~ ^[0-9]+(\.[0-9]+)*(-[A-Za-z0-9.]+)?$ ]]; }
+# up_deb YES FILE VERSION CURRENT DOWN: package install. Download, size, sidecar and digest checks, plan, then under setup
+# lock: snapshot, apt-get install of verified file, steam-arm-setup --keep. Nothing installed before every check passes.
+up_deb(){
+  local yes=$1 file=$2 v=$3 cur=$4 down=$5 n u a rc snap
+  local -a ao=() aa=()
+  n="steam-arm-setup_${v}_arm64.deb"
+  up_refuse || return $?
+  have apt-get || { ulog "apt-get not found; package $n cannot be installed here."; return 2; }
+  if [ -z "$file" ] && [ -z "$REL_DEB_DIGEST" ]; then ulog "Release $v lists no GitHub digest of $n. Nothing was installed."; return 2; fi
+  if [ "$yes" != 1 ] && [ ! -t 0 ]; then ulog "steam-arm-config: add --yes to upgrade without a terminal"; return 1; fi
+  up_space "${REL_DEB_SIZE:-0}" || return 2
+  up_stage "$v" || return 2
+  if [ -n "$file" ]; then
+    { cp "$file" "$UP_DIR/$n" && cp "$file.sha256" "$UP_DIR/sha"; } || { ulog "Could not copy $file."; rm -rf "$UP_DIR"; return 2; }
+  else
+    ulog "Downloading $n"
+    up_get "$REL_DEB_URL" "$UP_DIR/$n" "package $n" || { rm -rf "$UP_DIR"; return 2; }
+    up_get "$REL_DEB_SHA_URL" "$UP_DIR/sha" "package $n" || { rm -rf "$UP_DIR"; return 2; }
+  fi
+  up_verify "$UP_DIR/$n" "$UP_DIR/sha" "$n" "${REL_DEB_SIZE:-}" "${REL_DEB_DIGEST:-}" || { rm -rf "$UP_DIR"; return 2; }
+  # control fields name this package, this version, arm64
+  a=$(dpkg-deb -f "$UP_DIR/$n" Package 2>/dev/null)/$(dpkg-deb -f "$UP_DIR/$n" Version 2>/dev/null)/$(dpkg-deb -f "$UP_DIR/$n" Architecture 2>/dev/null)
+  [ "$a" = "steam-arm-setup/$v/arm64" ] || { rm -rf "$UP_DIR"; ulog "$n is not package steam-arm-setup $v for arm64 (control: $a). Nothing was installed."; return 2; }
+  u=${UP_DIR%.part}
+  mv "$UP_DIR" "$u" || { rm -rf "$UP_DIR"; ulog "Could not rename $UP_DIR."; return 2; }
+  [ "$down" = 1 ] && aa=(--allow-downgrades)
+  ulog "Plan: 1. save $cur (Maintenance > Go back to previous version)"
+  ulog "      2. apt-get install${aa[*]:+ ${aa[*]}} $n (checked, sha256 above)"
+  ulog "      3. steam-arm-setup --keep (choices of last run)"
+  if [ "$yes" != 1 ]; then
+    printf 'Install package steam-arm-setup %s over %s? [y/N] ' "$v" "$cur"; read -r a
+    case "$a" in y|Y|yes|YES) ;; *) rm -rf "$u"; ulog "Nothing changed."; return 1;; esac
+  fi
+  mkdir -p "$(dirname "$SA_LOCK")" 2>/dev/null
+  { exec 9>"$SA_LOCK" && flock -n 9; } 2>/dev/null || { exec 9>&-; rm -rf "$u"; ulog "Another setup run is in progress."; return 3; }
+  if ! snap_make "upgrade $v"; then exec 9>&-; rm -rf "$u"; ulog "Snapshot of $cur could not be written ($SNAP_ERR); nothing changed."; return 2; fi
+  snap=$SNAP_NAME; ulog "Current version $cur saved: $snap"
+  state_write "FROM=$cur" "TO=$v" KIND=upgrade "SNAPSHOT=$snap" "STARTED=$(date '+%Y-%m-%d %H:%M')" "PID=$$" \
+    || { exec 9>&-; rm -rf "$u"; ulog "$(state_file) could not be written; nothing changed."; return 2; }
+  ulog "Installing package: apt-get install${aa[*]:+ ${aa[*]}} $u/$n"
+  { env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=120 \
+      -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "${aa[@]}" "$u/$n" </dev/null 9>&- 2>&1
+    echo "rc=$?" > "$u/rc"; } | tee -a "${UP_LOG:-/dev/null}" 9>&-
+  rc=$(sed -n 's/^rc=//p' "$u/rc" 2>/dev/null); rc=${rc:-1}
+  # lock released before setup runs (setup takes it itself)
+  exec 9>&-
+  if [ "$rc" != 0 ] || [ "$(inst_ver "$SA_PKG_INST")" != "$v" ]; then
+    rm -rf "$u"
+    ulog "apt-get could not install $n (status $rc). Programs of $cur stay; package state: dpkg -l steam-arm-setup."
+    ulog "Restore $cur: sudo steam-arm-config upgrade --rollback"
+    [ "$rc" != 0 ] && return "$rc"; return 2
+  fi
+  [ "$down" = 1 ] && inst_takes_older "$SA_PKG_INST" "$v" && ao=(--allow-older)
+  ulog "Running setup of $v: steam-arm-setup --keep${ao[*]:+ ${ao[*]}}"
+  { "$SA_PKG_BIN" --keep "${ao[@]}" </dev/null 2>&1; echo "rc=$?" > "$u/rc"; } | tee -a "${UP_LOG:-/dev/null}"
+  rc=$(sed -n 's/^rc=//p' "$u/rc" 2>/dev/null); rc=${rc:-1}
+  rm -rf "$u"
+  if [ "$rc" = 0 ]; then
+    # setups before 3.1 leave state: recorded here
+    [ -f "$(state_file)" ] && [ "$(state_get TO)" = "$v" ] && up_setup_end "$v" | while IFS= read -r a; do ulog "$a"; done
+    ulog "Steam ARM $v installed (package steam-arm-setup $v). Previous version $cur kept (Maintenance > Go back to previous version)."
+    return 0
+  fi
+  ulog "Setup of $v stopped (status $rc). Restore $cur: sudo steam-arm-config upgrade --rollback"
+  ulog "Run $v setup again: sudo steam-arm-setup --keep"
   return "$rc"
 }
 # Snapshot to go back to: state's (unfinished change), else newest verified one of version $1, else of a version other than installed.
@@ -5540,10 +5641,16 @@ maint_upgrade(){
   rel_store; rel_done; v=$REL_VER
   if [ "$(ver_norm "$v")" = "$(ver_norm "$cur")" ] && [ "$v" = "${v%%-*}" ]; then ui_msg "$t" "Steam ARM $cur, newest release, is already installed."; return; fi
   if ver_gt "$cur" "$v"; then ui_msg "$t" "Installed $cur is newer than newest release $v. Nothing to do. Earlier versions: Maintenance > Go back to previous version."; return; fi
-  if [ "$(installed_from)" = package ]; then ui_textstr "$t" "$(up_pkg_text "$v")"; return; fi
-  ui_yesno "$t" "Steam ARM $v (installed: $cur), $(mb "${REL_ZIP_SIZE:-0}") download.
+  if [ "$(installed_from)" = package ]; then
+    [ -n "$REL_DEB_URL" ] || { ui_textstr "$t" "$(up_pkg_text "$v")"; return; }
+    ui_yesno "$t" "Steam ARM $v (installed: $cur, package steam-arm-setup), $(mb "${REL_DEB_SIZE:-0}") download.
+
+Upgrade downloads steam-arm-setup_${v}_arm64.deb and its .sha256 file and checks package against that file and GitHub's digest. Then it saves $cur (Maintenance > Go back to previous version), installs package with apt and runs steam-arm-setup --keep with choices of last run. Client, games and sign-in stay." Upgrade Back defaultno || return
+  else
+    ui_yesno "$t" "Steam ARM $v (installed: $cur), $(mb "${REL_ZIP_SIZE:-0}") download.
 
 Setup downloads Steam.ARM.$v.zip and its .sha256 file, checks both, then runs setup of $v with choices of last run. Before any change setup saves $cur (Maintenance > Go back to previous version). Client, games and sign-in stay." Upgrade Back defaultno || return
+  fi
   close_steam "$t" "Setup stops while it runs." || return
   need_root || return
   up_log_new "$t" || return
@@ -5563,6 +5670,7 @@ up_resolve(){
   state_pending || return 0
   from=$(state_get FROM); to=$(state_get TO); kind=$(state_get KIND)
   [ "$kind" = upgrade ] && [ -f "$SA_UPCACHE/upgrade/$to/x/Steam ARM $to/steam-arm-install.sh" ] && stage="$SA_UPCACHE/upgrade/$to/x/Steam ARM $to/steam-arm-install.sh"
+  [ "$kind" = upgrade ] && [ -z "$stage" ] && [ "$(installed_from)" = package ] && [ "$(inst_ver "$SA_PKG_INST")" = "$to" ] && stage=$SA_PKG_INST
   [ "$kind" = rollback ] && stage=$SA_SHARE_INSTALLER
   local -a it=()
   [ -n "$(state_get SNAPSHOT)" ] && it+=(restore "Restore $from")
@@ -5643,7 +5751,7 @@ maint_update_check(){
   local t="Check for new version" out rc c
   ui_info "$t" "Asking GitHub for the newest release..."
   out=$(update_check); rc=$?
-  if [ "$rc" = 0 ] && [ "$(installed_from)" != package ]; then
+  if [ "$rc" = 0 ] && { [ "$(installed_from)" != package ] || [ "$(rel_stored_get DEB)" = yes ]; }; then
     c=$(ui_menu "$t" "$out" upgrade "Upgrade now" whatsnew "Show what is new") || return
     case "$c" in upgrade) maint_upgrade;; whatsnew) maint_whatsnew;; esac
   else ui_msg "$t" "$out"; fi
@@ -6993,11 +7101,14 @@ Commands
                             download newest release (Steam.ARM.<V>.zip
                             and .sha256 from GitHub), check size and
                             SHA-256, run its setup with --keep; installed
-                            version saved first; asks unless --yes
+                            version saved first; asks unless --yes.
+                            Package installs: steam-arm-setup_<V>_arm64.deb
+                            through apt, then steam-arm-setup --keep
   upgrade --check           newest release vs installed (nothing
                             downloads); exit 0 newer, 1 not, 2 failed
-  upgrade --file ZIP        same from a downloaded zip with ZIP.sha256
-                            beside it
+  upgrade --file FILE       same from a downloaded Steam.ARM.<V>.zip, or
+                            steam-arm-setup_<V>_arm64.deb on package
+                            installs, with FILE.sha256 beside it
   upgrade --list            snapshots of earlier versions: version,
                             date, reason, size, verified or damaged
   upgrade --rollback [VER]  go back to newest snapshot (or that of VER):

@@ -176,8 +176,10 @@ to `/root/steam-arm-password-<name>.txt`, readable by root only. When account ga
 `video`, `render`, `input` or `audio` group, installer says so; log out and log back in
 before first start. Options: `--help`.
 
-`.deb` package built from GitHub source installs command `steam-arm-setup` with same
-options. `steam-arm-setup --detect`, `--list` and `--help` run without root.
+`.deb` package installs command `steam-arm-setup` with same options. Each release from 3.1
+on lists it as `steam-arm-setup_<version>_arm64.deb` with `.sha256` file beside it; source
+builds same package bytes with `build-deb.sh`. `steam-arm-setup --detect`, `--list` and
+`--help` run without root.
 `steam-arm-setup` without options in terminal opens setup menu, which asks for
 administrator rights through `sudo` when needed. Package also adds application menu entry
 "Steam ARM Setup", which opens that menu in terminal. Package install or upgrade replaces
@@ -303,7 +305,7 @@ Command line, same settings from scripts:
 | `ge-proton install\|remove ...`        | Install or remove GE-Proton build (see GE-Proton)       |
 | `update-check`                         | Newest GitHub release compared with this version        |
 | `upgrade [--yes] [--allow-older]`      | Download, check and install newest release (see Updating) |
-| `upgrade --check\|--file ZIP\|--list`  | Compare only; install from zip; list snapshots          |
+| `upgrade --check\|--file FILE\|--list` | Compare only; install from zip or package; list snapshots |
 | `upgrade --rollback [VERSION]`         | Go back to saved version (see Rollback protection)      |
 | `snapshot-keep [1-5]`                  | Earlier versions kept; no value: state                  |
 | `update-check-on-open [on\|off]`       | Check at menu start, once daily; no value: state        |
@@ -1210,17 +1212,22 @@ release, checks its SHA-256 and runs its installer with earlier choices kept. Ma
 names newer release once Check for new version has found one. Nothing checks or downloads
 on its own.
 
-Package install (`steam-arm-setup`): build package of new release from source, install it
-with apt, then run `sudo steam-arm-setup --keep`. Upgrade on package install compares
-versions first: same or older release gives nothing-to-do line, newer release gives package
-steps; nothing downloads. Install from 3.0 or earlier package has no `INSTALLED_FROM` line;
-it counts as package install while dpkg owns `/usr/share/steam-arm-setup/install.sh`, and
-next setup run writes line.
+Package install (`steam-arm-setup`): same menu item, one step. Upgrade compares versions
+first: same or older release gives nothing-to-do line. Newer release with package asset
+`steam-arm-setup_<version>_arm64.deb`: upgrade downloads package and its `.sha256` file,
+checks length, `.sha256` line and GitHub's digest, shows plan, then takes setup lock, keeps
+copy of installed version, runs `apt-get install` on checked file (noninteractive, local config files kept) and
+`steam-arm-setup --keep`. Release without package asset (before 3.1): package steps shown
+(build package from source tag, install it with apt, run `sudo steam-arm-setup --keep`);
+nothing downloads. Install from 3.0 or earlier package has no `INSTALLED_FROM` line; it
+counts as package install while dpkg owns `/usr/share/steam-arm-setup/install.sh`, and next
+setup run writes line.
 
 Upgrade steps, in order; any failed check stops it before setup runs:
 
-1. Refusals: package install (package steps shown after version check), unfinished earlier
-   change, setup run in progress, Steam running for game account (menu offers `Close Steam`).
+1. Refusals: package install of release without package asset (package steps shown after
+   version check), unfinished earlier change, setup run in progress, Steam running for game
+   account (menu offers `Close Steam`).
 2. GitHub API `releases/latest` (no drafts, no pre-releases): tag, asset
    `Steam.ARM.<version>.zip`, its `.sha256` file, size and GitHub's own SHA-256 digest when
    listed. Same version: nothing to do. Older release than installed: nothing to do;
@@ -1239,8 +1246,27 @@ Upgrade steps, in order; any failed check stops it before setup runs:
    protection), then installs, then writes itself as installed copy, so Update / Repair runs
    new version from then on.
 
-`steam-arm-config upgrade --check` (same as `update-check`) only compares; `--file ZIP` takes
-downloaded zip with `ZIP.sha256` beside it (no network); `--yes` skips question. Exit status:
+Package install, release with package asset, in order; any failed check stops it before apt
+runs:
+
+1. Same refusals and version checks as above. GitHub digest of package must be listed.
+2. Download of `steam-arm-setup_<version>_arm64.deb` and its `.sha256` file over HTTPS only
+   into `/var/cache/steam-arm/upgrade/<version>.part` (root only).
+3. Checks: size equals size GitHub lists, `.sha256` line is
+   `<sha256>  steam-arm-setup_<version>_arm64.deb`, package hash equals that line and GitHub's
+   digest, control fields name `steam-arm-setup`, that version and `arm64`.
+4. Plan shown (question unless `--yes`). Setup lock taken, installed version saved (see
+   Rollback protection), unfinished-change record written.
+5. `apt-get install` of checked file (`--allow-downgrades` only with `--allow-older`). Failure:
+   programs of installed version stay; Upgrade item offers restore of saved version.
+6. `steam-arm-setup --keep` (with `--allow-older` on downgrade). Failure: restore or new setup
+   run offered.
+
+Upgrade from zip never writes package files.
+
+`steam-arm-config upgrade --check` (same as `update-check`) only compares; `--file FILE` takes
+downloaded `Steam.ARM.<version>.zip`, or `steam-arm-setup_<version>_arm64.deb` on package
+install, with `FILE.sha256` beside it (no network); `--yes` skips question. Exit status:
 0 done (or newer release found with `--check`), 1 nothing to do, 2 network, check or disk
 failure, 3 refused, else status of setup. Log of each run: `~/.cache/steam-arm/upgrade-*.log`
 (root's folder when run through sudo), also Maintenance, View logs, Last upgrade or rollback.

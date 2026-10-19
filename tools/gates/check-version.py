@@ -3,8 +3,8 @@
 
 Every SA_VERSION (installer 2, settings menu 1), embedded menu byte-identical, debian/control, build-deb.sh VERSION and
 package name, CHANGELOG.md and doc/changelog top entries; built zips, repo copy and .deb (when present) carry the
-same version; zip sidecar (when present) is one line naming Steam.ARM.<V>.zip. --release: changelog entries must not be
-unreleased. Exit 1 on any mismatch. Internal release tooling."""
+same version; zip and package sidecars (when present) are one line naming Steam.ARM.<V>.zip or steam-arm-setup_<V>_arm64.deb
+with its SHA-256. --release: changelog entries must not be unreleased. Exit 1 on any mismatch. Internal release tooling."""
 import os
 import re
 import sys
@@ -97,6 +97,15 @@ def main():
         line = open(sc).read()
         want = "%s  %s\n" % (hashlib.sha256(open(z, "rb").read()).hexdigest(), p.gh_zip)
         check("%s: sidecar is one line '<sha256>  %s'" % (os.path.basename(sc), p.gh_zip), line == want, line[:120])
+    # release asset steam-arm-setup_<V>_arm64.deb + .sha256 (package upgrade from menu relies on sidecar form)
+    for k in (p.deb, os.path.join(p.upload, p.deb_name), os.path.join(p.work, p.deb_name)):
+        sc = k + ".sha256"
+        if not (os.path.isfile(k) and os.path.isfile(sc)):
+            continue
+        import hashlib
+        line = open(sc).read()
+        want = "%s  %s\n" % (hashlib.sha256(open(k, "rb").read()).hexdigest(), p.deb_name)
+        check("%s: sidecar is one line '<sha256>  %s'" % (os.path.basename(sc), p.deb_name), line == want, line[:120])
     if os.path.isfile(p.deb):
         d = debfile.Deb(p.deb)
         check("%s: control Version %s" % (p.deb_name, v), d.field("Version") == v, d.field("Version"))

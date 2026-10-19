@@ -85,8 +85,15 @@ steam-arm-config upgrade (Maintenance, Upgrade to newest release)
 +- refused: unfinished change, setup running, Steam running
 +- GitHub releases/latest -> Steam.ARM.<version>.zip, .sha256, size, digest
 +- same or older release -> nothing to do (--allow-older: older with warning)
-+- package install (INSTALLED_FROM, else dpkg owns packaged setup) -> package
-|    steps for newer release, nothing downloads
++- package install (INSTALLED_FROM, else dpkg owns packaged setup):
+|    release lists steam-arm-setup_<version>_arm64.deb (3.1 on) ->
+|      digest required, download deb + .sha256 into staging folder,
+|      size, sidecar form, SHA-256 (sidecar and GitHub digest), control
+|      fields (steam-arm-setup, version, arm64), plan shown,
+|      setup lock, snapshot, upgrade.state, apt-get install of checked file
+|      (--allow-downgrades only with --allow-older), steam-arm-setup --keep;
+|      apt or setup failure -> restore offered (upgrade --rollback)
+|    release without package asset -> package steps, nothing downloads
 +- free space, download (HTTPS only, 32 MB cap) into /var/cache/steam-arm/upgrade
 +- size, sidecar form, SHA-256 (sidecar and GitHub digest), safe unpack
 +- runs setup of new version with --keep (snapshot, install, new installed copy);
