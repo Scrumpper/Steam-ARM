@@ -418,6 +418,158 @@ ue 'client_channel(){ echo steamdeck_stable; }; client_channel_full'
 check "C2 stable channel: plain stable" "[ \"\$OUT\" = stable ]"
 check "C3 info row and report use labels" "grep -q '^Client channel \$(client_channel_label)\$' '$CFG' && fn rr_upstream '$CFG' | grep -q 'client_channel_full'"
 
+# ---------- A audit fixes ----------
+# dpkg-query stand-in: -S answers for paths listed in $R/dpkg-owned; -W reports package installed (version $R/dpkg-ver) while that file exists
+dpkg_stub(){
+  cat > "$R/pbin/dpkg-query" <<'EOF'
+#!/bin/sh
+case "$1" in
+  -S) shift; for p in "$@"; do grep -qxF -- "$p" "$UHR/dpkg-owned" 2>/dev/null && echo "steam-arm-setup: $p"; done; exit 0;;
+  -W) [ -f "$UHR/dpkg-owned" ] || exit 1
+      case "$2" in *Status*) printf 'install ok installed';; *Version*) cat "$UHR/dpkg-ver" 2>/dev/null || echo 3.1;; esac; exit 0;;
+esac
+exit 1
+EOF
+  chmod 755 "$R/pbin/dpkg-query"
+}
+dl(){ grep -c '^/dl/' "$M/requests" 2>/dev/null || echo 0; }
+# A1 package install: versions compared before package steps
+fresh 3.1 1; dpkg_stub; echo INSTALLED_FROM=package >> "$R/etc/steam-arm/steam-arm.conf"; rel 3.0 0; d0=$(dl)
+uh upgrade --yes
+check "A1 package 3.1, newest release 3.0: rc 1, installed is newer, no package steps" "[ $RC = 1 ] && has 'Installed 3.1 is newer than newest release (3.0). Nothing to do.' && ! has 'Package update' && ! has 'apt install' && [ \$(dl) = $d0 ]"
+uh upgrade --check
+check "A1 package 3.1, check against 3.0: newer than newest, no package steps" "[ $RC = 1 ] && has 'Steam ARM 3.1 is newer than the newest release (3.0).' && ! has 'Package update'"
+OUT=$(PATH="$R/pbin:$PATH" UH_EVAL="$ST; maint_upgrade" bash "$UH" 2>&1)
+check "A1 menu Upgrade, package 3.1 vs release 3.0: newer message, Go back named, no package text" "has 'MSG Upgrade to newest release|Installed 3.1 is newer than newest release 3.0. Nothing to do.' && has 'Go back to previous version' && ! has 'Installed through package'"
+rel 3.1 1; uh upgrade --yes
+check "A1 package, same version: rc 1, already installed, no package steps" "[ $RC = 1 ] && has 'already installed' && ! has 'Package update'"
+OUT=$(PATH="$R/pbin:$PATH" UH_EVAL="$ST; maint_upgrade" bash "$UH" 2>&1)
+check "A1 menu Upgrade, package same version: already installed" "has 'MSG Upgrade to newest release|Steam ARM 3.1, newest release, is already installed.' && ! has 'Installed through package'"
+rel 3.2 1; d0=$(dl); uh upgrade --yes
+check "A1 package, newer release 3.2: rc 3, package steps for 3.2, nothing downloaded" "[ $RC = 3 ] && has 'Installed through package steam-arm-setup 3.1. Newest release: 3.2.' && has '  sudo apt install ./steam-arm-setup_3.2_arm64.deb' && has '  sudo steam-arm-setup --keep' && [ \$(dl) = $d0 ] && [ ! -d $R/cache/upgrade ]"
+check "A1 package text: no line over 80 columns, no line opening with bracket" "sed -n '/^Installed through package/,/--keep\$/p' <<<\"\$OUT\" | grep -q . && ! sed -n '/^Installed through package/,/--keep\$/p' <<<\"\$OUT\" | awk 'length > 80 || /^\\(/' | grep -q ."
+OUT=$(PATH="$R/pbin:$PATH" UH_EVAL="$ST; maint_upgrade" bash "$UH" 2>&1)
+check "A1 menu Upgrade, package, newer release: package steps screen" "has 'TEXT Upgrade to newest release|Installed through package steam-arm-setup 3.1. Newest release: 3.2.'"
+rel 3.0 0; uh upgrade --yes --allow-older
+check "A1 package, --allow-older to 3.0: rc 3, downgrade steps, no --allow-older for 3.0 setup" "[ $RC = 3 ] && has 'Release 3.0 is older.' && has '  sudo apt install --allow-downgrades ./steam-arm-setup_3.0_arm64.deb' && grep -qx '  sudo steam-arm-setup --keep' <<<\"\$OUT\" && [ \"\$(cv)\" = 3.1 ]"
+sed -i 's/^VERSION=.*/VERSION=3.2/' "$R/etc/steam-arm/steam-arm.conf"; rel 3.1 1; uh upgrade --yes --allow-older
+check "A1 package 3.2, --allow-older to 3.1: setup step carries --allow-older" "[ $RC = 3 ] && grep -qx '  sudo steam-arm-setup --keep --allow-older' <<<\"\$OUT\""
+OUT=$(PATH="$R/pbin:$PATH" UH_PORT=1 bash "$UH" upgrade --yes 2>&1); RC=$?
+check "A1 package, GitHub unreachable: rc 2, no package file named newest" "[ $RC = 2 ] && has 'could not be reached' && ! has 'newest_arm64' && ! has 'Package update'"
+check "A1 no newest placeholder in package steps" "! grep -q 'newest}' '$CFG'"
+uh upgrade --file "$T/none/Steam.ARM.3.3.zip" --yes
+check "A1 package, --file names newer version: package steps for it, file not needed" "[ $RC = 3 ] && has 'steam-arm-setup_3.3_arm64.deb'"
+
+# A2 package install of 3.0 without INSTALLED_FROM
+fresh 3.0 0; dpkg_stub; fx_setup 3.0 0 "$R/pkg/install.sh"; rel 3.1 1
+ue 'installed_from'; check "A2 key missing, package not owning setup: script" "[ \"\$OUT\" = script ]"
+echo "$R/pkg/install.sh" > "$R/dpkg-owned"; ue 'installed_from'
+check "A2 key missing, dpkg owns packaged setup script: package" "[ \"\$OUT\" = package ]"
+echo "$R/pkg" > "$R/dpkg-owned"; ue 'installed_from'
+check "A2 key missing, dpkg owns packaged setup folder: package" "[ \"\$OUT\" = package ]"
+echo INSTALLED_FROM=script >> "$R/etc/steam-arm/steam-arm.conf"; ue 'installed_from'
+check "A2 key present wins over dpkg" "[ \"\$OUT\" = script ]"
+sed -i '/^INSTALLED_FROM=/d' "$R/etc/steam-arm/steam-arm.conf"; d0=$(dl); uh upgrade --yes
+check "A2 key missing, package owned: package steps, nothing downloaded" "[ $RC = 3 ] && has 'Installed through package steam-arm-setup 3.0. Newest release: 3.1.' && [ \$(dl) = $d0 ]"
+ue 'snap_make manual && cat "$(snap_root)/$SNAP_NAME/MANIFEST"'
+check "A2 snapshot of package install without key records INSTALLED_FROM=package" "has 'INSTALLED_FROM=package'"
+check "A2 setup writes INSTALLED_FROM on every run (key filled in on next setup)" "grep -A4 '^# Package or script: ' '$INST' | grep -q 'conf_set INSTALLED_FROM package' && grep -A4 '^# Package or script: ' '$INST' | grep -q '^else conf_set INSTALLED_FROM script; fi\$'"
+
+# A3 --allow-older and setups before 3.1
+fresh 3.1 1; rel 3.0 0
+uh upgrade --yes --allow-older
+check "A3 3.1 -> 3.0 with --allow-older: rc 0, 3.0 setup ran with --keep only" "[ $RC = 0 ] && [ \"\$(cv)\" = 3.0 ] && [ \"\$(tail -1 $R/setup.log)\" = 'setup 3.0 --keep' ] && has 'has no --allow-older option'"
+check "A3 installed 3.1 saved before setup of 3.0 runs (reason rollback 3.0), history line" "[ \$(snaps) = 1 ] && grep -qx 'REASON=rollback 3.0' $R/lib/snapshots/3.1-*/MANIFEST && grep -qE ' 3\\.1 3\\.0 downgrade ok 3\\.1-' $R/lib/history.log && has 'menu of 3.0 has no Go back item'"
+check "A3 staging removed after older setup" "[ -z \"\$(ls -A $R/cache/upgrade 2>/dev/null)\" ]"
+fresh 3.1 1; rel 3.0 0; FX_FAIL=1 uh upgrade --yes --allow-older
+check "A3 older setup fails: copy of 3.1 named for restore" "[ $RC = 1 ] && has 'Copy of 3.1 saved: sudo steam-arm-config upgrade --rollback 3.1'"
+fresh 3.2 1; rel 3.1 1; uh upgrade --yes --allow-older
+check "A3 3.2 -> 3.1 with --allow-older: 3.1 setup got --allow-older, its own snapshot step ran" "[ $RC = 0 ] && [ \"\$(cv)\" = 3.1 ] && [ \"\$(tail -1 $R/setup.log)\" = 'setup 3.1 --keep --allow-older' ] && grep -qx 'REASON=upgrade 3.1' $R/lib/snapshots/3.2-*/MANIFEST"
+fresh 3.0 0; rel 3.1 1; uh upgrade --yes --allow-older
+check "A3 --allow-older with newer release: option not passed on" "[ $RC = 0 ] && [ \"\$(tail -1 $R/setup.log)\" = 'setup 3.1 --keep' ]"
+printf 'while [ $# -gt 0 ]; do case "$1" in\n    --allow-older) ALLOW_OLDER=1;;\n  esac; shift; done\n' > "$T/hf.sh"; : > "$T/no.sh"
+ue "inst_takes_older '$T/hf.sh' 3.0-hotfix && echo A; inst_takes_older '$T/no.sh' 3.0 || echo B; inst_takes_older '' 3.1 && echo C; inst_takes_older '' 2.3.1 || echo D; inst_takes_older '' 3.1.1 && echo E"
+check "A3 option support: parser line or version 3.1 and later" "[ \"\$(echo \$OUT)\" = 'A B C D E' ]"
+
+# A4 unfinished change without snapshot
+fresh 3.0 0; ue 'snap_make manual'
+sed -i 's/^VERSION=.*/VERSION=3.1/' "$R/etc/steam-arm/steam-arm.conf"
+printf 'FROM=3.1\nTO=3.2\nKIND=upgrade\nSNAPSHOT=\nSTARTED=2026-10-18 10:00\n' > "$R/lib/upgrade.state"
+ue 'echo "PICK=$(rb_pick)"'; check "A4 rb_pick: no automatic pick without snapshot of unfinished change" "[ \"\$OUT\" = 'PICK=' ]"
+uh upgrade --rollback --yes
+check "A4 --rollback refused (rc 3), reason, command with VERSION, snapshot of 3.0 listed, nothing changed" "[ $RC = 3 ] && has 'Upgrade from 3.1 to 3.2 did not finish' && has 'no snapshot (--no-snapshot)' && has 'upgrade --rollback VERSION' && has 'Snapshots:' && grep -q '^  3\\.0 ' <<<\"\$OUT\" && [ \"\$(cv)\" = 3.1 ] && [ -f $R/lib/upgrade.state ]"
+ue 'ui_menu(){ printf "MENU %s\n" "$*" >&2; return 1; }; up_resolve'
+check "A4 menu: no Restore item without snapshot" "! has 'restore Restore' && has 'later Later'"
+uh upgrade --rollback 3.0 --yes
+check "A4 version named: restore runs, state cleared" "[ $RC = 0 ] && [ \"\$(cv)\" = 3.0 ] && [ ! -f $R/lib/upgrade.state ]"
+rm -rf "$R/lib/snapshots"; printf 'FROM=3.0\nTO=3.1\nKIND=upgrade\nSNAPSHOT=\n' > "$R/lib/upgrade.state"
+uh upgrade --rollback --yes
+check "A4 no snapshot kept at all: refused, says so" "[ $RC = 3 ] && has 'No snapshots kept.'"
+
+# A5 docs match restore of whole /etc/steam-arm
+FEAT=$(dirname "$INST")/FEATURES.md
+check "A5 FEATURES: no claim of newer keys kept through rollback; whole /etc/steam-arm restored" "! grep -q 'kept through rollback' '$FEAT' && grep -qF \"snapshot's \\\`/etc/steam-arm\\\` in place as whole\" '$FEAT'"
+
+# A6 staging folders cleaned
+fresh 3.0 0; rel 3.1 1; FX_KILL=1 uh upgrade --yes
+check "A6 interrupted upgrade keeps its staging" "[ -d $R/cache/upgrade/3.1 ]"
+mkdir -p "$R/cache/upgrade/2.9"; ue 'snap_prune'
+check "A6 prune keeps staging of unfinished upgrade, deletes others" "[ -d $R/cache/upgrade/3.1 ] && [ ! -e $R/cache/upgrade/2.9 ]"
+uh upgrade --rollback --yes
+check "A6 restore deletes staging of restored change" "[ $RC = 0 ] && [ \"\$(cv)\" = 3.0 ] && [ -z \"\$(ls -A $R/cache/upgrade 2>/dev/null)\" ]"
+mkdir -p "$R/cache/upgrade/3.5/x"; ue 'snap_prune --in-setup'
+check "A6 prune inside setup leaves staging (setup may run from it)" "[ -d $R/cache/upgrade/3.5 ]"
+uh snapshot-keep 2; check "A6 prune outside setup (setting change) deletes leftover staging" "[ ! -e $R/cache/upgrade/3.5 ]"
+mkdir -p "$R/cache/release.old1" "$R/cache/release.new1"; touch -d '2 hours ago' "$R/cache/release.old1"; ue 'snap_prune'
+check "A6 prune deletes release answer folders older than 1 h only" "[ ! -e $R/cache/release.old1 ] && [ -d $R/cache/release.new1 ]"
+
+# A7 menu deletion of damaged snapshot through CLI guards
+fresh 3.0 0; ue 'snap_make manual'; ue 'snap_make manual'
+S1=$(ls "$R/lib/snapshots" | LC_ALL=C sort | head -1); S2=$(ls "$R/lib/snapshots" | LC_ALL=C sort | tail -1)
+echo x >> "$R/lib/snapshots/$S1/files.tar.gz"
+SD="$ST; self_path(){ echo \"\$UH\"; }"
+( flock "$R/run/steam-arm-setup.lock" sleep 3 ) & LP=$!; sleep 0.3
+OUT=$(PATH="$R/pbin:$PATH" PICK=del:$S1 UH_EVAL="$SD; maint_rollback" bash "$UH" 2>&1); wait "$LP"
+check "A7 menu delete while setup runs: refused, snapshot kept" "has 'Another setup run is in progress; nothing deleted.' && [ -d $R/lib/snapshots/$S1 ]"
+printf 'FROM=3.0\nTO=3.1\nKIND=upgrade\nSNAPSHOT=%s\n' "$S1" > "$R/lib/upgrade.state"
+uh upgrade --delete "$S1"
+check "A7 delete of unfinished change's snapshot refused (rc 3), kept" "[ $RC = 3 ] && has 'is kept' && [ -d $R/lib/snapshots/$S1 ]"
+rm -f "$R/lib/upgrade.state"
+uh upgrade --delete "$S2"; check "A7 delete of verified snapshot refused" "[ $RC = 3 ] && has 'not damaged' && [ -d $R/lib/snapshots/$S2 ]"
+uh upgrade --delete ../x; R1=$RC; uh upgrade --delete .tmp-x; check "A7 names with slash or leading dot refused (rc 2)" "[ $R1 = 2 ] && [ $RC = 2 ]"
+OUT=$(PATH="$R/pbin:$PATH" PICK=del:$S1 UH_EVAL="$SD; maint_rollback" bash "$UH" 2>&1)
+check "A7 menu delete of damaged snapshot: done through CLI, message shown" "has 'MSG Go back to previous version|Deleted damaged snapshot $S1.' && [ ! -e $R/lib/snapshots/$S1 ] && [ -d $R/lib/snapshots/$S2 ]"
+check "A7 menu screen has no direct rm" "! fn maint_rollback '$CFG' | grep -q 'rm -rf'"
+
+# A8 release answer in private folder
+fresh 3.0 0; rel 3.1 1; mkdir -p "$T/tmpd"; rm -rf "$T/tmpd/"*
+for a in "upgrade --check" "upgrade --yes"; do
+  OUT=$(PATH="$R/pbin:$PATH" XDG_RUNTIME_DIR='' TMPDIR="$T/tmpd" bash "$UH" $a 2>&1)
+done
+mode 403; OUT=$(PATH="$R/pbin:$PATH" XDG_RUNTIME_DIR='' TMPDIR="$T/tmpd" bash "$UH" upgrade --check 2>&1); mode ok
+OUT=$(PATH="$R/pbin:$PATH" XDG_RUNTIME_DIR='' TMPDIR="$T/tmpd" UH_EVAL="$ST; maint_upgrade" bash "$UH" 2>&1)
+check "A8 no temporary file or folder left (check, upgrade, refused request, menu)" "[ -z \"\$(ls -A $T/tmpd)\" ]"
+ue 'id(){ [ "$*" = -u ] && echo 0 || command id "$@"; }; rel_fetch; echo "TMP=$REL_TMP"; stat -c "MODE=%a" "$REL_TMP"; ls "$REL_TMP"; rel_done; ls -A "$SA_UPCACHE"'
+check "A8 as root: answer in mode 700 folder under cache, notes inside, folder gone after" "grep -q \"^TMP=$R/cache/release\\.\" <<<\"\$OUT\" && has 'MODE=700' && has 'notes.md' && ! grep -q '^release\\.' <<<\"\$OUT\""
+rm -rf "$R/cache"; mkdir -p "$T/elsewhere"; ln -s "$T/elsewhere" "$R/cache"
+ue 'id(){ [ "$*" = -u ] && echo 0 || command id "$@"; }; rel_fetch; echo "rc=$? $REL_ERR"'
+check "A8 as root, cache folder is a link: refused, nothing written through it" "has 'rc=2 No private temporary folder' && [ -z \"\$(ls -A $T/elsewhere)\" ]"
+rm -f "$R/cache"
+check "A8 notes file created new, never through a link (O_EXCL, O_NOFOLLOW); no name beside temp file" "fn rel_fetch '$CFG' | grep -q 'O_EXCL | os.O_NOFOLLOW' && ! grep -q 'REL_NOTES=\"\$f.notes\"' '$CFG'"
+mkdir -p "$R/ucache"; rm -f "$R/ucache/release-notes.md"; ln -s "$T/elsewhere/target" "$R/ucache/release-notes.md"
+uh upgrade --check
+check "A8 stored notes replace planted link by rename, link target untouched" "[ ! -L $R/ucache/release-notes.md ] && [ -f $R/ucache/release-notes.md ] && [ ! -e $T/elsewhere/target ]"
+
+# A9 package system: going back names package command of menus before 3.1
+fresh 3.0 0; dpkg_stub; ue 'snap_make manual'; S=$(ls "$R/lib/snapshots" | head -1)
+fx_setup 3.1 1 "$R/pkg/install.sh"; echo "$R/pkg/install.sh" > "$R/dpkg-owned"
+ue "rb_text '$S'"
+check "A9 confirm text names package 3.1 that Update / Repair of 3.0 runs" "has 'Package steam-arm-setup 3.1 stays installed: Update / Repair in 3.0 runs it and installs 3.1 again.'"
+rm -f "$R/dpkg-owned"; ue "rb_text '$S'"; check "A9 no package: no package sentence" "! has 'Package steam-arm-setup'"
+
+# A10 page-size block removal after snapshot step
+check "A10 Pi page-size block removed only after snapshot step" "a=\$(grep -n 'sa_menu_call upgrade --setup-begin' '$INST' | cut -d: -f1); b=\$(grep -n '^  ps_remove || die' '$INST' | cut -d: -f1); [ -n \"\$b\" ] && [ \$(grep -c '^  ps_remove || die' '$INST') = 1 ] && [ \$a -lt \$b ]"
+
 # ---------- misc ----------
 check "M1 shipped menu has no test hooks (fake root only through harness overrides)" "! grep -qE 'UHR|UH_|SA_TEST|mockgh' '$CFG'"
 check "M2 --help lists upgrade options" "bash '$CFG' --help | grep -q 'upgrade --rollback \\[VER\\]' && bash '$CFG' --help | grep -q 'snapshot-keep \\[1-5\\]'"

@@ -4,7 +4,8 @@ steam-arm-setup (3.1) UNRELEASED; urgency=low
     steam-arm-config upgrade: zip and .sha256 from GitHub over HTTPS,
     size, SHA-256 and GitHub digest checked, safe unpack, setup of new
     version run with --keep; --file ZIP for downloaded zip. Package
-    installs get package build steps; package files are never written.
+    installs: versions compared first, then package build steps;
+    package files are never written.
   * Rollback protection: setup saves installed version to
     /var/lib/steam-arm/snapshots before each version change (installer
     and menu copies, /etc/steam-arm, owned files, settings backup,

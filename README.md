@@ -1211,20 +1211,26 @@ names newer release once Check for new version has found one. Nothing checks or 
 on its own.
 
 Package install (`steam-arm-setup`): build package of new release from source, install it
-with apt, then run `sudo steam-arm-setup --keep`.
+with apt, then run `sudo steam-arm-setup --keep`. Upgrade on package install compares
+versions first: same or older release gives nothing-to-do line, newer release gives package
+steps; nothing downloads. Install from 3.0 or earlier package has no `INSTALLED_FROM` line;
+it counts as package install while dpkg owns `/usr/share/steam-arm-setup/install.sh`, and
+next setup run writes line.
 
 Upgrade steps, in order; any failed check stops it before setup runs:
 
-1. Refusals: package install (package steps shown), unfinished earlier change, setup run in
-   progress, Steam running for game account (menu offers `Close Steam`).
+1. Refusals: package install (package steps shown after version check), unfinished earlier
+   change, setup run in progress, Steam running for game account (menu offers `Close Steam`).
 2. GitHub API `releases/latest` (no drafts, no pre-releases): tag, asset
    `Steam.ARM.<version>.zip`, its `.sha256` file, size and GitHub's own SHA-256 digest when
    listed. Same version: nothing to do. Older release than installed: nothing to do;
-   `--allow-older` permits it with warning.
+   `--allow-older` permits it with warning. Setup before 3.1 knows no `--allow-older` and
+   saves nothing: upgrade saves installed version first, then runs it without that option.
 3. Free space: download folder `/var/cache/steam-arm` needs three times zip size plus 20 MB,
    `/var/lib/steam-arm` twice last snapshot size plus 20 MB.
 4. Download over HTTPS only, at most 32 MB, into `/var/cache/steam-arm/upgrade/<version>.part`
-   (root only); cut download leaves nothing behind, next try starts fresh.
+   (root only); cut download leaves nothing behind, next try starts fresh. Staging folder is
+   deleted after success, after restore, or at next automatic deletion.
 5. Checks: size equals size GitHub lists, `.sha256` line is `<sha256>  Steam.ARM.<version>.zip`,
    zip hash equals that line and GitHub's digest.
 6. Unpack: every member under `Steam ARM <version>/`, no absolute path, no `..`, no link, at
@@ -1261,7 +1267,8 @@ never in snapshot. Snapshot that cannot be written stops setup before any change
 
 Maintenance, Go back to previous version (or `sudo steam-arm-config upgrade --rollback [VERSION]`)
 lists snapshots, newest first, with date, reason, size and check result; damaged snapshot is
-shown, cannot be chosen and can be deleted there. Going back saves current version first,
+shown, cannot be chosen and can be deleted there (refused while setup runs and for snapshot
+of unfinished change). Going back saves current version first,
 restores chosen snapshot, then runs its setup with `--keep`. Settings changed since then stay in
 snapshot of current version. `upgrade --list` prints snapshots and version changes
 (`/var/lib/steam-arm/history.log`); `upgrade --snapshot` saves installed version by hand.
@@ -1270,7 +1277,13 @@ Unfinished change: setup writes `/var/lib/steam-arm/upgrade.state` before first 
 removes it after success. File present while no setup runs (failed setup, power loss, closed
 terminal): next menu start and `upgrade --rollback` offer restore of saved version or new
 setup run; next setup run prints warning line, launcher log names it at each start;
-nothing restores on its own.
+nothing restores on its own. Change started with `--no-snapshot` has no saved copy:
+`upgrade --rollback` without version lists snapshots and asks for version.
+
+Package install: going back restores installed copy of earlier setup; package stays.
+Update / Repair in menus before 3.1 runs package command, which installs package version
+again; confirmation screen names it. To stay on earlier version, install package of that
+version or remove package.
 
 Automatic deletion, after successful upgrade or rollback and when setting changes: kept are
 installed version plus newest snapshot of each of last 2 earlier versions (Maintenance,

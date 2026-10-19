@@ -82,19 +82,24 @@ sudo bash steam-arm-install.sh [options]          (package: sudo steam-arm-setup
         versions deleted (unfinished change and rollback target kept)
 
 steam-arm-config upgrade (Maintenance, Upgrade to newest release)
-+- refused: package install, unfinished change, setup running, Steam running
++- refused: unfinished change, setup running, Steam running
 +- GitHub releases/latest -> Steam.ARM.<version>.zip, .sha256, size, digest
 +- same or older release -> nothing to do (--allow-older: older with warning)
++- package install (INSTALLED_FROM, else dpkg owns packaged setup) -> package
+|    steps for newer release, nothing downloads
 +- free space, download (HTTPS only, 32 MB cap) into /var/cache/steam-arm/upgrade
 +- size, sidecar form, SHA-256 (sidecar and GitHub digest), safe unpack
-+- runs setup of new version with --keep (snapshot, install, new installed copy)
++- runs setup of new version with --keep (snapshot, install, new installed copy);
+|    older setup before 3.1: snapshot saved here, run without --allow-older
 +- failure after snapshot -> restore offered (upgrade --rollback)
 
 steam-arm-config upgrade --rollback (Maintenance, Go back to previous version)
++- unfinished change without snapshot (--no-snapshot) -> no automatic pick,
+|    snapshots listed, version named by hand
 +- snapshot verified (manifest and member SHA-256, file list)
 +- current version saved, files and /etc/steam-arm restored, installer and menu
 |    copies put back, restored setup run with --keep
-+- success -> history.log line, snapshots pruned
++- success -> history.log line, snapshots and staging folders pruned
 
 steam-arm (launcher, desktop account only, refuses root)
 +- before client start, client closed: automatic Windows build rule

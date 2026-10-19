@@ -2,7 +2,8 @@
 # Fixture releases for the upgrade suite. Functions (sourced):
 #   fx_setup V PROTO FILE   setup stand-in of version V: writes owned files under $UHR/sys, VERSION, installer copy,
 #                           settings menu stand-in; PROTO=1 behaves as setup 3.1+ (downgrade check, --setup-begin/--setup-end
-#                           through $UH). Env at run time: FX_FAIL=1 (exit 1 after VERSION written), FX_KILL=1 (SIGTERM
+#                           through $UH); PROTO=0 (setup before 3.1) stops at any option but --keep. Env at run time:
+#                           FX_FAIL=1 (exit 1 after VERSION written), FX_KILL=1 (SIGTERM
 #                           itself after --setup-begin); every call logged to $UHR/setup.log.
 #   fx_menu FILE            settings menu stand-in of an earlier version: backup DIR [--account U] writes a settings file
 #   fx_zip V PROTO DIR      DIR/Steam.ARM.V.zip with "Steam ARM V/steam-arm-install.sh" and README.md, plus .sha256
@@ -26,6 +27,8 @@ fx_setup(){
     cat <<'EOF'
 R=$UHR
 echo "setup $SA_VERSION $*" >> "$R/setup.log"
+# setups before 3.1 stop at options they do not know
+if [ "$PROTO" != 1 ]; then for a in "$@"; do case "$a" in --keep) ;; *) echo "error: unknown option: $a (see --help)"; exit 1;; esac; done; fi
 older=0; for a in "$@"; do [ "$a" = --allow-older ] && older=1; done
 cur=$(sed -n 's/^VERSION=//p' "$R/etc/steam-arm/steam-arm.conf" | tail -1)
 gt(){ [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; }
