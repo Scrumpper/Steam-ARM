@@ -213,7 +213,7 @@ default for one title.
 UE4 asks for Direct3D feature level 11_0. DXVK on PanVK offers 10_1, since PanVK has no
 tessellation. Reporting tessellation as present through Vulkan layer crashed X server.
 Raising DXVK's level with `d3d11.maxFeatureLevel = 11_0` in `dxvk.conf` gets engine past
-its check; engine then crashes compiling geometry shader, which PanVK does not implement
+its check; engine then crashes building geometry shader, which PanVK does not implement
 (`vk-spoof` only reports it).
 
 What to change: none on Mali. Do not spoof tessellation or raise feature level.
@@ -245,7 +245,7 @@ Legacy PhysX installer (PhysX 9.x, msiexec) waited over 5 minutes with no window
 start of 32-bit UE3 title under Proton ARM64. Steam decides whether to run install step
 from value in title's prefix: in `pfx/system.reg`, under
 `[Software\\Wow6432Node\\Valve\\Steam\\Apps\\<appid>]`, named after install script
-section. Value `1` skips step only when section sets no minimum; when section sets one
+section. Value `1` bypasses step only when section has no minimum; when it defines one
 (`MinimumHasRunValue`), value has to reach it, else step runs again. Proton issue 51
 documents value `1` for section without minimum
 <https://github.com/ValveSoftware/Proton/issues/51>. On test system value at or above
@@ -253,7 +253,7 @@ minimum made install step finish in seconds, and Steam kept value. Stopping Phys
 installer with SIGTERM also let Steam continue to title.
 
 Launcher applies both automatically (README, PhysX install step). Title in this test then
-stopped 5 seconds in with engine assertion, same with `FEX_X87REDUCEDPRECISION=0`:
+halted 5 seconds in with engine assertion, same with `FEX_X87REDUCEDPRECISION=0`:
 separate problem, not PhysX.
 
 What to change: nothing by default. `STEAM_ARM_PHYSX_SKIP=0` in launcher's environment
@@ -530,10 +530,10 @@ What to change: Mesa 25.2 or newer and current FEX root filesystem.
 Status: researched, untested.
 
 FEX needs 4K pages. Asahi runs FEX and Steam inside muvm, microVM with 4K page guest
-kernel; GPU reaches guest through DRM native context, slightly slower than native, most
+kernel; GPU reaches guest through DRM native context, marginally slower than native, most
 for workloads that poll for GPU completion
 <https://asahilinux.org/2024/12/muvm-x11-bridging/>. This installer does not set up muvm;
-on 16K kernel setup stops.
+on 16K kernel setup halts.
 
 What to change: install inside 4K page environment set up by distribution, such as muvm.
 `STEAM_ARM_IGNORE_PAGESIZE=1` skips page size check on non-4K host kernel; use it only when
@@ -560,7 +560,7 @@ What to change: per title only, as launch options; see F3 for X87 trade.
 
 Status: no claim survived verification.
 
-Research found no verified v3dv Vulkan version, geometry or tessellation support, DXVK
+Research found no confirmed v3dv Vulkan version, geometry or tessellation support, DXVK
 feature level, or Steam title result with 4K `kernel8.img`. Page size handling is in
 `COMPATIBILITY.md`.
 
@@ -638,7 +638,7 @@ Option computes x87 floating point at 64 instead of 80 bits; schema describes on
 result in rendering bugs"; default off <https://wiki.fex-emu.com/index.php/Config>. F2
 shows opposite need in another title.
 
-What to change: per title trial only: `<appid> env=FEX_X87REDUCEDPRECISION=1`, or launch
+What to change: per title experiment only: `<appid> env=FEX_X87REDUCEDPRECISION=1`, or launch
 option. Revert on crash or misrender.
 
 ### F4. TSOEnabled: leave on
@@ -676,7 +676,7 @@ Status: researched, untested.
 `SMCChecks` takes `none`, `mtrack` (default) or `full` (checks code before every run,
 slow). Suspected use: titles with their own JIT, such as Mono (see N1).
 
-What to change: per title trial: `<appid> env=FEX_SMCCHECKS=full`.
+What to change: per title experiment: `<appid> env=FEX_SMCCHECKS=full`.
 
 ### F7. Java titles: G1 collector, not ZGC
 
@@ -734,7 +734,7 @@ Windows Unity titles on HD Render Pipeline need feature level 11_0 and do not ru
 
 ### E2. Unreal Engine 4 and 5
 
-Status: UE4 Direct3D 11 limit tested (T8); rest researched.
+Status: UE4 Direct3D 11 limit tested (T8); others researched.
 
 - UE4 Direct3D 11 renderer needs feature level 11_0 and Shader Model 5. On Mali it stops
   (T8).
@@ -757,7 +757,7 @@ What to change: none on Mali. On Adreno, Asahi or discrete GPUs: newest ARM64 Pr
 
 ### E3. Source (Source 1)
 
-Status: T1 and T3 tested; rest researched.
+Status: T1 and T3 tested; others researched.
 
 Native Linux Source builds render OpenGL through Valve's ToGL layer. Newer builds add
 opt-in `-vulkan` through DXVK Native. Reported problems with it on desktop GPUs: monitor
@@ -789,7 +789,7 @@ What to change: none.
 ### E5. Godot
 
 Status: Godot 4 rule tested (T5); Godot 3 GL 3.3 report tested as profile in 2.1, automatic
-rule not run on device; rest researched.
+rule not run on device; others researched.
 
 Godot 4 has three renderers: Forward+ and Mobile on Vulkan, Compatibility on OpenGL
 <https://docs.godotengine.org/en/4.4/tutorials/rendering/renderers.html>. Project setting
@@ -803,7 +803,7 @@ beside it, in Godot's own pack order. Windows builds under x86 Proton keep Godot
 A/B run with Windows Godot 4 title not done.
 
 What to change: `<appid> godot=vulkan` or `godot=gl`. Check handler log and frame rate for
-silent software rendering.
+unannounced software rendering.
 
 ### E6. Java
 
@@ -852,7 +852,7 @@ What to change: none known.
 
 ### N6. 32-bit Unreal Engine 3 title under Proton ARM64 (tested)
 
-See T11. PhysX install step skipped; title stops 5 seconds in with engine assertion.
+See T11. PhysX install step bypassed; title halts 5 seconds in with engine assertion.
 `FEX_X87REDUCEDPRECISION=0` did not help.
 
 ---
@@ -864,7 +864,7 @@ Do not try these. Each failed verification or conflicts with test results.
 - **UE4 `-vulkan` as feature level 11_0 bypass on Mali.** UE4's Vulkan Shader Model 5 path
   also needs tessellation, which PanVK lacks (T8).
 - **`d3d11.maxFeatureLevel = 11_0` in `dxvk.conf` for UE4 on Mali.** Tested: engine passes
-  its check, then crashes compiling geometry shader (T8).
+  its check, then crashes building geometry shader (T8).
 - **`publicbeta` in client's `package/beta` with Steam Frame mode.** Tested: client moves
   to its own ARM channel regardless (T14).
 - **`STEAM_COMPAT_FEX_CONFIG` as launch option.** Tested: client overwrites it (T13).

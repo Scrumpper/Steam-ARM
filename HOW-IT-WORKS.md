@@ -1,5 +1,7 @@
 # Steam ARM: how it works
 
+Client: Steam Frame's Steam client, Valve's native ARM64 build, set up on host.
+
 Overview of what runs where: setup command, GPU detection, component defaults,
 launcher, per-title launch handler and graphics routes. Details per step: `README.md`.
 
@@ -25,6 +27,9 @@ sudo bash steam-arm-install.sh [options]          (package: sudo steam-arm-setup
 |    --purge: x86 root filesystem too, only when setup downloaded it
 |             and other variant of this installer is not installed
 |
++- older than installed version (3.1 and later) -> stop before any change,
+|    unless --allow-older
++- --snapshot -> save installed version to /var/lib/steam-arm/snapshots, exit
 +- install, update, repair
    |
    +- 0 checks: single setup run (lock), account and folder names (no root
@@ -32,6 +37,10 @@ sudo bash steam-arm-install.sh [options]          (package: sudo steam-arm-setup
    |            client folder holding steamapps or ubuntu12_32 refused;
    |            CPU: Armv8.1 (LSE atomics) -> native client, Armv8.0 -> x86 client
    |            (--client= or saved hand choice wins; x86: 2 GB memory or more)
+   +- version change (installed VERSION differs): snapshot of installed version
+   |    to /var/lib/steam-arm/snapshots (installer and menu copies, /etc/steam-arm,
+   |    owned files with SHA-256, settings backup), upgrade.state written;
+   |    snapshot failure stops setup before any change
    +- 1 GPU detection
    |    render node -> kernel driver name (panthor, panfrost, msm, v3d, ...)
    |    Mali: GPU id; fallback: sysfs driver link and device tree
@@ -67,7 +76,37 @@ sudo bash steam-arm-install.sh [options]          (package: sudo steam-arm-setup
    |    marker .steam-arm-client written into client folder when folder was
    |    new, empty, already marked or earlier Steam ARM client folder
    +- 6 launcher steam-arm, settings menu, helpers;
-        settings in /etc/steam-arm/steam-arm.conf
+   |    settings in /etc/steam-arm/steam-arm.conf
+   +- 7 version change finished: upgrade.state removed, history.log line,
+        snapshots beyond installed version plus SNAPSHOT_KEEP earlier
+        versions deleted (unfinished change and rollback target kept)
+
+steam-arm-config upgrade (Maintenance, Upgrade to newest release)
++- refused: unfinished change, setup running, Steam running
++- GitHub releases/latest -> Steam.ARM.<version>.zip, .sha256, size, digest
++- same or older release -> nothing to do (--allow-older: older with warning)
++- package install (INSTALLED_FROM, else dpkg owns packaged setup):
+|    release lists steam-arm-setup_<version>_arm64.deb (3.1 on) ->
+|      digest required, download deb + .sha256 into staging folder,
+|      size, sidecar form, SHA-256 (sidecar and GitHub digest), control
+|      fields (steam-arm-setup, version, arm64), plan shown,
+|      setup lock, snapshot, upgrade.state, apt-get install of checked file
+|      (--allow-downgrades only with --allow-older), steam-arm-setup --keep;
+|      apt or setup failure -> restore offered (upgrade --rollback)
+|    release without package asset -> package steps, nothing downloads
++- free space, download (HTTPS only, 32 MB cap) into /var/cache/steam-arm/upgrade
++- size, sidecar form, SHA-256 (sidecar and GitHub digest), safe unpack
++- runs setup of new version with --keep (snapshot, install, new installed copy);
+|    older setup before 3.1: snapshot saved here, run without --allow-older
++- failure after snapshot -> restore offered (upgrade --rollback)
+
+steam-arm-config upgrade --rollback (Maintenance, Go back to previous version)
++- unfinished change without snapshot (--no-snapshot) -> no automatic pick,
+|    snapshots listed, version named by hand
++- snapshot verified (manifest and member SHA-256, file list)
++- current version saved, files and /etc/steam-arm restored, installer and menu
+|    copies put back, restored setup run with --keep
++- success -> history.log line, snapshots and staging folders pruned
 
 steam-arm (launcher, desktop account only, refuses root)
 +- before client start, client closed: automatic Windows build rule

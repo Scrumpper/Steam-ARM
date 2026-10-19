@@ -1,3 +1,39 @@
+steam-arm-setup (3.1) UNRELEASED; urgency=low
+
+  * Upgrade to newest release from settings menu (Maintenance) or
+    steam-arm-config upgrade: zip and .sha256 from GitHub over HTTPS,
+    size, SHA-256 and GitHub digest checked, safe unpack, setup of new
+    version run with --keep; --file ZIP for downloaded zip. Upgrade
+    from zip never writes package files.
+  * Package upgrade in one step: release lists
+    steam-arm-setup_<version>_arm64.deb and .sha256; upgrade on package
+    install downloads both, checks length, .sha256 line and GitHub
+    digest, shows plan, takes setup lock, keeps copy of installed
+    version, then runs
+    apt-get install of checked file and steam-arm-setup --keep; restore
+    offered on failure; --allow-older for older package
+    (--allow-downgrades); --file takes package too. Release without
+    package asset: package build steps.
+  * Rollback protection: setup saves installed version to
+    /var/lib/steam-arm/snapshots before each version change (installer
+    and menu copies, /etc/steam-arm, owned files, settings backup,
+    SHA-256 manifest); snapshot failure stops setup before any change.
+    Maintenance, Go back to previous version, or upgrade --rollback.
+    Unfinished change offered for restore, never restored on its own.
+  * Automatic deletion of snapshots after successful upgrade or rollback:
+    installed version plus 2 earlier versions kept (SNAPSHOT_KEEP 1 to
+    5); damaged and half-written ones deleted.
+  * Downgrade protection: setup over newer install stops before any
+    change unless --allow-older.
+  * Update / Repair runs setup script of installed version (older package
+    no longer runs over newer install).
+  * Optional check for new release at menu start, off by default.
+  * Client channel shown by name (stable, Valve ARM channel of Steam Frame
+    mode, Steam Beta Participation).
+  * --remove deletes /var/lib/steam-arm and /var/cache/steam-arm.
+
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 00:00:00 +0000
+
 steam-arm-setup (3.0) stable; urgency=low
 
   * Run report: Maintenance, Report how last game ran, or steam-arm-config

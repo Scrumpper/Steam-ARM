@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run a shell snippet on a pty, send keys with pauses, print screen titles seen and the raw text.
-Usage: ptydrive.py SNIPPET KEY... ; KEY '@N' waits N seconds without reading; '!K' sends K at once; others are sent after 1.5 s of output."""
+Usage: ptydrive.py SNIPPET KEY... ; KEY '@N' waits N seconds without reading; '!K' sends K at once; '^FILE:N' reads output
+until FILE has N lines (30 s limit; on timeout prints TIMEOUT FILE and exits 3); others are sent after 1.5 s of output."""
 import os, pty, re, select, sys, time
 
 pid, fd = pty.fork()
@@ -22,9 +23,30 @@ def drain(t):
                 return
 
 
+def lines(p):
+    try:
+        with open(p, "rb") as f:
+            return f.read().count(b"\n")
+    except OSError:
+        return 0
+
+
 for k in sys.argv[2:]:
     if k.startswith("@"):
         time.sleep(float(k[1:]))
+        continue
+    if k.startswith("^"):
+        p, n = k[1:].rsplit(":", 1)
+        end = time.time() + 30
+        while lines(p) < int(n):
+            if time.time() > end:
+                print("TIMEOUT " + p)
+                try:
+                    os.kill(pid, 9)
+                except ProcessLookupError:
+                    pass
+                sys.exit(3)
+            drain(0.05)
         continue
     if k.startswith("!"):
         k = k[1:]

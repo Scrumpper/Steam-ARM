@@ -13,7 +13,7 @@ published with its release under Mesa's own licences.
   Runtime** and its **pressure-vessel** container tool, whose library overrides are what let
   guest reach host drivers; **Steam Input**, which re-identifies game controllers; and
   **Remote Play**. Client package and Proton are downloaded from Valve at run time.
-  Valve's Steam Frame packages place x86 Mesa inside emulation at
+  Valve's Steam Frame packages keep x86 Mesa inside emulation at
   `/usr/share/guestos/fex-mesa`; `gpu-in-emulation` follows that layout. Valve's
   **steam-devices** controller rules (MIT licence) are what `pad-hidraw` installs.
   <https://github.com/ValveSoftware/steam-devices>
@@ -64,7 +64,7 @@ published with its release under Mesa's own licences.
 - **bubblewrap**: unprivileged sandbox client's runtime uses to build its container.
   <https://github.com/containers/bubblewrap>
 - **Linux kernel** `xpad` driver maintainers: controller table `pad-hidraw` extra rules
-  are generated from, and `uinput` subsystem `pad-xbox` component presents pads through.
+  are generated from, and `uinput` subsystem `pad-xbox` component exposes pads through.
 - **patchelf**: used to give private GLX copy its own library name so it does not collide
   with system one.
   <https://github.com/NixOS/patchelf>
@@ -88,7 +88,7 @@ published with its release under Mesa's own licences.
 Developed on test device: RK3588 board with Mali-G610 GPU. `COMPATIBILITY.md` lists GPU
 families, their defaults and status.
 
-Development was done conversationally with **Claude Code**. 
+Development took place in chat sessions with **Claude Code**. 
 Treat everything in this repository as community work offered in good faith, with no warranty.
 
 ## Trademarks and affiliation

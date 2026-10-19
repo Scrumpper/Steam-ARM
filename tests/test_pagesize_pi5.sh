@@ -1,6 +1,6 @@
 #!/bin/bash
 # Raspberry Pi 5 page-size flow of steam-arm-install.sh on this PC: a copy with board model, /boot and lock
-# paths pointed at a fake tree, getconf/id stand-ins, and a stop right after the page-size block. Internal.
+# paths pointed at a fake tree, getconf/id stand-ins, and a stop after deferred page-size block removal. Internal.
 . "$(dirname "$0")/paths.sh"; SRC=${1:-$SARM_INST}
 W=$(mktemp -d); F=$W/fake; mkdir -p "$F/boot/firmware" "$W/bin"
 sed -e "s#/proc/device-tree/model#$F/model#g" -e "s#/boot/firmware#$F/boot/firmware#g" -e "s#/boot/config.txt#$F/boot/config.txt#g" \
@@ -10,8 +10,12 @@ python3 - "$W/inst.sh" <<'EOF'
 import sys
 p = sys.argv[1]; s = open(p).read()
 old = '[ "$(id -u)" = 0 ] || die "run as root"\nsteam_up && steam_up_die\n'
-assert s.count(old) == 1, "stop point not found"
-open(p, "w").write(s.replace(old, 'echo PAST-PAGESIZE; exit 0\n'))
+assert s.count(old) == 1, "root and Steam checks not found"
+s = s.replace(old, '').replace('SA_STATE=/var/lib/steam-arm/upgrade.state\n', 'SA_STATE=/nonexistent/upgrade.state\n')
+# stop after deferred page-size block removal (runs after snapshot step)
+stop = '# Client folder marker (--remove deletes only a marked folder)'
+assert s.count(stop) == 1, "stop point not found"
+open(p, "w").write(s.replace(stop, 'echo PAST-PAGESIZE; exit 0\n' + stop))
 EOF
 printf '#!/bin/sh\n[ "$1" = PAGESIZE ] && { cat %s/pagesize; exit 0; }\nexec /usr/bin/getconf "$@"\n' "$F" > "$W/bin/getconf"
 printf '#!/bin/sh\n[ "$#" = 1 ] && [ "$1" = -u ] && { echo 0; exit 0; }\nexec /usr/bin/id "$@"\n' > "$W/bin/id"

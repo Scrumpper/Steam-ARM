@@ -1,2 +1,3 @@
 *.deb
+*.deb.sha256
 /build/

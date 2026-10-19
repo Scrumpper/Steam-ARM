@@ -17,6 +17,9 @@ jobs:
       - name: Build the package
         run: ./build-deb.sh
 
+      - name: Verify the release sidecar
+        run: sha256sum -c "$DEB.sha256"
+
       - name: Verify the package metadata
         run: dpkg-deb --info "$DEB"
 
@@ -39,4 +42,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: steam-arm-setup-deb
-          path: ${{ env.DEB }}
+          path: |
+            ${{ env.DEB }}
+            ${{ env.DEB }}.sha256

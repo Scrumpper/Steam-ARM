@@ -373,7 +373,7 @@ check "P4 CLI bad value: usage, exit 2, key unchanged" "[ $RC = 2 ] && grep -q '
 OUT=$(bash "$CFG" --help)
 check "P4 --help lists cpu-notice and CPU_NOTICE key" "grep -q '^  cpu-notice \\[on|off\\]  ' <<<\"\$OUT\" && grep -q 'CPU_NOTICE=on|off' <<<\"\$OUT\""
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; echo \"\$SA_BK_KEYS\"; for v in on off '' maybe; do rs_valid CPU_NOTICE \"\$v\" && echo \"ok:\$v\" || echo \"bad:\$v\"; done" 2>&1)
-check "P5 backup keys carry CPU_NOTICE after AUTO_BUILD (RUN_HISTORY last, 3.0); restore accepts on, off, empty only" "grep -q 'GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY\$' <<<\"\$OUT\" && [ \"\$(grep -c '^ok:' <<<\"\$OUT\")\" = 3 ] && grep -qx 'bad:maybe' <<<\"\$OUT\""
+check "P5 backup keys carry CPU_NOTICE after AUTO_BUILD (then RUN_HISTORY of 3.0, SNAPSHOT_KEEP and UPDATE_CHECK_ON_OPEN of 3.1); restore accepts on, off, empty only" "grep -q 'GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN\$' <<<\"\$OUT\" && [ \"\$(grep -c '^ok:' <<<\"\$OUT\")\" = 3 ] && grep -qx 'bad:maybe' <<<\"\$OUT\""
 # game logs: 400 newest log CPU, 312520 newest GPU (older CPU log ignored), 219150 CPU log without id line ignored
 L=$R/tmp
 printf 'SteamAppId=312520\nsteam-arm: renderer: warning: GPU forwarding not active: rendering on CPU (llvmpipe); no GPU device in use, process a\n' > "$L/fex-compat-tool-3001.log"
@@ -454,7 +454,7 @@ vdfmap(){ printf '"InstallConfigStore"\n{\n\t"Software"\n\t{\n\t\t"Valve"\n\t\t{
 vdfmap
 
 fresh; gu menu_maintenance BACK
-check "G1 Maintenance: item 9 GE-Proton (ARM64), optional (now: none) after item 8" "grep -q '^MENU Maintenance|.*8 Caches (sizes, clear FEX code caches) 9 GE-Proton (ARM64), optional (now: none) 10 Client type (now: native ARM64) 11 Report how last game ran 12 Run history (now: off)\$' <<<\"\$OUT\""
+check "G1 Maintenance: item 9 GE-Proton (ARM64), optional (now: none) after item 8" "grep -q '^MENU Maintenance|.*8 Caches (sizes, clear FEX code caches) 9 GE-Proton (ARM64), optional (now: none) 10 Client type (now: native ARM64) 11 Report how last game ran 12 Run history (now: off) 14 Show what is new' <<<\"\$OUT\""
 fresh; ui "SA_GE_PY=$T/none.py; menu_maintenance" 9 BACK
 check "G1 helper missing (2.2 setup): label (now: helper missing), screen says Update / Repair" "grep -q '9 GE-Proton (ARM64), optional (now: helper missing)' <<<\"\$OUT\" && grep -q '^MSG GE-Proton (ARM64)|Helper is missing. Run Maintenance > Update / Repair.' <<<\"\$OUT\""
 fresh; gu menu_maintenance 9 BACK BACK
@@ -505,14 +505,14 @@ fresh; gu ge_install_file "$T/gedl/GE-Proton11-6-aarch64.tar.gz" yes
 check "G7 file install 11-6: folder and marker in compatibilitytools.d, restart + per-game message, SLR line" "[ -f '$GC/GE-Proton11-6-aarch64/.steam-arm-ge' ] && grep -q '^MSG GE-Proton (ARM64)|GE-Proton11-6 installed. Restart Steam ARM to list it. Pick it per game: Graphics > Route per game > ge, or game Properties > Compatibility in Steam.' <<<\"\$OUT\" && grep -q '^First start of game set to it downloads Steam Linux Runtime 4.0 (Arm64).' <<<\"\$OUT\""
 check "G7 install log in menu cache folder" "ls '$R'/tmp/cache/geproton-*.log >/dev/null 2>&1"
 fresh; gu menu_maintenance BACK
-check "G8 label after install: (now: GE-Proton11-6)" "grep -q '9 GE-Proton (ARM64), optional (now: GE-Proton11-6) 10 Client type (now: native ARM64) 11 Report how last game ran 12 Run history (now: off)\$' <<<\"\$OUT\""
+check "G8 label after install: (now: GE-Proton11-6)" "grep -q '9 GE-Proton (ARM64), optional (now: GE-Proton11-6) 10 Client type (now: native ARM64) 11 Report how last game ran 12 Run history (now: off) 14 Show what is new' <<<\"\$OUT\""
 vdfmap 400:GE-Proton11-6-aarch64 312520:steamlinuxruntime
 fresh; gu ge_install_file "$T/gedl/GE-Proton11-7-aarch64.tar.gz" yes yes
 check "G9 newer file install: move offer names 1 game, default Keep both" "grep -q '^YESNO GE-Proton (ARM64)|Move 1 game from GE-Proton11-6 to GE-Proton11-7 and remove GE-Proton11-6?' <<<\"\$OUT\""
 check "G9 Move and remove: game on 11-7, 11-6 gone, other mapping kept" "grep -A1 '\"400\"' '$GS/config/config.vdf' | tail -1 | grep -q . && grep -A3 '\"400\"' '$GS/config/config.vdf' | grep -q GE-Proton11-7-aarch64 && grep -A3 '\"312520\"' '$GS/config/config.vdf' | grep -q steamlinuxruntime && [ ! -e '$GC/GE-Proton11-6-aarch64' ] && grep -q '^MSG GE-Proton (ARM64)|GE-Proton11-6 removed; 1 game moved to GE-Proton11-7.' <<<\"\$OUT\""
 mkdir -p "$GC/GE-Proton10-34"; echo '"compat_tools" { "GE-Proton10-34" {} }' > "$GC/GE-Proton10-34/compatibilitytool.vdf"
 fresh; gu menu_maintenance BACK
-check "G8 label with hand copy: newest first, 1 more" "grep -q '9 GE-Proton (ARM64), optional (now: GE-Proton11-7, 1 more) 10 Client type (now: native ARM64) 11 Report how last game ran 12 Run history (now: off)\$' <<<\"\$OUT\""
+check "G8 label with hand copy: newest first, 1 more" "grep -q '9 GE-Proton (ARM64), optional (now: GE-Proton11-7, 1 more) 10 Client type (now: native ARM64) 11 Report how last game ran 12 Run history (now: off) 14 Show what is new' <<<\"\$OUT\""
 fresh; gu menu_geproton BACK
 check "G2 screen: installed here with size and games, other copy left alone" "grep -q '^Installed here: GE-Proton11-7 ([0-9]* MB, 1 game)\$' <<<\"\$OUT\" && grep -q '^Other copies:   GE-Proton10-34 (not installed here, left alone)\$' <<<\"\$OUT\""
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; . $T/gstubs.sh; info_status" 2>&1)
@@ -581,7 +581,7 @@ check "XM7 Notes: x86 client line names #13288 and Maintenance > Client type" "g
 fresh CLIENT=arm64; ui "info_notes >> \$LOG"
 check "XM7b Notes: no x86 line on native client" "! grep -q 'x86 client:' <<<\"\$OUT\""
 fresh CLIENT=x86 CLIENT_SET=auto CLIENT_PROBE=1788652215:lse; ui "$XS; menu_maintenance" 10 BACK BACK
-check "XM8 Maintenance: item 10 Client type (now: x86) opens type screen with state and four entries" "grep -q '^MENU Maintenance|.* 10 Client type (now: x86) 11 Report how last game ran 12 Run history (now: off)\$' <<<\"\$OUT\" && grep -q '^MENU Client type|Now: x86 through emulation (CPU without Armv8.1 atomics)' <<<\"\$OUT\" && grep -q '^Native client last checked: client 1788652215, lse\$' <<<\"\$OUT\" && grep -q 'auto Automatic (recommended) arm64 Native ARM64 client x86 x86 client through emulation check Check native client now\$' <<<\"\$OUT\""
+check "XM8 Maintenance: item 10 Client type (now: x86) opens type screen with state and four entries" "grep -q '^MENU Maintenance|.* 10 Client type (now: x86) 11 Report how last game ran 12 Run history (now: off) 14 Show what is new' <<<\"\$OUT\" && grep -q '^MENU Client type|Now: x86 through emulation (CPU without Armv8.1 atomics)' <<<\"\$OUT\" && grep -q '^Native client last checked: client 1788652215, lse\$' <<<\"\$OUT\" && grep -q 'auto Automatic (recommended) arm64 Native ARM64 client x86 x86 client through emulation check Check native client now\$' <<<\"\$OUT\""
 check "XM8b Back from type screen: Maintenance again, cursor on 10" "[ \$(grep -c '^MENU Maintenance' <<<\"\$OUT\") = 2 ] && grep '^MENU Maintenance' <<<\"\$OUT\" | tail -n 1 | grep -q -- '--default 10 '"
 fresh CLIENT=x86; ui "$XS; maint_client" auto BACK
 check "XM9 Automatic: setup --keep --client=auto, no question" "grep -qx 'RUN Client type||--keep --client=auto' <<<\"\$OUT\" && ! grep -q '^YESNO' <<<\"\$OUT\""
