@@ -5,7 +5,7 @@
 ---
 
 ## Client
-- Steam Frame's Steam client: native ARM64 build Valve produced for its ARM based VR headset, Steam Frame, set up on other ARM64 Linux devices; client interface, input stack, downloader and shader system run on CPU and GPU without emulation; in Linux x86 titles, Steam overlay's in-game part is x86 code loaded into emulated title
+- Steam Frame's Steam client: native ARM64 build Valve produced for its ARM based VR headset, Steam Frame, set up on other ARM64 Linux devices (Armv8.0 CPUs: Valve's x86 client through emulation in its place); client interface, input stack, downloader and shader system run on CPU and GPU without emulation; in Linux x86 titles, Steam overlay's in-game part is x86 code loaded into emulated title
 - Client package downloads from Valve's stable ARM64 channel on first install and is checked against checksum in Valve's manifest; client's Steam Frame mode switches it to its own ARM update channel on first start, then client restarts itself; sign in from Big Picture or from "Steam ARM (Desktop mode)"
 - First start shows desktop notification while client downloads its files without window: download in 10 % steps with total size, unpack, install, then "Steam opens now"; read from client's bootstrap log, sent through `gdbus` (else `notify-send`), updated in place, closed when client exits early; never on later starts
 - First start that ends with client files incomplete stops launcher with message to start again (dialog with `zenity` when started from menu); bootstrap exit after its own update gets one more start first
