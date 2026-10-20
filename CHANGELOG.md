@@ -23,6 +23,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Update / Repair and other setup runs from settings menu pick setup script whose version equals installed version (package command, installed copy, file beside menu), else newest of them. Old package next to newer zip install no longer runs older setup.
 - Check for new version names upgrade command (package installs of release without package asset: package build steps) in place of manual installer command, and stores result for main screen line.
 - Information and run report name client channel: `stable`, `Valve ARM channel (set by Steam Frame mode)`, `beta (Steam Beta Participation)`, else raw name; run report adds raw name in brackets.
+- Display mode restore after game also covers KDE Plasma Wayland sessions: launcher reads output modes and positions with `kscreen-doctor -j` and puts them back with `kscreen-doctor`; other Wayland sessions still skipped.
 - `--remove` deletes `/var/lib/steam-arm` (snapshots, records) and `/var/cache/steam-arm` (upgrade downloads).
 - Settings file keys `SNAPSHOT_KEEP`, `UPDATE_CHECK_ON_OPEN` (part of setup choices in backups; earlier versions skip them) and `INSTALLED_FROM` (package installs of 3.0 and earlier, which lack it, detected through dpkg).
 

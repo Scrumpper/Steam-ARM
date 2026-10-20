@@ -14220,23 +14220,57 @@ if [ -f /etc/systemd/system/steam-arm-pad-xbox.service ] && systemctl is-active 
   PADSVC=1; sudo -n systemctl stop steam-arm-pad-xbox 2>/dev/null || systemctl stop steam-arm-pad-xbox 2>/dev/null
 fi
 restore_pad(){ [ "$PADSVC" = 1 ] && { sudo -n systemctl start steam-arm-pad-xbox 2>/dev/null || systemctl start steam-arm-pad-xbox 2>/dev/null; }; }
-# Display mode (X11): a title that switches mode and quits, crashes or is stopped can leave it set.
+# Display mode (X11 through xrandr, KDE Wayland through kscreen-doctor): a title that switches mode and quits, crashes or is stopped can leave it set.
 # Modes are saved when a title starts and put back once no title runs, and when Steam closes.
 MODEF="$XDG_RUNTIME_DIR/steam-arm-display-mode"
 game_up(){ pgrep -u "$(id -u)" -f 'reaper SteamLaunch' >/dev/null 2>&1; }
-mode_ok(){ [ -n "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ] && [ "${STEAM_ARM_MODE_RESTORE:-1}" != 0 ] && command -v xrandr >/dev/null 2>&1; }
+# Prints x11 or kscreen; nothing when restore is off or no tool fits the session.
+mode_kind(){
+  [ "${STEAM_ARM_MODE_RESTORE:-1}" != 0 ] || return 0
+  if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    command -v kscreen-doctor >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && echo kscreen
+  elif [ -n "${DISPLAY:-}" ]; then command -v xrandr >/dev/null 2>&1 && echo x11; fi
+}
+mode_ok(){ [ -n "$(mode_kind)" ]; }
 # One line per active output: name, mode id, geometry (WxH+X+Y).
-mode_get(){ xrandr --verbose 2>/dev/null | awk '/^[^ \t].* connected/ { for (i = 3; i < NF; i++) if ($i ~ /^[0-9]+x[0-9]+\+-?[0-9]+\+-?[0-9]+$/ && $(i + 1) ~ /^\(0x[0-9a-f]+\)$/) { m = $(i + 1); gsub(/[()]/, "", m); print $1, m, $i } }'; }
+mode_get(){
+  case $(mode_kind) in
+    x11) xrandr --verbose 2>/dev/null | awk '/^[^ \t].* connected/ { for (i = 3; i < NF; i++) if ($i ~ /^[0-9]+x[0-9]+\+-?[0-9]+\+-?[0-9]+$/ && $(i + 1) ~ /^\(0x[0-9a-f]+\)$/) { m = $(i + 1); gsub(/[()]/, "", m); print $1, m, $i } }';;
+    kscreen) kscreen-doctor -j 2>/dev/null | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+for o in d.get("outputs", []):
+    if not (o.get("connected") and o.get("enabled")):
+        continue
+    m = str(o.get("currentModeId", ""))
+    sz = next((x.get("size") or {} for x in o.get("modes", []) if str(x.get("id")) == m), {})
+    p = o.get("pos") or {}
+    if m and sz and " " not in o.get("name", " ") + m:
+        print(o["name"], m, "%dx%d+%d+%d" % (sz.get("width", 0), sz.get("height", 0), p.get("x", 0), p.get("y", 0)))
+';;
+  esac
+}
 mode_restore(){
   [ -s "$MODEF" ] || return 0
   now=$(mode_get); [ -n "$now" ] || return 0
   [ "$now" = "$(cat "$MODEF")" ] && return 0
-  fb=$(awk '{ split($3, g, /[x+]/); w = g[1] + g[3]; h = g[2] + g[4]; if (w > W) W = w; if (h > H) H = h } END { if (W) print W "x" H }' "$MODEF")
   set --
-  while read -r o m g; do
-    p=${g#*+}; set -- "$@" --output "$o" --mode "$m" --pos "${p%%+*}x${p#*+}"
-  done < "$MODEF"
-  if xrandr ${fb:+--fb "$fb"} "$@" 2>/dev/null; then lwarn "display mode put back after game: $(paste -sd ' ' "$MODEF")"
+  if [ "$(mode_kind)" = kscreen ]; then
+    while read -r o m g; do
+      p=${g#*+}; set -- "$@" "output.$o.mode.$m" "output.$o.position.${p%%+*},${p#*+}"
+    done < "$MODEF"
+    set -- kscreen-doctor "$@"
+  else
+    fb=$(awk '{ split($3, g, /[x+]/); w = g[1] + g[3]; h = g[2] + g[4]; if (w > W) W = w; if (h > H) H = h } END { if (W) print W "x" H }' "$MODEF")
+    while read -r o m g; do
+      p=${g#*+}; set -- "$@" --output "$o" --mode "$m" --pos "${p%%+*}x${p#*+}"
+    done < "$MODEF"
+    set -- xrandr ${fb:+--fb "$fb"} "$@"
+  fi
+  if "$@" >/dev/null 2>&1; then lwarn "display mode put back after game: $(paste -sd ' ' "$MODEF")"
   else lnote "display mode could not be put back ($(paste -sd ' ' "$MODEF")); set it in display settings"; fi
 }
 # Called every second by the watcher: save before a title switches, restore 2 s after the last one ends.
