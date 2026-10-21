@@ -52,6 +52,10 @@ CONF = {"ARMHOME_DIR", "GAMEUSER", "COMPONENTS_ON", "COMPONENTS_OFF", "GPU_FAMIL
         "PROVIDER_CUSTOM_SHA256", "PROVIDER_CUSTOM_FILE"}
 # Keys of /etc/os-release, which setup sources in a subshell.
 OS_RELEASE = {"ID", "ID_LIKE", "VERSION_ID", "VERSION_CODENAME"}
+# Frame pacing readout and still-working notice knobs, Mesa variables they set.
+DOCUMENTED |= {"STEAM_ARM_PERF_STATS", "STEAM_ARM_STILL_WORKING", "STEAM_ARM_STILL_AFTER"}
+SYSTEM |= {"VK_LOADER_LAYERS_ENABLE"}
+CONF |= {"STILL_NOTICE"}
 ALLOW = DOCUMENTED | INTERNAL | SYSTEM | CONF | OS_RELEASE
 
 SH_READ = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:?[-+=?])")
