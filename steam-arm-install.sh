@@ -6781,6 +6781,7 @@ menu_maintenance(){
     up+=(18 "CPU profile of client window (two 60 s samples)")
     [ "$(client_type)" = x86 ] && up+=(19 "Faster client start, reduced x87 precision (now: $(x87_client))")
     [ "$(client_type)" = x86 ] && ! cpu_has_lse && up+=(20 "Client window: lighter (now: $(client_light))")
+    [ "$(client_type)" = x86 ] && up+=(21 "Experiment: client window through GPU at next start")
     c=$(ui_menu "Maintenance" "Keep Steam ARM working." --default "$c" \
       1 "Update / Repair (run setup again, same parts)" 2 "View logs" \
       3 "Hardware report (for a compatibility report)" 4 "Free /dev/shm now" \
@@ -6814,8 +6815,16 @@ Setup reinstalls packages, launcher, helpers and rules for those parts. Games, s
       18) maint_cpureport;;
       19) maint_x87;;
       20) maint_light;;
+      21) maint_lab;;
     esac
   done
+}
+# Experiment screen: arms one start with ANGLE on Vulkan or GL; result from the state file.
+maint_lab(){
+  local c
+  c=$(ui_menu "Experiment: client window through GPU" "x86 client. Next start of Steam ARM runs the client window with GPU forwarding on and ANGLE (Chromium's GL layer) on Vulkan or GL, for that start only; the start after draws on CPU again. Result (cef-gpu=ok or failed:reason) lands in client home .config/steam-arm/state and in steam-arm --cpu-report. Low odds; the window may stay black for that start.
+Now: $(lab_state)." vulkan "ANGLE on Vulkan at next start" gl "ANGLE on OpenGL at next start (reports GL 4.5)" off "Off (next start draws on CPU)" retry "Remove earlier result (allows another trial)") || return
+  self_root lab-cef-gpu "$c" && ui_msg "Experiment" "Client window through GPU: $(lab_state)."
 }
 # Lighter client window on CPUs without Armv8.1 atomics (x86 client): desktop interface and no friends view, on by default.
 maint_light(){
@@ -7062,10 +7071,45 @@ Reading "Rules used at last start" (Games > a game)
   lines (Proton keeps its own logs).
 EOF
 }
+experiments_text(){ cat <<'EOF'
+Experiments
+
+Settings here are off by default, apply to one start
+and are never kept. They exist so a report can show
+what happens; expect no gain.
+
+Client window through GPU (x86 client)
+- Maintenance > Experiment: client window through GPU
+  at next start, or steam-arm-config lab-cef-gpu
+  vulkan|gl. Environment for one start:
+  STEAM_ARM_LAB_CEF_GPU=vulkan|gl steam-arm
+- That start: GPU forwarding on for the client window
+  processes, client flag -cef-force-gpu, Chromium's
+  ANGLE layer on Vulkan or on OpenGL (OpenGL 4.5
+  reported to it for that session).
+- Launcher watches the client logs: three GPU process
+  exits within 120 s, or GPU compositing still off
+  after 60 s, records cef-gpu=failed:<reason> in client
+  home .config/steam-arm/state; compositing on records
+  cef-gpu=ok:<variant>. A failed result keeps the next
+  starts on CPU until lab-cef-gpu retry removes it.
+- Why low odds: FEX turns GL off for the client window
+  process itself (its GLX pattern), ANGLE on GL needs
+  more than OpenGL 3.1, ANGLE on Vulkan through the
+  forwarding layer is unproven. A report with
+  steam-arm --cpu-report settles it per GPU.
+
+Reporting
+- steam-arm --cpu-report: CPU and GPU profile of the
+  client window and games, two 60 s samples, text file
+  in your home. Home folders are replaced by ~; read
+  it before posting.
+EOF
+}
 menu_help(){
   local c=""
-  while c=$(ui_menu "Help / About" "Choose a page." --default "$c" 1 "Fixing a game" 2 "About steam-arm-config"); do
-    case "$c" in 1) ui_textstr "Fixing a game" "$(fixing_text)";; 2) ui_textstr "About" "$(about_text)";; esac
+  while c=$(ui_menu "Help / About" "Choose a page." --default "$c" 1 "Fixing a game" 2 "Experiments" 3 "About steam-arm-config"); do
+    case "$c" in 1) ui_textstr "Fixing a game" "$(fixing_text)";; 2) ui_textstr "Experiments" "$(experiments_text)";; 3) ui_textstr "About" "$(about_text)";; esac
   done
 }
 
@@ -7163,6 +7207,11 @@ Commands
                             desktop window and no friends view (on by
                             default); off: Deck interface and friends view
                             as on other boards; no value: state
+  lab-cef-gpu [vulkan|gl|off|retry|status]
+                            experiment, x86 client: client window through
+                            GPU (ANGLE on Vulkan or GL) at next start only;
+                            result cef-gpu=ok|failed:... in client home
+                            .config/steam-arm/state; retry removes it
   run-history [on|off]      record start and end of each x86 game start
                             through emulation in client folder
                             (.local/state/steam-arm/runs.log, newest 200
@@ -7431,6 +7480,20 @@ cli_client_light(){
     *) echo "usage: steam-arm-config client-light [on|off]" >&2; return 2;;
   esac
 }
+# Experiment: client window through the GPU at the next start (one-shot file in the client home, read and removed by the launcher).
+lab_file(){ echo "$(arm_home)/.config/steam-arm/lab-cef-gpu"; }
+lab_state(){ local f r; f=$(lab_file); r=$(game_read sed -n 's/^cef-gpu=//p' "$(arm_home)/.config/steam-arm/state" 2>/dev/null | tail -1)
+  echo "next start: $(game_read head -n 1 "$f" 2>/dev/null | grep -E '^(vulkan|gl)$' || echo off); last result: ${r:-none}"; }
+cli_lab_cef(){
+  local f; f=$(lab_file)
+  case "${1:-}" in
+    vulkan|gl) printf '%s\n' "$1" | acct_put "$(game_user)" "$f" && echo "client window through GPU (ANGLE $1) at next start of Steam ARM, that start only";;
+    off) acct_run "$(game_user)" rm -f "$f" && echo "client window through GPU: off (next start draws on CPU)";;
+    retry) acct_run "$(game_user)" sed -i '/^cef-gpu=/d' "$(arm_home)/.config/steam-arm/state" 2>/dev/null; echo "earlier result removed; lab-cef-gpu vulkan|gl arms the next start";;
+    ''|status) echo "client window through GPU: $(lab_state)";;
+    *) echo "usage: steam-arm-config lab-cef-gpu [vulkan|gl|off|retry|status]" >&2; return 2;;
+  esac
+}
 cli_cpu_report(){
   [ -f "$SA_CPUREPORT" ] || { echo "steam-arm-config: $SA_CPUREPORT missing; run Update / Repair" >&2; return 1; }
   game_read env HOME="$(arm_home)" bash "$SA_CPUREPORT" --user "$(game_user)" --home "$(game_home)" --client "$(client_type)" "$@"
@@ -7597,6 +7660,7 @@ main(){
     cpu-report)  shift; cli_cpu_report "$@";;
     x87-client)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_x87_client "$@";;
     client-light) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_client_light "$@";;
+    lab-cef-gpu) case "${2:-}" in vulkan|gl|off|retry) cli_root "$@";; esac; shift; cli_lab_cef "$@";;
     run-history) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_run_history "$@";;
     components)  cli_root "$@"; shift; cli_components "$@";;
     driver-archive) case "${2:-}" in download|local|custom) cli_root "$@";; esac; shift; cli_driver_archive "$@";;
@@ -9759,7 +9823,9 @@ cat > /usr/local/lib/steam-arm-x86client.py <<'X86PY'
                         webhelper start script gets --enable-features=NetworkServiceInProcess2 (network
                         service in the browser process, so the client's process check passes);
                         launch wrapper moved to <name>.real, stand-in runs steam-arm launch handler first;
-                        FEX app settings steamwebhelper.json and exe.json: thunks off (client window on CPU),
+                        FEX app settings steamwebhelper.json and exe.json: thunks off (client window on CPU;
+                        STEAM_ARM_LAB_CEF_GPU=vulkan|gl: thunks on and ANGLE flags in the webhelper script, base
+                        put back at the next start without it),
                         code cache off (FEX-2610 turns it on for Steam; zygote crash loop); own keys merged, other
                         keys kept; steam.json: X87ReducedPrecision when STEAM_ARM_X87=reduced, removed otherwise;
                         update channel file of native client moved aside (package/beta.steam-arm-arm64);
@@ -9791,6 +9857,10 @@ import tempfile
 import zipfile
 
 FLAG = " --enable-features=NetworkServiceInProcess2"
+# experiment (STEAM_ARM_LAB_CEF_GPU, one start): client window through the GPU, ANGLE on Vulkan or GL
+LAB_FLAGS = {"vulkan": " --use-gl=angle --use-angle=vulkan --ignore-gpu-blocklist --enable-gpu-rasterization",
+             "gl": " --use-gl=angle --use-angle=gl --ignore-gpu-blocklist --enable-gpu-rasterization"}
+WRAP_ANY = re.compile(r'^(\s*"\$\{DIR\}/steamwebhelper_sniper_wrap\.sh" "\$@")(.*)$', re.M)
 WEBHELPER = "ubuntu12_64/steamwebhelper.sh"
 WRAP_LINE = re.compile(r'^(\s*"\$\{DIR\}/steamwebhelper_sniper_wrap\.sh" "\$@")[ \t]*$', re.M)
 WRAPPERS = ("ubuntu12_32/steam-launch-wrapper", "steamrt64/steam-launch-wrapper")
@@ -10031,22 +10101,27 @@ def multiblock_off(s, armhome):
 
 def prepare(s, armhome):
     warn = []
-    # 1. webhelper start script
+    # 1. webhelper start script: own flags after Valve's wrap line (transport flag; lab flags for this start only)
+    lab = os.environ.get("STEAM_ARM_LAB_CEF_GPU")
+    lab = lab if lab in LAB_FLAGS else None
+    want = FLAG + (LAB_FLAGS[lab] if lab else "")
     p = os.path.join(s, WEBHELPER)
     if os.path.isfile(p):
         t = open(p, "rb").read().decode("utf-8", "surrogateescape")
-        if FLAG not in t:
-            m = list(WRAP_LINE.finditer(t))
-            if len(m) == 1:
-                t = t[:m[0].end(1)] + FLAG + t[m[0].end(1):]
-                b = t.encode("utf-8", "surrogateescape")
-                put(p, b, os.stat(p).st_mode & 0o7777)
-                put(p + ".steam-arm-sha", (sha(b) + "\n").encode(), 0o644)
-                print("x86 client: %s: network service in browser process" % WEBHELPER)
-            else:
-                warn.append("steamwebhelper.sh changed by Valve; transport dialog may appear at start")
-        elif not os.path.exists(p + ".steam-arm-sha"):
-            put(p + ".steam-arm-sha", (sha(t.encode("utf-8", "surrogateescape")) + "\n").encode(), 0o644)
+        m = list(WRAP_ANY.finditer(t))
+        cur = m[0].group(2).rstrip() if len(m) == 1 else None
+        if cur == want:
+            if not os.path.exists(p + ".steam-arm-sha"):
+                put(p + ".steam-arm-sha", (sha(t.encode("utf-8", "surrogateescape")) + "\n").encode(), 0o644)
+        elif cur is not None and (cur == "" or cur == FLAG or cur in (FLAG + v for v in LAB_FLAGS.values())):
+            t = t[:m[0].end(1)] + want + t[m[0].end(2):]
+            b = t.encode("utf-8", "surrogateescape")
+            put(p, b, os.stat(p).st_mode & 0o7777)
+            put(p + ".steam-arm-sha", (sha(b) + "\n").encode(), 0o644)
+            print("x86 client: %s: network service in browser process%s" % (WEBHELPER, "; client window through GPU (ANGLE %s), this start" % lab if lab
+                                                                          else "; lab flags removed" if cur and cur != FLAG else ""))
+        else:
+            warn.append("steamwebhelper.sh changed by Valve; transport dialog may appear at start")
     # 2. launch wrapper stand-ins
     for rel in WRAPPERS:
         w = os.path.join(s, rel)
@@ -10070,15 +10145,18 @@ def prepare(s, armhome):
             print("x86 client: %s: stand-in runs launch handler" % rel)
     # 3. FEX app settings: own keys merged, other keys kept (3.0 wrote the thunk keys only)
     d = os.path.join(armhome, ".fex-emu/AppConfig")
+    cw = json.loads(json.dumps(APPCFG_WANT))
+    if lab:
+        cw["ThunksDB"] = {"GL": 1, "Vulkan": 1}
     for n in APPCFG:
         f = os.path.join(d, n)
         try:
-            st = appcfg_merge(f, APPCFG_WANT)
+            st = appcfg_merge(f, cw)
         except ValueError:
             warn.append("FEX app setting %s is not valid JSON; left as it is (client window may fail)" % n)
             continue
         if st:
-            print("x86 client: FEX app setting %s: thunks off, code cache off%s" % (n, " (other keys kept)" if st == "changed" else ""))
+            print("x86 client: FEX app setting %s: thunks %s, code cache off%s" % (n, "on (lab, this start)" if lab else "off", " (other keys kept)" if st == "changed" else ""))
     f = os.path.join(d, STEAM_JSON)
     try:
         if os.environ.get("STEAM_ARM_X87") == "reduced":
@@ -10111,7 +10189,9 @@ def restore(s, armhome):
         try:
             b = open(p, "rb").read()
             if open(rec).read().strip() == sha(b) and FLAG.encode() in b:
-                put(p, b.replace(FLAG.encode(), b"", 1), os.stat(p).st_mode & 0o7777)
+                t = b.decode("utf-8", "surrogateescape")
+                t = WRAP_ANY.sub(lambda m: m.group(1), t, count=1)
+                put(p, t.encode("utf-8", "surrogateescape"), os.stat(p).st_mode & 0o7777)
                 done.append("Valve's webhelper start script")
         except OSError:
             pass
@@ -14684,6 +14764,22 @@ SH
 if [ -x "$D/streaming_client" ] && cmp -s "$D/streaming_client.new" "$D/streaming_client"; then rm -f "$D/streaming_client.new"
 else chmod 755 "$D/streaming_client.new" && mv -f "$D/streaming_client.new" "$D/streaming_client"; fi
 else
+# --- Experiment: client window through the GPU for this start only (STEAM_ARM_LAB_CEF_GPU=vulkan|gl, or one-shot file
+# from steam-arm-config lab-cef-gpu); an earlier failed trial (cef-gpu=failed:... in the state file) keeps software
+# drawing until that line is removed. Never persisted: the client helper puts the base files back at the next start ---
+LABF="$ARMHOME/.config/steam-arm/lab-cef-gpu"; LABST="$ARMHOME/.config/steam-arm/state"
+LAB=${STEAM_ARM_LAB_CEF_GPU:-}
+if [ -z "$LAB" ] && [ -f "$LABF" ]; then LAB=$(head -n 1 "$LABF"); rm -f "$LABF"; fi
+case "$LAB" in vulkan|gl) ;; *) LAB=;; esac
+if [ -n "$LAB" ] && grep -qs '^cef-gpu=failed:' "$LABST"; then
+  lwarn "lab: client window through GPU failed earlier ($(sed -n 's/^cef-gpu=failed://p' "$LABST" | head -n 1)); drawing on CPU; remove the cef-gpu line from $LABST to try again"; LAB=
+fi
+export STEAM_ARM_LAB_CEF_GPU="$LAB"
+if [ -n "$LAB" ]; then
+  # ANGLE on GL needs more than the host's OpenGL 3.1 report (lab, this session only)
+  [ "$LAB" = gl ] && export MESA_GL_VERSION_OVERRIDE=4.5 MESA_GLSL_VERSION_OVERRIDE=450
+  lwarn "lab: client window through GPU (ANGLE $LAB) for this start; result recorded in $LABST (cef-gpu=...)"
+fi
 # --- x86 client: webhelper flag, launch wrapper stand-in, FEX app settings, native update channel aside (each start) ---
 xo=$(python3 /usr/local/lib/steam-arm-x86client.py prepare "$S" "$ARMHOME" 2>&1); xrc=$?
 [ -n "$xo" ] && printf '%s\n' "$xo" | while IFS= read -r l; do printf '%s %s\n' "$(date '+%F %T')" "$l" >> "$LOG" 2>/dev/null; done
@@ -14967,6 +15063,37 @@ if [ "$CLIENT" = x86 ]; then
   if [ "$LIGHT" = 1 ] && [ "${STEAM_ARM_FRIENDS:-0}" != 1 ]; then
     XFLAGS="$XFLAGS -nofriendsui"; llog "client window: friends view off (slow emulation class; STEAM_ARM_FRIENDS=1 keeps it)"
   fi
+  [ -n "$LAB" ] && XFLAGS="-steamos3 -cef-force-gpu${XFLAGS#*-cef-disable-gpu-compositing}"
+  # lab result: new client log lines only (sizes at start); three GPU process exits within 120 s or compositing off
+  # after 60 s = failed, compositing on = ok; recorded as cef-gpu=... in the state file, one notice
+  LABOFF="$ARMHOME/.config/steam-arm/lab-offsets"
+  lab_new(){ for f in "$S"/logs/webhelper*.txt; do [ -f "$f" ] || continue
+      o=$(awk -v f="$f" '$1 == f {print $2}' "$LABOFF" 2>/dev/null); tail -c +"$(( ${o:-0} + 1 ))" "$f" 2>/dev/null; done; }
+  lab_result(){
+    mkdir -p "${LABST%/*}"; { grep -v '^cef-gpu=' "$LABST" 2>/dev/null; echo "cef-gpu=$1"; } > "$LABST.new" && mv -f "$LABST.new" "$LABST"
+    rm -f "$LABOFF"
+    case "$1" in
+      ok:*) lnote "lab: client window through GPU (ANGLE $LAB): GPU compositing enabled; details in $LABST and steam-arm --cpu-report" "Steam ARM: experiment";;
+      *) lnote "lab: client window through GPU (ANGLE $LAB) failed (${1#failed:}); next start draws on CPU again; remove the cef-gpu line from $LABST to try again" "Steam ARM: experiment";;
+    esac
+  }
+  lab_watch(){
+    [ -n "$LAB" ] || return 0
+    mkdir -p "${LABOFF%/*}"; for f in "$S"/logs/webhelper*.txt; do [ -f "$f" ] && echo "$f $(stat -c %s "$f")"; done > "$LABOFF"
+    t0=$(date +%s)
+    while sleep 5; do
+      now=$(( $(date +%s) - t0 ))
+      n=$(lab_new | grep -c 'GPU process exited')
+      if [ "$n" -ge 3 ] && [ "$now" -le 120 ]; then lab_result "failed:gpu-process-exits"; return 0; fi
+      if lab_new | grep -q 'gpu_compositing: enabled'; then
+        lab_new | grep -aiE 'GL_RENDERER|renderer|Loaded GL' | tail -n 3 | while IFS= read -r l; do llog "lab: $l"; done
+        lab_result "ok:$LAB"; return 0
+      fi
+      [ "$now" -ge 60 ] && lab_new | grep -q 'gpu_compositing: disabled' && { lab_result "failed:compositing-disabled"; return 0; }
+      [ "$now" -ge 180 ] && { lab_result "failed:no-result"; return 0; }
+      client_running || { lab_result "failed:client-exited"; return 0; }
+    done
+  }
   # Deck interface without account runs SteamOS setup, whose update step needs steamos-update (absent): desktop sign-in first.
   if [ -n "$GPUI" ] && ! grep -qs '"AccountName"' "$S/config/loginusers.vdf"; then
     GPUI=
@@ -15045,6 +15172,7 @@ if [ "$CLIENT" = x86 ]; then
   fi
   start_state start
   wh_restart_watch </dev/null >/dev/null 2>&1 &
+  lab_watch </dev/null >/dev/null 2>&1 &
   tries=0
   while :; do
     off=$(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)

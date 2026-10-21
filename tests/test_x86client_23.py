@@ -274,6 +274,39 @@ os.unlink(sj)
 del os.environ["STEAM_ARM_X87"]
 rc, out9c = quiet(x.prepare, s, a)
 check("P12d STEAM_ARM_X87 unset: no steam.json, nothing logged", not os.path.exists(sj) and rc == 0 and out9c == "", out9c)
+# lab: client window through GPU for one start (STEAM_ARM_LAB_CEF_GPU), base put back without it
+s2, a2 = client_folder(arm_beta=False)
+os.environ["STEAM_ARM_LAB_CEF_GPU"] = "vulkan"
+rc, outl = quiet(x.prepare, s2, a2)
+web = read(os.path.join(s2, "ubuntu12_64/steamwebhelper.sh"))
+check("P15 lab vulkan: wrap line gets transport flag plus ANGLE Vulkan flags, sha record follows, line names lab",
+      b'"${DIR}/steamwebhelper_sniper_wrap.sh" "$@" --enable-features=NetworkServiceInProcess2 --use-gl=angle --use-angle=vulkan --ignore-gpu-blocklist --enable-gpu-rasterization\n' in web
+      and read(os.path.join(s2, "ubuntu12_64/steamwebhelper.sh.steam-arm-sha")).decode().strip() == __import__("hashlib").sha256(web).hexdigest()
+      and "client window through GPU (ANGLE vulkan), this start" in outl, outl)
+check("P15b lab: client FEX app settings thunks on, code cache off",
+      all(json.load(open(os.path.join(a2, ".fex-emu/AppConfig", n))) == {"ThunksDB": {"GL": 1, "Vulkan": 1}, "Config": {"DiskCache": "0"}} for n in ("steamwebhelper.json", "exe.json"))
+      and "thunks on (lab, this start)" in outl, outl)
+rc, outl2 = quiet(x.prepare, s2, a2)
+check("P15c lab prepare again: idempotent", rc == 0 and outl2 == "", outl2)
+os.environ["STEAM_ARM_LAB_CEF_GPU"] = "gl"
+quiet(x.prepare, s2, a2)
+check("P15d lab gl replaces the vulkan flags", b' --use-angle=gl --ignore-gpu-blocklist' in read(os.path.join(s2, "ubuntu12_64/steamwebhelper.sh")) and b"use-angle=vulkan" not in read(os.path.join(s2, "ubuntu12_64/steamwebhelper.sh")))
+del os.environ["STEAM_ARM_LAB_CEF_GPU"]
+rc, outl3 = quiet(x.prepare, s2, a2)
+check("P16 next start without lab: base line back (transport flag only), thunks off, logged",
+      b'"${DIR}/steamwebhelper_sniper_wrap.sh" "$@" --enable-features=NetworkServiceInProcess2\n' in read(os.path.join(s2, "ubuntu12_64/steamwebhelper.sh"))
+      and all(json.load(open(os.path.join(a2, ".fex-emu/AppConfig", n)))["ThunksDB"] == {"GL": 0, "Vulkan": 0} for n in ("steamwebhelper.json", "exe.json"))
+      and "lab flags removed" in outl3 and "thunks off" in outl3, outl3)
+os.environ["STEAM_ARM_LAB_CEF_GPU"] = "bogus"
+rc, outl4 = quiet(x.prepare, s2, a2)
+check("P16b unknown lab value: base, nothing changed", rc == 0 and outl4 == "", outl4)
+del os.environ["STEAM_ARM_LAB_CEF_GPU"]
+os.environ["STEAM_ARM_LAB_CEF_GPU"] = "vulkan"
+quiet(x.prepare, s2, a2)
+del os.environ["STEAM_ARM_LAB_CEF_GPU"]
+quiet(x.restore, s2, a2)
+check("P16c restore after a lab start: Valve's wrap line without any own flag", b'"${DIR}/steamwebhelper_sniper_wrap.sh" "$@"\n' in read(os.path.join(s2, "ubuntu12_64/steamwebhelper.sh"))
+      and b"--enable-features" not in read(os.path.join(s2, "ubuntu12_64/steamwebhelper.sh")))
 # multiblock-off (launcher restart counter): Multiblock 0 into both client files, own keys kept; second call silent
 put(os.path.join(a, ".fex-emu/AppConfig/exe.json"), json.dumps(WANT))
 rc, out10 = quiet(x.multiblock_off, s, a)
