@@ -1246,6 +1246,7 @@ SA_AUTOBUILD_PY=/usr/local/lib/steam-arm-autobuild.py
 SA_APPINFO_PY=/usr/local/lib/steam-arm-appinfo.py
 SA_GE_PY=/usr/local/lib/steam-arm-geproton.py
 SA_AUTOTUNE_PY=/usr/local/lib/steam-arm-autotune.py
+SA_CPUREPORT=/usr/local/lib/steam-arm-cpu-report.sh
 SA_REMOTEPLAY=/usr/local/bin/steam-arm-remoteplay
 SA_SHARE_INSTALLER=/usr/local/share/steam-arm/steam-arm-install.sh
 SA_RFS=/opt/fex-rootfs/Ubuntu_24_04
@@ -4302,6 +4303,10 @@ report_text(){
     [ -r "$f" ] && grep -aq 'error while loading shared libraries' "$f" \
       && { echo "steamwebhelper.log:"; grep -a 'error while loading shared libraries' "$f" | tail -3; }
   fi
+  if [ -f "$SA_CPUREPORT" ]; then
+    echo; echo "== CPU report (static sections; steam-arm --cpu-report adds two 60 s profiles)"
+    env HOME="$(arm_home)" bash "$SA_CPUREPORT" --sections system,processes --user "$(game_user)" --home "$(game_home)" 2>/dev/null
+  fi
   echo
   echo "== Versions"
   echo "Installed      $(installed_version) ($(installed_from))"
@@ -4807,7 +4812,7 @@ sa_owned_paths(){
     /usr/local/lib/steam-arm-autobuild.py /usr/local/lib/steam-arm-appinfo.py /usr/local/lib/steam-arm-geproton.py \
     /usr/local/lib/steam-arm-x86client.py /usr/local/lib/steam-arm-run.py /usr/local/lib/steam-arm-pv-bwrap \
     /usr/local/lib/steam-arm-python3 /usr/local/lib/steam-arm-entry.py /usr/local/lib/steam-arm-autotune.py \
-    /usr/local/lib/steam-arm-glx-lax-patch.py /usr/local/lib/steam-arm-glx-lax.src /usr/local/lib/steam-arm-glx-lax.stat \
+    /usr/local/lib/steam-arm-cpu-report.sh /usr/local/lib/steam-arm-glx-lax-patch.py /usr/local/lib/steam-arm-glx-lax.src /usr/local/lib/steam-arm-glx-lax.stat \
     /usr/local/lib/steam-arm-glx-lax.state /usr/local/lib/steam-arm-vk-spoof.c /usr/local/lib/steam-arm-nopkg \
     /usr/local/sbin/steam-arm-glx-lax /usr/local/sbin/steam-arm-xpad-dedup /usr/local/sbin/steam-arm-pad-xbox \
     /usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0 /usr/lib/aarch64-linux-gnu/libVkLayer_steam_arm_spoof.so \
@@ -6738,6 +6743,7 @@ menu_maintenance(){
     up+=(14 "Show what is new")
     [ -n "$(snap_names)" ] && up+=(15 "Go back to previous version")
     up+=(16 "Previous versions kept (now: $(snap_keep))" 17 "Check for new release when this menu opens (now: $(check_on_open))")
+    up+=(18 "CPU profile of client window (two 60 s samples)")
     c=$(ui_menu "Maintenance" "Keep Steam ARM working." --default "$c" \
       1 "Update / Repair (run setup again, same parts)" 2 "View logs" \
       3 "Hardware report (for a compatibility report)" 4 "Free /dev/shm now" \
@@ -6768,8 +6774,28 @@ Setup reinstalls packages, launcher, helpers and rules for those parts. Games, s
       15) maint_rollback;;
       16) maint_keep;;
       17) maint_checkopen;;
+      18) maint_cpureport;;
     esac
   done
+}
+# CPU and GPU profile of the client window: report script as game account, file in game account's home.
+maint_cpureport(){
+  local out log
+  is_installed || { offer_install; return; }
+  [ -f "$SA_CPUREPORT" ] || { ui_msg "CPU profile" "Helper $SA_CPUREPORT is missing. Run Maintenance > Update / Repair."; return; }
+  steam_running || { ui_msg "CPU profile" "Start Steam ARM first and sign in. The profile measures the client window while it runs: 60 s idle on the Library page, then 60 s of browsing."; return; }
+  ui_yesno "CPU profile" "Measures CPU and GPU use of the client window and games for about two and a half minutes: system facts, 60 s idle on the Library page, then 60 s while you browse the Library and Store. Switch to Steam once this starts.
+
+Home folders are replaced by ~; host name, account name and serial are never read. Read the file before posting it." Start Back || return
+  out=$(game_home)/steam-arm-cpu-report-$(date +%Y%m%d-%H%M).txt
+  log=$(tmpf) || { ui_msg "CPU profile" "$TMP_FAIL"; return; }
+  ui_run "CPU profile" "$log" game_read env HOME="$(arm_home)" bash "$SA_CPUREPORT" --no-wait --out "$out" --user "$(game_user)" --home "$(game_home)" --client "$(client_type)"
+  rm -f "$log"
+  if [ -s "$out" ]; then ui_msg "CPU profile" "Saved to $out (readable by game account only).
+
+Paste it into an issue at:
+$SA_DOCS/issues"
+  else ui_msg "CPU profile" "Report could not be written to $out."; fi
 }
 # Client type: setup run with --keep --client=<type>; arm64 on Armv8.0 and x86 on Armv8.1 ask first (default Back).
 client_switch(){
@@ -7058,6 +7084,10 @@ Commands
                             state, rules and titles set
   cpu-notice [on|off]       desktop notice when an x86 game draws on CPU
                             (off by default); no value: state
+  cpu-report [--quick] [--no-wait]
+                            CPU and GPU profile of client window and games
+                            as game account (steam-arm --cpu-report), file in
+                            game account's home
   run-history [on|off]      record start and end of each x86 game start
                             through emulation in client folder
                             (.local/state/steam-arm/runs.log, newest 200
@@ -7311,6 +7341,10 @@ cli_cpu_notice(){
     *) echo "usage: steam-arm-config cpu-notice [on|off]" >&2; return 2;;
   esac
 }
+cli_cpu_report(){
+  [ -f "$SA_CPUREPORT" ] || { echo "steam-arm-config: $SA_CPUREPORT missing; run Update / Repair" >&2; return 1; }
+  game_read env HOME="$(arm_home)" bash "$SA_CPUREPORT" --user "$(game_user)" --home "$(game_home)" --client "$(client_type)" "$@"
+}
 cli_components(){
   local -a cmd; mapfile -t cmd < <(installer_cmd) || true
   [ "${#cmd[@]}" -gt 0 ] || { echo "steam-arm-config: setup script not found" >&2; return 1; }
@@ -7470,6 +7504,7 @@ main(){
                  shift; cli_tune "$@";;
     auto-build)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_auto_build "$@";;
     cpu-notice)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_cpu_notice "$@";;
+    cpu-report)  shift; cli_cpu_report "$@";;
     run-history) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_run_history "$@";;
     components)  cli_root "$@"; shift; cli_components "$@";;
     driver-archive) case "${2:-}" in download|local|custom) cli_root "$@";; esac; shift; cli_driver_archive "$@";;
@@ -8305,7 +8340,7 @@ remove_all(){
         /usr/local/lib/steam-arm-autobuild.py /usr/local/lib/steam-arm-appinfo.py /usr/local/lib/steam-arm-geproton.py \
         /usr/local/lib/steam-arm-x86client.py /usr/local/lib/steam-arm-run.py /usr/local/lib/steam-arm-pv-bwrap \
         /usr/local/lib/steam-arm-python3 /usr/local/lib/steam-arm-entry.py \
-        /usr/local/lib/steam-arm-autotune.py \
+        /usr/local/lib/steam-arm-autotune.py /usr/local/lib/steam-arm-cpu-report.sh \
         /usr/local/lib/steam-arm-glx-lax-patch.py /usr/local/lib/steam-arm-glx-lax.src /usr/local/lib/steam-arm-glx-lax.stat \
         /usr/local/lib/steam-arm-glx-lax.state \
         /usr/local/lib/steam-arm-vk-spoof.c \
@@ -13940,6 +13975,8 @@ case "${1:-}" in
       "  steam-arm --desktop     start client in desktop interface (restarts running client in it)" \
       "  steam-arm --shutdown    stop running client (asks it to exit, SIGTERM after 20 s, x86 client 45 s)" \
       "  steam-arm --open URL    pass steam:// link to running client (never starts one)" \
+      "  steam-arm --cpu-report [--quick] [--no-wait] [--out FILE]" \
+      "                          CPU and GPU profile of client window and games (two 60 s samples) into a text file" \
       "  steam-arm --help        show this text" \
       "Run as account Steam ARM is set up for, not as root." \
       "Other options pass to Steam client unchanged. Settings: sudo steam-arm-config"
@@ -14058,6 +14095,8 @@ fi
 case "${1:-}" in
   --shutdown) stop_client; exit $?;;
   --open) open_link "${2:-}"; exit $?;;
+  # profile of client window and games: file in the account's home, Steam logs from client home ($HOME here)
+  --cpu-report) shift; exec bash /usr/local/lib/steam-arm-cpu-report.sh --home "$REALHOME" --client "$CLIENT" "$@";;
 esac
 # Installed client check (after --shutdown: stopping needs no client files).
 if [ "$CLIENT" = x86 ]; then
@@ -15054,6 +15093,265 @@ if __name__ == "__main__":
     sys.exit(main())
 RPPY
 chmod 755 /usr/local/bin/steam-arm-remoteplay
+# CPU and GPU profile of client window and games (steam-arm --cpu-report; hardware report takes its static sections).
+cat > /usr/local/lib/steam-arm-cpu-report.sh <<'CPUREP'
+#!/bin/bash
+# steam-arm-cpu-report: CPU and GPU profile of the Steam client window and running games, one text file for a report.
+# Run through the launcher: steam-arm --cpu-report [--quick] [--no-wait] [--out FILE]. Options --home DIR (file
+# folder), --user NAME (account whose processes count), --client x86|arm64, --sections a,b (static sections only:
+# system, firmware, session, graphics, fex, processes; no profile phases). Home folders replaced by ~; host name,
+# account name and board serial never read.
+set -u
+IDLE_S=60; BROWSE_S=60; STEP=5; WAIT=1; OUT=""; RHOME=""; ME=$(id -un); CLIENT=""; SECTIONS=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    --quick) IDLE_S=5; BROWSE_S=5; STEP=1;;
+    --no-wait) WAIT=0;;
+    --out=*) OUT=${1#--out=};;
+    --out) OUT=${2:-}; shift;;
+    --home) RHOME=${2:-}; shift;;
+    --user) ME=${2:-$ME}; shift;;
+    --client) CLIENT=${2:-}; shift;;
+    --sections) SECTIONS=${2:-}; shift;;
+    *) echo "steam-arm-cpu-report: unknown option $1" >&2; exit 2;;
+  esac; shift
+done
+[ -n "$RHOME" ] || RHOME=$HOME
+UHOME=$(getent passwd "$ME" 2>/dev/null | cut -d: -f6); UHOME=${UHOME:-$HOME}
+[ -n "$OUT" ] || OUT="$RHOME/steam-arm-cpu-report-$(date +%Y%m%d-%H%M%S).txt"
+want(){ [ -z "$SECTIONS" ] || case ",$SECTIONS," in *",$1,"*) return 0;; *) return 1;; esac; }
+
+exec 3>&2
+say(){ printf '%s\n' "$*" >&3; }
+hdr(){ printf '\n==== %s ====\n' "$*"; }
+have(){ command -v "$1" >/dev/null 2>&1; }
+# home folders of this account and of the client folder replaced by ~
+redact(){ sed -e "s#$HOME#~#g" -e "s#$UHOME#~#g" -e "s#$RHOME#~#g"; }
+# run with a time limit; records the command line and a missing tool
+run(){ printf -- '--- $ %s\n' "$*"; if have "$1"; then timeout 90 "$@" 2>&1 | redact | head -n 400; else echo "(not installed: $1)"; fi; }
+catf(){ local f; for f in "$@"; do printf -- '--- %s\n' "$(printf '%s' "$f" | redact)"; if [ -r "$f" ]; then redact < "$f" | head -n 200; else echo "(not readable or absent)"; fi; done; }
+
+# throttle bits as Raspberry Pi documents them (vcgencmd get_throttled)
+decode_throttled(){
+  local v=$1 b; v=$((v))
+  for b in 0:under-voltage 1:arm-freq-capped 2:throttled 3:soft-temp-limit 16:under-voltage-since-boot 17:arm-freq-capped-since-boot 18:throttled-since-boot 19:soft-temp-limit-since-boot; do
+    [ $(( (v >> ${b%%:*}) & 1 )) = 1 ] && printf ' %s' "${b#*:}"
+  done; echo
+}
+vc(){ have vcgencmd && timeout 5 vcgencmd "$@" 2>&1 | tr '\n' ' '; }
+throttled(){ local v; v=$(vc get_throttled); v=${v#throttled=}; if [ -n "$v" ]; then echo "${v% }$(decode_throttled "${v% }")"; else echo n/a; fi; }
+temp_c(){ local t; t=$(vc measure_temp); [ -n "$t" ] && { echo "${t#temp=}"; return; }; t=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null) && echo "$((t/1000)).$(( (t%1000)/100 ))'C"; }
+arm_mhz(){ local f; f=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null) && echo $((f/1000)); }
+v3d_mhz(){ local c; c=$(vc measure_clock v3d); c=${c#*=}; [ -n "$c" ] && echo $((${c%% *}/1000000)); }
+
+# Steam and emulator processes of the account (command name or command line match), this report left out
+steam_pids(){
+  pgrep -u "$ME" -f 'steam|FEX|reaper|pressure-vessel|pv-bwrap|wineserver|srt-bwrap|\.exe' 2>/dev/null | grep -vx -e "$$" -e "$PPID" \
+    | while read -r p; do grep -qa 'steam-arm-cpu-report' "/proc/$p/cmdline" 2>/dev/null || echo "$p"; done | sort -n | uniq
+}
+# group of a pid: steam, steamwebhelper, fex, runtime, game
+pid_group(){
+  local c; c=$(cut -d' ' -f2 "/proc/$1/stat" 2>/dev/null); c=${c#(}; c=${c%)}
+  case $c in
+    steamwebhelper*) echo steamwebhelper;;
+    steam|steam.sh|steam-runtime*|steam-launch*|steam-arm*) echo steam;;
+    FEX*) echo fex;;
+    reaper|pressure-vessel*|pv-*|srt-*|bwrap|wineserver|services.exe|explorer.exe|winedevice.exe|plugplay.exe|svchost.exe|rpcss.exe|steam.exe|conhost.exe|start.exe) echo runtime;;
+    *) echo game;;
+  esac
+}
+# one "total <jiffies> <idle+iowait>" line, then "<group> <jiffies>" per pid
+cpu_snapshot(){
+  awk '/^cpu /{s=0; for(i=2;i<=NF;i++) s+=$i; print "total", s, $5+$6; exit}' /proc/stat
+  local p g; for p in $(steam_pids); do
+    g=$(pid_group "$p"); awk -v g="$g" '{print g, $14+$15}' "/proc/$p/stat" 2>/dev/null
+  done
+}
+# two snapshots on stdin (first, then second), core count $1: "total steam swh fex game runtime" in percent
+# (total = whole system; groups = share of one core)
+cpu_delta(){
+  awk -v ncpu="$1" '
+    $1=="total"{ if(n==0){t0=$2; i0=$3} else {t1=$2; i1=$3}; n++; next }
+    { if(n==1) a[$1]+=$2; else b[$1]+=$2 }
+    END{ dt=(t1-t0)/ncpu; if(dt<=0) dt=1; busy=100*(1-(i1-i0)/(t1-t0)); if(t1-t0<=0) busy=0
+         printf "%.0f %.0f %.0f %.0f %.0f %.0f\n", busy,
+           100*(b["steam"]-a["steam"])/dt, 100*(b["steamwebhelper"]-a["steamwebhelper"])/dt, 100*(b["fex"]-a["fex"])/dt,
+           100*(b["game"]-a["game"])/dt, 100*(b["runtime"]-a["runtime"])/dt }'
+}
+# v3d sysfs stats: queue timestamp runtime (kernel 6.8 and newer)
+GPU_STATS=$(ls /sys/bus/platform/drivers/v3d/*/gpu_stats 2>/dev/null | head -n1)
+gpu_snapshot(){ [ -n "$GPU_STATS" ] && awk 'NR>1{print $1, $2, $4}' "$GPU_STATS"; }
+# GPU time per process group from drm fdinfo, one entry per drm client id
+gpu_proc_snapshot(){
+  local p g f; for p in $(steam_pids); do g=$(pid_group "$p")
+    for f in "/proc/$p/fdinfo"/*; do
+      awk -v g="$g" -v p="$p" '/^drm-client-id/{id=$2} /^drm-engine-(render|bin|gfx|compute)/{ns+=$2} END{if(id!="") print g, p, id, ns+0}' "$f" 2>/dev/null
+    done
+  done | sort -u -k2,3 | awk '{a[$1]+=$4} END{for(k in a) print k, a[k]}'
+}
+# render node, thunk and driver libraries per process: "<group> <pid> <comm> fd:<nodes> libs:<names>"
+proc_gfx(){
+  local p g c nodes libs t f
+  for p in $(steam_pids); do
+    g=$(pid_group "$p"); c=$(cut -d' ' -f2 "/proc/$p/stat" 2>/dev/null); nodes=""
+    for f in "/proc/$p/fd"/*; do t=$(readlink "$f" 2>/dev/null); case $t in /dev/dri/renderD*) nodes="$nodes${nodes:+,}${t##*/}";; esac; done
+    libs=$(grep -ohE '[^ /]*-(guest|host)\.so[^ ]*|libGLX_[a-z0-9_]+\.so[^ ]*|libvulkan_[a-z0-9_]+\.so[^ ]*|(swrast|v3d|vc4|panfrost|zink)_dri\.so|libgallium[^ ]*|libEGL_mesa[^ ]*' "/proc/$p/maps" 2>/dev/null | sort -u | paste -sd, -)
+    [ -n "$nodes$libs" ] && echo "$g $p ${c:-?} fd:${nodes:-none} libs:${libs:-none}$(grep -qa -- '--type=zygote' "/proc/$p/cmdline" 2>/dev/null && echo ' (zygote)')"
+  done
+}
+phase(){ # name seconds
+  local name=$1 secs=$2 s0 s1 g0 g1 gp0 gp1 n i tot st swh fx gm rt
+  n=$(( secs / STEP )); [ $n -lt 1 ] && n=1
+  hdr "profile: $name ($secs s, ${STEP} s samples)"
+  printf '%-8s %-6s %-6s %-6s %-6s %-6s %-8s %-5s %-8s %-7s %-6s %-8s %s\n' time total% steam% swh% fex% game% runtime% pids swh_cnt temp arm_mhz v3d_mhz throttled
+  s0=$(cpu_snapshot); g0=$(gpu_snapshot); gp0=$(gpu_proc_snapshot)
+  for ((i=0;i<n;i++)); do
+    sleep "$STEP"
+    s1=$(cpu_snapshot)
+    read -r tot st swh fx gm rt <<<"$(printf '%s\n%s\n' "$s0" "$s1" | cpu_delta "$(nproc)")"
+    printf '%-8s %-6s %-6s %-6s %-6s %-6s %-8s %-5s %-8s %-7s %-6s %-8s %s\n' "$(date +%H:%M:%S)" "$tot" "$st" "$swh" "$fx" "$gm" "$rt" \
+      "$(steam_pids | wc -l)" "$(pgrep -u "$ME" -c steamwebhelper)" "$(temp_c)" "$(arm_mhz)" "$(v3d_mhz)" "$(throttled)"
+    s0=$s1
+  done
+  g1=$(gpu_snapshot); gp1=$(gpu_proc_snapshot)
+  echo "(total% = whole system, all cores; steam%, swh%, fex%, game%, runtime% = share of one core, 400 = four cores; swh = steamwebhelper (client window); game = processes of the Steam tree with other names; runtime = container and Wine helpers)"
+  if [ -n "$GPU_STATS" ]; then
+    echo "--- GPU busy by v3d queue over the phase (runtime / wall time):"
+    printf '%s\n%s\n' "$g0" "$g1" | awk '{ if(!($1 in t)){t[$1]=$2; r[$1]=$3} else { dt=$2-t[$1]; if(dt>0) printf "  %-12s %5.1f%%\n", $1, 100*($3-r[$1])/dt } }'
+  else echo "--- GPU busy: no v3d gpu_stats in sysfs (other GPU, or kernel older than 6.8)"; fi
+  echo "--- GPU engine time per process group over the phase (drm fdinfo, ms):"
+  printf '%s\n%s\n' "$gp0" "$gp1" | awk 'NF==2{ if(!($1 in a)) a[$1]=$2; else printf "  %-15s %8.0f ms\n", $1, ($2-a[$1])/1e6 }' | sort
+  [ -z "$gp0$gp1" ] && echo "  (no drm fdinfo on Steam processes: nothing draws through the GPU, or no Steam process)"
+  echo "--- threads of the Steam tree above 0.5% CPU (lifetime average) at phase end:"
+  local pl; pl=$(steam_pids | paste -sd,); [ -n "$pl" ] && ps -L -p "$pl" -o pid=,tid=,pcpu=,comm= 2>/dev/null | awk '$3>0.5' | sort -k3 -rn | head -n 25
+  echo "--- render nodes and graphics libraries per process at phase end:"
+  proc_gfx
+}
+section_system(){
+  hdr "system"
+  echo "model: $({ tr -d '\0' < /proc/device-tree/model; } 2>/dev/null || echo unknown)"
+  echo "kernel: $(uname -srm)   page size: $(getconf PAGESIZE)   cpus: $(nproc)"
+  grep -E '^(PRETTY_NAME|VERSION_CODENAME|ID)=' /etc/os-release 2>/dev/null
+  grep -m1 -E '^Features' /proc/cpuinfo; grep -E '^CPU part' /proc/cpuinfo | sort | uniq -c | sed 's/^ *\([0-9]*\) /x\1 /'
+  run free -m
+  grep -E '^(CmaTotal|CmaFree|MemAvailable|SwapTotal|SwapFree)' /proc/meminfo
+  echo "swap: $(swapon --show=NAME,SIZE,USED --noheadings 2>/dev/null | tr '\n' ' ')"
+  echo "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)  min/max kHz: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq 2>/dev/null)/$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 2>/dev/null)  available: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies 2>/dev/null)"
+  echo "load: $(cut -d' ' -f1-3 /proc/loadavg)  uptime: $(uptime -p 2>/dev/null)"
+  local c; for c in /boot/firmware/config.txt /boot/config.txt; do [ -r $c ] && { echo "--- $c (active lines)"; grep -vE '^\s*(#|$)' $c; break; }; done
+  echo "--- kernel command line (serial and address values removed)"
+  sed -E 's/[A-Za-z0-9_.]*(serial|macaddr|mac)[A-Za-z0-9_.]*=[^ ]*/&REMOVED/g; s/=[^ ]*REMOVED/=removed/g' /proc/cmdline 2>/dev/null
+  echo "--- settings file keys"
+  grep -E '^(VERSION|CLIENT|CLIENT_SET|GPU_FAMILY|PLATFORM|CPU_LSE|CPU_CORES|MESA_HOST|COMPONENTS_ON|GFX_DEFAULT|CPU_NOTICE|RUN_HISTORY)=' /etc/steam-arm/steam-arm.conf 2>/dev/null
+}
+section_firmware(){
+  hdr "firmware (vcgencmd)"
+  if have vcgencmd; then
+    echo "version: $(vc version)"
+    echo "get_throttled: $(throttled)"
+    echo "temp: $(temp_c)  arm: $(vc measure_clock arm) core: $(vc measure_clock core) v3d: $(vc measure_clock v3d)"
+    echo "mem: $(vc get_mem arm) $(vc get_mem gpu)  volts: $(vc measure_volts core)"
+    echo "config ints: $(vc get_config int | tr ' ' '\n' | grep -E '^(arm_freq|arm_boost|over_voltage|gpu_freq|v3d_freq|total_mem|gpu_mem|temp_limit|force_turbo|arm_64bit)' | tr '\n' ' ')"
+    id -nG | grep -qw video || echo "(account not in group video: vcgencmd may be refused)"
+  else echo "vcgencmd not installed; thermal from sysfs: $(temp_c)"; fi
+}
+section_session(){
+  hdr "session"
+  echo "session type: ${XDG_SESSION_TYPE:-unknown}  desktop: ${XDG_CURRENT_DESKTOP:-unknown}  wayland display: $([ -n "${WAYLAND_DISPLAY:-}" ] && echo yes || echo no)  x11 display: $([ -n "${DISPLAY:-}" ] && echo yes || echo no)"
+  echo "compositor processes: $(ps -eo comm= | grep -E -x 'labwc|wayfire|Xorg|Xwayland|openbox|kwin_x11|kwin_wayland|mutter|gnome-shell|sway|weston|xfwm4|plasmashell' | sort | uniq -c | tr '\n' ' ')"
+  have xrandr && [ -n "${DISPLAY:-}" ] && run xrandr --current | grep -E ' connected|\*' | head -n 8
+  have wlr-randr && [ -n "${WAYLAND_DISPLAY:-}" ] && run wlr-randr | head -n 20
+}
+section_graphics(){
+  hdr "graphics stack (host)"
+  ls -l /dev/dri/ 2>/dev/null
+  local d; for d in /sys/class/drm/card*/device/driver /sys/class/drm/renderD*/device/driver; do [ -e "$d" ] && echo "$(basename "$(dirname "$(dirname "$d")")"): $(basename "$(readlink "$d")")"; done
+  echo "groups: $(id -nG)"
+  dpkg-query -W -f='${Package} ${Version} ${Architecture}\n' libgl1-mesa-dri mesa-vulkan-drivers libegl-mesa0 libglx-mesa0 mesa-libgallium libvulkan1 xwayland labwc wayfire xserver-xorg-core raspi-firmware 'linux-image-rpi*' mesa-utils vulkan-tools 2>/dev/null | grep -v '^$'
+  run glxinfo -B
+  run eglinfo -B
+  run vulkaninfo --summary
+  echo "ICD files: $(ls /usr/share/vulkan/icd.d/ /etc/vulkan/icd.d/ 2>/dev/null | tr '\n' ' ')"
+  echo "--- Mesa and Vulkan variables of this session:"; env | grep -E '^(MESA_|LIBGL_|VK_|__GLX|__GL_|GALLIUM_)' | sort
+}
+section_fex(){
+  hdr "emulator (FEX)"
+  dpkg-query -W -f='${Package} ${Version}\n' 'fex-emu*' 2>/dev/null
+  local b; for b in FEX FEXInterpreter FEXLoader FEXBash FEXGetConfig FEXServer; do have $b && echo "$b: $(command -v $b)"; done
+  if have FEXGetConfig; then
+    run FEXGetConfig --version
+    run FEXGetConfig --current-rootfs
+    run FEXGetConfig --tso-emulation-info
+    run FEXGetConfig --app steam
+    run FEXGetConfig --app steamwebhelper
+  fi
+  catf /usr/share/fex-emu/Config.json "$UHOME/.fex-emu/Config.json" "$HOME/.fex-emu/Config.json"
+  local d f; for d in "$HOME/.fex-emu/AppConfig" "$UHOME/.fex-emu/AppConfig" /usr/share/fex-emu/AppConfig; do
+    [ -d "$d" ] && { echo "--- $(printf '%s' "$d" | redact): $(ls "$d" | tr '\n' ' ')"; for f in "$d"/*.json; do [ -f "$f" ] && catf "$f"; done; }
+  done
+  echo "host thunks: $(ls -d /usr/lib/*/fex-emu/HostThunks /usr/lib/fex-emu/HostThunks /usr/local/lib/*/fex-emu/HostThunks 2>/dev/null | tr '\n' ' ')"
+  echo "guest thunks: $(ls -d /usr/share/fex-emu/GuestThunks /usr/local/share/fex-emu/GuestThunks 2>/dev/null | tr '\n' ' ')"
+  echo "--- FEX, Mesa and runtime variables of running Steam processes:"
+  local p; for p in $(steam_pids); do { tr '\0' '\n' <"/proc/$p/environ"; } 2>/dev/null | grep -E '^(FEX_|STEAM_COMPAT_FEX|STEAM_ARM_|MESA_|LIBGL_|VK_|__GL|STEAM_RUNTIME|PRESSURE_VESSEL|SDL_VIDEODRIVER|GDK_BACKEND|QT_QPA)'; done | redact | sort | uniq -c | sort -rn | head -n 40
+  if [ -z "$SECTIONS" ] && have FEXBash; then
+    hdr "graphics stack (through FEX, x86 root filesystem)"
+    local c; for c in 'glxinfo -B' 'vulkaninfo --summary'; do
+      printf -- '--- $ FEXBash -c "%s"\n' "$c"
+      timeout 180 FEXBash -c "command -v ${c%% *} >/dev/null 2>&1 || { echo '(not in root filesystem: ${c%% *})'; exit 0; }; $c" 2>&1 | redact | head -n 60
+    done
+  fi
+}
+section_processes(){
+  hdr "Steam processes"
+  ps -u "$ME" -o pid=,ppid=,nlwp=,pcpu=,pmem=,rss=,etimes=,comm=,args= 2>/dev/null | grep -E 'steam|FEX|reaper|pressure-vessel|wine' | grep -v -e grep -e steam-arm-cpu-report | redact | cut -c1-220
+  echo "steamwebhelper processes: $(pgrep -u "$ME" -c steamwebhelper)   Steam tree pids: $(steam_pids | wc -l)   threads: $(for p in $(steam_pids); do ls "/proc/$p/task" 2>/dev/null; done | wc -l)"
+  echo "--- client window flags (cef, gpu) on command lines:"
+  local p; for p in $(steam_pids); do { tr '\0' ' ' <"/proc/$p/cmdline"; } 2>/dev/null | grep -oE -- '-(no)?cef[-a-z]*|-nofriendsui|-gamepadui|--disable-gpu[-a-z]*|--use-gl=[a-z]*|--use-angle=[a-z]*|--enable-features=[^ ]*|--disable-features=[^ ]*|--ozone-platform=[a-z]*|--type=[a-z-]*'; done | sort | uniq -c
+  echo "--- render nodes and graphics libraries per process:"
+  proc_gfx
+  echo "--- client logs (window composer and GPU lines, last 40 each):"
+  local L f
+  for L in "$HOME/.local/share/Steam/logs" "$UHOME/.local/share/steam-arm/.local/share/Steam/logs" "$UHOME/.local/share/Steam/logs"; do
+    [ -d "$L" ] || continue; echo "log folder: $(printf '%s' "$L" | redact)"
+    for f in "$L"/console-linux.txt "$L"/cef_log.txt "$L"/webhelper*.txt "$L"/steamwebhelper*.txt "$L"/gpu*.txt; do
+      [ -f "$f" ] && { echo "-- $(basename "$f") ($(stat -c %s "$f") bytes):"; grep -aiE 'gpu_compositing|GPU process|mode:|Loaded GL|CCompositorGLThread|GL_RENDERER|GL_VERSION|OpenGL|swiftshader|ANGLE|vulkan|EGL|llvmpipe|v3d|hardware accel|disable-gpu|SIGTRAP|crash' "$f" | grep -viE 'gameoverlayrenderer|crash_reporting|CrashID' | tail -n 40 | redact | cut -c1-240; }
+    done; break
+  done
+  [ -f "$HOME/steam-arm.log" ] && { echo "--- launcher log, last 30 lines:"; tail -n 30 "$HOME/steam-arm.log" | redact; }
+}
+section_end(){
+  hdr "end state"
+  echo "temp: $(temp_c)  throttled: $(throttled)  arm MHz: $(arm_mhz)  v3d MHz: $(v3d_mhz)"
+  grep -E '^(MemAvailable|CmaFree|SwapFree)' /proc/meminfo | tr '\n' ' '; echo
+  echo "kernel log (GPU, memory and throttle lines; empty when restricted):"; dmesg 2>/dev/null | grep -iE 'v3d|vc4|drm|oom|throttl|under-?voltage|gpu|panthor|panfrost' | tail -n 20
+}
+
+if [ -n "$SECTIONS" ]; then
+  want system && section_system
+  want firmware && section_firmware
+  want session && section_session
+  want graphics && section_graphics
+  want fex && section_fex
+  want processes && section_processes
+  exit 0
+fi
+say "Writing $OUT"
+{
+echo "Steam ARM CPU report  $(date -Is)"
+echo "report format 1; client ${CLIENT:-unknown}; sections: system, firmware, session, graphics, emulator, Steam processes, two profiles (idle, browsing), end state"
+section_system; section_firmware; section_session; section_graphics; section_fex; section_processes
+say ""; say "Phase 1: leave Steam open on its Library page and do not touch it for ${IDLE_S} s."
+[ "$WAIT" = 1 ] && { say "Press Enter to start (starts by itself in 20 s)."; read -r -t 20 _ </dev/tty 2>/dev/null; }
+phase "idle on Library page" "$IDLE_S"
+say ""; say "Phase 2: for ${BROWSE_S} s scroll the Library, open a game page, open the Store and come back."
+[ "$WAIT" = 1 ] && { say "Press Enter when ready (starts by itself in 20 s)."; read -r -t 20 _ </dev/tty 2>/dev/null; }
+phase "browsing Library and Store" "$BROWSE_S"
+section_end
+} >"$OUT" 2>&1
+chmod 600 "$OUT" 2>/dev/null
+say "Report written: $OUT ($(wc -l <"$OUT") lines). Read it before posting; home folders are replaced by ~."
+CPUREP
+chmod 755 /usr/local/lib/steam-arm-cpu-report.sh
 cat > /usr/local/lib/steam-arm-launchopts.py <<'LOPY'
 #!/usr/bin/env python3
 """steam-arm-launchopts: Raspberry Pi GPU title settings as Steam launch options.
