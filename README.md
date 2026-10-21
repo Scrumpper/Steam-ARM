@@ -925,8 +925,8 @@ launch options:
   `mangohud` of MangoHud package is never replaced, and removal deletes only shim.
 - Display mode: title that changes display mode (fullscreen at other resolution or refresh
   rate) and quits, crashes or is stopped without changing it back: launcher puts back mode
-  from before title started, once no title runs, and when Steam closes (X11 sessions;
-  `steam-arm.log` line `display mode put back after game`). `STEAM_ARM_MODE_RESTORE=0` in
+  from before title started, once no title runs, and when Steam closes (X11 sessions through
+  `xrandr`, KDE Plasma Wayland sessions through `kscreen-doctor`; `steam-arm.log` line `display mode put back after game`). `STEAM_ARM_MODE_RESTORE=0` in
   `/etc/steam-arm/steam-arm.conf` turns it off.
 - Unity and Godot titles get renderer settings Mali driver can run, found from game
   files: Godot 4 OpenGL renderer and GL 3.3 report, Godot 3 GL 3.3 report. Godot version
@@ -1960,7 +1960,8 @@ to repository.
 - Display stays at other resolution or refresh rate after game: launcher puts back mode
   from before game once game ends; log line `display mode put back after game` in
   `steam-arm.log`. Mode stays changed only with `STEAM_ARM_MODE_RESTORE=0`, in Wayland
-  sessions, or when `xrandr` is missing (`sudo apt install x11-xserver-utils`).
+  sessions other than KDE Plasma, or when `xrandr` (X11, `sudo apt install x11-xserver-utils`)
+  or `kscreen-doctor` (KDE Plasma Wayland) is missing.
 - Bluetooth adapter off after Steam starts: client sets adapter power from its own saved
   setting (`System/Bluetooth/Enabled` in `config.vdf`; unset means off). Launcher writes
   host state there before each start, and at exit powers adapter on again when it was on
