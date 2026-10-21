@@ -76,7 +76,7 @@ awk '/^cat > \/usr\/local\/bin\/steam-arm <<.LAUNCHER.$/{f=1;next} /^LAUNCHER$/{
 check "D13 launcher parses (sh -n)" "sh -n $L"
 SB=$T/slow.sh; awk '/^# Slow emulation class: x86 client on a CPU without LSE atomics/{f=1} f{print} f && /^llog "session: /{exit}' "$L" > "$SB"
 check "D13b slow class block present, after LSE check, before page size check" \
-  "grep -q 'export STEAM_ARM_SLOW=\"\$SLOW\" STEAM_ARM_PLATFORM=\"\$PLATFORM\"' $SB && [ \$(grep -n '^# Slow emulation class' $L | cut -d: -f1) -gt \$(grep -n '^# Client needs Armv8.1 atomics' $L | cut -d: -f1) ] && [ \$(grep -n '^# Slow emulation class' $L | cut -d: -f1) -lt \$(grep -n '^# Emulation needs 4K pages' $L | cut -d: -f1) ]"
+  "grep -q 'export STEAM_ARM_SLOW=\"\$SLOW\" STEAM_ARM_PLATFORM=\"\$PLATFORM\"' $SB && [ \$(grep -n '^# Slow emulation class: x86 client' $L | cut -d: -f1) -gt \$(grep -n '^# Client needs Armv8.1 atomics' $L | cut -d: -f1) ] && [ \$(grep -n '^# Slow emulation class: x86 client' $L | cut -d: -f1) -lt \$(grep -n '^# Emulation needs 4K pages' $L | cut -d: -f1) ]"
 sl(){ # CLIENT CPU_LSE(or -) PLATFORM(or -) CPUF
   rm -f "$T/sl.log"
   ( CLIENT=$1; [ "$2" = - ] || CPU_LSE=$2; [ "$3" = - ] || PLATFORM=$3; CPUF=$4; LOG=$T/sl.log
@@ -197,7 +197,7 @@ cli x87-client; check "M5 CLI state line" "[ $RC = 0 ] && grep -q '^reduced x87 
 cli x87-client on; check "M5b CLI on writes key" "[ $RC = 0 ] && grep -qx 'X87_CLIENT=on' '$CONF'"
 cli x87-client maybe; check "M5c CLI bad value: usage, status 2" "[ $RC = 2 ]"
 cli --help; check "M6 --help lists x87-client and X87_CLIENT" "grep -q '^  x87-client \\[on|off\\]' <<<\"\$OUT\" && grep -q 'X87_CLIENT=on|off' <<<\"\$OUT\""
-check "M7 X87_CLIENT in backup key list and value rule" "grep -q '^SA_BK_KEYS=.* X87_CLIENT\"' '$CFG' && grep -q 'UPDATE_CHECK_ON_OPEN|X87_CLIENT) case \"\$2\" in on|off|\"\") return 0;; esac; return 1;;' '$CFG'"
+check "M7 X87_CLIENT and CLIENT_LIGHT in backup key list and value rule" "grep -q '^SA_BK_KEYS=.* X87_CLIENT CLIENT_LIGHT\"' '$CFG' && grep -q 'UPDATE_CHECK_ON_OPEN|X87_CLIENT|CLIENT_LIGHT) case \"\$2\" in on|off|\"\") return 0;; esac; return 1;;' '$CFG'"
 
 # launcher: GPU forwarding notice on Pi platforms when the copied FEX config has thunks off
 TN=$T/tn.sh; awk '/^# GPU forwarding libraries: ThunksDB GL or Vulkan 0 in the copied FEX config/{f=1} f{print} f && /^esac$/{exit}' "$L" > "$TN"
@@ -239,6 +239,42 @@ if [ -f "$DM" ]; then
   check "DM4 Pi 4 row checks: settings keys, FEX build 8.0 with MESA_HOST, x86 files, PPA package thunk files" \
     "grep -q 'CLIENT=x86 CLIENT_SET=auto CPU_LSE=0 GPU_FAMILY=broadcom-v3d42 PLATFORM=pi4' '$DM' && grep -q 'apt-get download fex-emu-armv8.0' '$DM' && grep -q 'FEX build for this CPU (ARMv8.0 features): fex-emu-armv8.0' '$DM'"
 else echo "SKIP distro matrix checks: $DM not found"; fi
+
+# launcher: lighter client window on the slow class (interface and friends view)
+UB=$T/ui.sh; awk '/^# --- interface: Deck \(gamepadui\) by default/{f=1} f{print} f && /^esac$/{exit}' "$L" > "$UB"
+uib(){ # SLOW CLIENT_LIGHT(-) STEAM_ARM_UI(-) args...
+  local slow=$1 cl=$2 ui=$3; shift 3; rm -f "$T/ui.log"
+  ( SLOW=$slow; [ "$cl" = - ] || CLIENT_LIGHT=$cl; unset STEAM_ARM_UI; [ "$ui" = - ] || STEAM_ARM_UI=$ui; LOG=$T/ui.log
+    llog(){ echo "$*" >> "$LOG"; }; set -- "$@"; . "$UB"; echo "GPUI=[$GPUI] SWITCH=[$SWITCH] rest=[$*]" ) 2>&1; cat "$T/ui.log" 2>/dev/null; }
+OUT=$(uib 1 - -); check "U1 slow class: desktop interface, logged with --bigpicture and client-light hints" "grep -qx 'GPUI=\[\] SWITCH=\[\] rest=\[\]' <<<\"\$OUT\" && grep -q '^client window: desktop interface (slow emulation class; steam-arm --bigpicture for Deck interface, steam-arm-config client-light off for the 3.0 behaviour)$' <<<\"\$OUT\""
+OUT=$(uib 0 - -); check "U2 not slow: Deck interface as before, nothing logged" "grep -qx 'GPUI=\[-gamepadui\] SWITCH=\[\] rest=\[\]' <<<\"\$OUT\" && ! grep -q 'client window' <<<\"\$OUT\""
+OUT=$(uib 1 off -); check "U3 slow, CLIENT_LIGHT=off: Deck interface" "grep -qx 'GPUI=\[-gamepadui\] SWITCH=\[\] rest=\[\]' <<<\"\$OUT\""
+OUT=$(uib 1 - bigpicture); check "U4 slow, STEAM_ARM_UI=bigpicture: Deck interface" "grep -qx 'GPUI=\[-gamepadui\] SWITCH=\[\] rest=\[\]' <<<\"\$OUT\""
+OUT=$(uib 1 - - --bigpicture -x); check "U5 slow, --bigpicture: Deck interface, switch, option consumed" "grep -qx 'GPUI=\[-gamepadui\] SWITCH=\[1\] rest=\[-x\]' <<<\"\$OUT\" && ! grep -q 'client window' <<<\"\$OUT\""
+OUT=$(uib 1 - - --desktop); check "U6 slow, --desktop: desktop, switch" "grep -qx 'GPUI=\[\] SWITCH=\[1\] rest=\[\]' <<<\"\$OUT\""
+OUT=$(uib 0 - desktop); check "U7 STEAM_ARM_UI=desktop on other boards as before" "grep -qx 'GPUI=\[\] SWITCH=\[\] rest=\[\]' <<<\"\$OUT\""
+check "U8 constant SA_UI_SLOW=desktop in one place" "[ \$(grep -c '^SA_UI_SLOW=desktop$' $L) = 1 ]"
+XF=$T/xf.sh; awk '/^  XFLAGS="-steamos3 -cef-disable-gpu -cef-disable-gpu-compositing"$/{f=1} f{print} f && /^  fi$/{exit}' "$L" > "$XF"
+xf(){ rm -f "$T/xf.log"; ( LIGHT=$1; unset STEAM_ARM_FRIENDS; [ "$2" = - ] || STEAM_ARM_FRIENDS=$2; LOG=$T/xf.log; llog(){ echo "$*" >> "$LOG"; }; . "$XF"; echo "XFLAGS=[$XFLAGS]" ) 2>&1; cat "$T/xf.log" 2>/dev/null; }
+OUT=$(xf 1 -); check "U9 lighter: -nofriendsui appended, logged" "grep -qx 'XFLAGS=\[-steamos3 -cef-disable-gpu -cef-disable-gpu-compositing -nofriendsui\]' <<<\"\$OUT\" && grep -q '^client window: friends view off (slow emulation class; STEAM_ARM_FRIENDS=1 keeps it)$' <<<\"\$OUT\""
+OUT=$(xf 1 1); check "U10 STEAM_ARM_FRIENDS=1: friends view kept" "grep -qx 'XFLAGS=\[-steamos3 -cef-disable-gpu -cef-disable-gpu-compositing\]' <<<\"\$OUT\""
+OUT=$(xf 0 -); check "U11 not lighter: flags as 3.0" "grep -qx 'XFLAGS=\[-steamos3 -cef-disable-gpu -cef-disable-gpu-compositing\]' <<<\"\$OUT\""
+check "U12 setup summary names desktop window, --bigpicture, Maintenance items and --cpu-report for CPUs without LSE" \
+  "grep -q 'cpu_lse || SUM_FIRST=\"downloads the client files and restarts itself; sign-in in desktop window.' '$INST' && grep -q 'steam-arm --bigpicture for Deck interface; settings menu: Maintenance >' '$INST' && grep -q 'steam-arm --cpu-report measures it' '$INST'"
+# menu: Maintenance item 20 on x86 client without LSE, CLI client-light
+sed -i 's/^CLIENT=.*/CLIENT=x86/' "$CONF"
+cp "$T/pi4/cpuinfo" "$SARM_UI_FAKE/proc/cpuinfo"
+ui menu_maintenance 20 BACK
+check "L1 x86 client, Armv8.0 CPU: item 20 Client window: lighter (now: on); screen names desktop window, friends view, --bigpicture" \
+  "grep -q ' 20 Client window: lighter (now: on)' <<<\"\$OUT\" && grep -q '^YESNO Client window: lighter|Client window: lighter: on' <<<\"\$OUT\" && grep -q 'friends view' <<<\"\$OUT\" && grep -q 'steam-arm --bigpicture' <<<\"\$OUT\""
+ui menu_maintenance 20 yes BACK
+check "L2 Turn off: CLIENT_LIGHT=off, message" "grep -qx 'CLIENT_LIGHT=off' '$CONF' && grep -q '^MSG Maintenance|Client window: lighter: off. Applies from next start of Steam ARM.' <<<\"\$OUT\""
+cp "$T/pi5/cpuinfo" "$SARM_UI_FAKE/proc/cpuinfo"
+ui menu_maintenance BACK
+check "L3 x86 client on an LSE CPU: no item 20" "! grep -q ' 20 Client window' <<<\"\$OUT\""
+cli client-light; check "L4 CLI state" "[ $RC = 0 ] && grep -q '^client window lighter: off$' <<<\"\$OUT\""
+cli client-light on; check "L4b CLI on" "[ $RC = 0 ] && grep -qx 'CLIENT_LIGHT=on' '$CONF'"
+cli --help; check "L5 --help lists client-light and CLIENT_LIGHT" "grep -q '^  client-light \[on|off\]' <<<\"\$OUT\" && grep -q 'CLIENT_LIGHT=on|off' <<<\"\$OUT\""
 
 echo "pi4 detection 3.1: $pass pass, $fail fail"
 [ "$fail" = 0 ]

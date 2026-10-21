@@ -1809,6 +1809,7 @@ client_type(){ case "$(conf_get CLIENT)" in x86) echo x86;; *) echo arm64;; esac
 auto_build(){ case "$(conf_get AUTO_BUILD)" in off) echo off;; *) echo on;; esac; }
 cpu_notice(){ case "$(conf_get CPU_NOTICE)" in on) echo on;; *) echo off;; esac; }
 x87_client(){ case "$(conf_get X87_CLIENT)" in on) echo on;; *) echo off;; esac; }
+client_light(){ case "$(conf_get CLIENT_LIGHT)" in off) echo off;; *) echo on;; esac; }
 # Appids whose newest game log says CPU drawing (renderer warning line).
 cpu_apps(){
   local f id l seen=" "
@@ -6120,7 +6121,7 @@ SA_BK_PERSONAL="personal-profiles compat-tools fex mangohud personal-tuning"
 # tuned.conf lines: comments, blank, or appid with tuning keys only
 SA_TUNED_RE='^([0-9]{1,10}( +(gfx=(a|b)|multiblock=(on|off)|gl32=off))*)? *(#.*)?$'
 # steam-arm.conf keys restored; every other key is machine state (GPU_FAMILY only when GPU_FAMILY_SET=user).
-SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN X87_CLIENT"
+SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN X87_CLIENT CLIENT_LIGHT"
 SA_BK_NAME='[A-Za-z0-9_+-][A-Za-z0-9._+-]*'
 part_label(){ case "$1" in
   setup) echo "Setup choices";; system-profiles) echo "System game profiles";;
@@ -6318,7 +6319,7 @@ rs_val(){ sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -1 | sed "s/^[\"']//; s/[\"
 rs_norm(){ tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -; }
 rs_valid(){ case "$1" in
   GFX_DEFAULT) case "$2" in auto|a|b|forward) return 0;; esac; return 1;;
-  AUTO_BUILD|CPU_NOTICE|RUN_HISTORY|UPDATE_CHECK_ON_OPEN|X87_CLIENT) case "$2" in on|off|"") return 0;; esac; return 1;;
+  AUTO_BUILD|CPU_NOTICE|RUN_HISTORY|UPDATE_CHECK_ON_OPEN|X87_CLIENT|CLIENT_LIGHT) case "$2" in on|off|"") return 0;; esac; return 1;;
   SNAPSHOT_KEEP) case "$2" in [1-5]|"") return 0;; esac; return 1;;
   GPU_FAMILY) [[ "$2" =~ ^[a-z0-9-]+$ ]];;
   *) [[ "$2" =~ ^[a-z0-9,-]*$ ]];;
@@ -6754,6 +6755,7 @@ menu_maintenance(){
     up+=(16 "Previous versions kept (now: $(snap_keep))" 17 "Check for new release when this menu opens (now: $(check_on_open))")
     up+=(18 "CPU profile of client window (two 60 s samples)")
     [ "$(client_type)" = x86 ] && up+=(19 "Faster client start, reduced x87 precision (now: $(x87_client))")
+    [ "$(client_type)" = x86 ] && ! cpu_has_lse && up+=(20 "Client window: lighter (now: $(client_light))")
     c=$(ui_menu "Maintenance" "Keep Steam ARM working." --default "$c" \
       1 "Update / Repair (run setup again, same parts)" 2 "View logs" \
       3 "Hardware report (for a compatibility report)" 4 "Free /dev/shm now" \
@@ -6786,8 +6788,23 @@ Setup reinstalls packages, launcher, helpers and rules for those parts. Games, s
       17) maint_checkopen;;
       18) maint_cpureport;;
       19) maint_x87;;
+      20) maint_light;;
     esac
   done
+}
+# Lighter client window on CPUs without Armv8.1 atomics (x86 client): desktop interface and no friends view, on by default.
+maint_light(){
+  local st t; st=$(client_light)
+  t="Client window: lighter: $st
+
+x86 client on CPU without Armv8.1 atomics. On: client opens its desktop window (Deck interface is one animated page drawn on CPU through emulation) and starts without friends view (one browser view fewer). steam-arm --bigpicture opens Deck interface for one start; STEAM_ARM_FRIENDS=1 keeps friends view. Off: Deck interface and friends view as on other boards. Applies from next start of Steam ARM."
+  if [ "$st" = on ]; then
+    ui_yesno "Client window: lighter" "$t" "Turn off" Back defaultno || return
+    self_root client-light off && ui_msg "Maintenance" "Client window: lighter: off. Applies from next start of Steam ARM."
+  else
+    ui_yesno "Client window: lighter" "$t" "Turn on" Back || return
+    self_root client-light on && ui_msg "Maintenance" "Client window: lighter: on. Applies from next start of Steam ARM."
+  fi
 }
 # Reduced x87 precision for the 32-bit x86 client binary (FEX X87ReducedPrecision in steam.json), off by default.
 maint_x87(){
@@ -7116,6 +7133,10 @@ Commands
   x87-client [on|off]       x86 client: reduced x87 precision for 32-bit
                             client program (faster start, rendering errors
                             possible; off by default); no value: state
+  client-light [on|off]     x86 client on CPU without Armv8.1 atomics:
+                            desktop window and no friends view (on by
+                            default); off: Deck interface and friends view
+                            as on other boards; no value: state
   run-history [on|off]      record start and end of each x86 game start
                             through emulation in client folder
                             (.local/state/steam-arm/runs.log, newest 200
@@ -7218,7 +7239,8 @@ Files
                             forward is read as a; AUTO_BUILD=on|off;
                             CPU_NOTICE=on|off; RUN_HISTORY=on|off;
                             SNAPSHOT_KEEP=1..5; UPDATE_CHECK_ON_OPEN=on|off;
-                            X87_CLIENT=on|off; CLIENT=arm64|x86 set by
+                            X87_CLIENT=on|off; CLIENT_LIGHT=on|off;
+                            CLIENT=arm64|x86 set by
                             setup, Maintenance > Client type)
   $SA_LIB/snapshots  earlier versions (Go back)
   $SA_LIB/history.log  version changes
@@ -7374,6 +7396,13 @@ cli_x87_client(){
     on|off) conf_set X87_CLIENT "$1" && echo "reduced x87 precision for client: $1";;
     '') echo "reduced x87 precision for client: $(x87_client)";;
     *) echo "usage: steam-arm-config x87-client [on|off]" >&2; return 2;;
+  esac
+}
+cli_client_light(){
+  case "${1:-}" in
+    on|off) conf_set CLIENT_LIGHT "$1" && echo "client window lighter: $1";;
+    '') echo "client window lighter: $(client_light)";;
+    *) echo "usage: steam-arm-config client-light [on|off]" >&2; return 2;;
   esac
 }
 cli_cpu_report(){
@@ -7541,6 +7570,7 @@ main(){
     cpu-notice)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_cpu_notice "$@";;
     cpu-report)  shift; cli_cpu_report "$@";;
     x87-client)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_x87_client "$@";;
+    client-light) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_client_light "$@";;
     run-history) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_run_history "$@";;
     components)  cli_root "$@"; shift; cli_components "$@";;
     driver-archive) case "${2:-}" in download|local|custom) cli_root "$@";; esac; shift; cli_driver_archive "$@";;
@@ -14722,6 +14752,14 @@ fi
 # --- interface: Deck (gamepadui) by default; -gamepadui off shows the client's own tray icon via xembedsniproxy ---
 GPUI=-gamepadui
 [ "$STEAM_ARM_UI" = desktop ] && GPUI=
+# Slow emulation class: lighter client window unless CLIENT_LIGHT=off (steam-arm-config client-light off). Desktop
+# interface by default there (Deck interface is one animated page drawn on CPU); SA_UI_SLOW=bigpicture keeps Deck
+# interface; --bigpicture and STEAM_ARM_UI=bigpicture pick it for one start.
+SA_UI_SLOW=desktop
+LIGHT=0; [ "$SLOW" = 1 ] && [ "${CLIENT_LIGHT:-on}" != off ] && LIGHT=1
+if [ "$LIGHT" = 1 ] && [ "$SA_UI_SLOW" = desktop ] && [ "${STEAM_ARM_UI:-}" != bigpicture ] && [ "${1:-}" != --bigpicture ]; then
+  GPUI=; llog "client window: desktop interface (slow emulation class; steam-arm --bigpicture for Deck interface, steam-arm-config client-light off for the 3.0 behaviour)"
+fi
 SWITCH=
 case "$1" in
   --desktop) GPUI=; SWITCH=1; shift;;
@@ -14833,6 +14871,10 @@ updated_exit(){
 # x86 client: own start passes (no ARM update channel, client window on CPU); same first-start and restart rules.
 if [ "$CLIENT" = x86 ]; then
   XFLAGS="-steamos3 -cef-disable-gpu -cef-disable-gpu-compositing"
+  # lighter client window: no friends view (one browser view and its polling fewer); STEAM_ARM_FRIENDS=1 keeps it
+  if [ "$LIGHT" = 1 ] && [ "${STEAM_ARM_FRIENDS:-0}" != 1 ]; then
+    XFLAGS="$XFLAGS -nofriendsui"; llog "client window: friends view off (slow emulation class; STEAM_ARM_FRIENDS=1 keeps it)"
+  fi
   # Deck interface without account runs SteamOS setup, whose update step needs steamos-update (absent): desktop sign-in first.
   if [ -n "$GPUI" ] && ! grep -qs '"AccountName"' "$S/config/loginusers.vdf"; then
     GPUI=
@@ -17802,6 +17844,10 @@ if [ "$CLIENT" = x86 ]; then
                  settings menu: Maintenance > Client type)"
   SUM_FIRST="downloads the client files and restarts itself; first sign-in in desktop window,
                  Deck interface from next start after sign-in."
+  cpu_lse || SUM_FIRST="downloads the client files and restarts itself; sign-in in desktop window.
+                 CPU without Armv8.1 atomics: client keeps desktop window and no friends view
+                 (steam-arm --bigpicture for Deck interface; settings menu: Maintenance >
+                 Client window: lighter, Faster client start); steam-arm --cpu-report measures it."
 else
   SUM_GAMES="x86 Linux titles run through the client's emulation tool; Windows titles through
                  the ARM64 Proton build the client downloads. Titles whose Linux build fails under
