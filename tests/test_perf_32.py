@@ -153,7 +153,7 @@ lg = open(log).read().splitlines()
 check("W3 log cap: at 400 lines trimmed to newest 200 with new line", len(lg) == 200 and lg[-1] == "newest" and lg[0] == "old 201",
       (len(lg), lg[:1]))
 
-# --- still-working state machine ---
+# --- still-working state machine (kernel probe stood in: per-process GPU lines reported) ---
 cls = M["classify"]
 base = [(0.0, 5.0, 100, 1000, "R", False), (5.0, 7.0, 200, 1000, "R", False), (10.0, 9.0, 300, 1000, "R", False)]
 check("C1 window not full yet: no verdict", cls(base[:2]) is None)
@@ -173,12 +173,14 @@ HOME = os.path.join(TMP, "home")
 os.makedirs(os.path.join(HOME, ".cache", "mesa_shader_cache"))
 
 
-def still(script, after, extra=(), timeout=60):
-    """Reaper stand-in (argv[0] 'reaper SteamLaunch AppId=4242') running script; still output lines and seconds."""
+def still(script, after, extra=(), timeout=60, pre=""):
+    """Reaper stand-in (argv[0] 'reaper SteamLaunch AppId=4242') running script; still output lines and seconds.
+    pre: helper code run before still() (stand-in drm_infos, own_fdinfo)."""
     rp = subprocess.Popen(["bash", "-c", "exec -a 'reaper SteamLaunch AppId=4242' bash -c \"$0\"", script],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.3)
     code = ("import sys; exec(open(sys.argv[1]).read().replace('if __name__ == \"__main__\":', 'if False:')); "
+            + pre.replace("\n", "; ") + ("; " if pre else "") +
             "still(int(sys.argv[2]), after=float(sys.argv[3]), home=sys.argv[4], perf=sys.argv[5] or None, poll=0.5, "
             "nogpu=float(sys.argv[6]))")
     t0 = time.time()
@@ -210,17 +212,61 @@ pd = os.path.join(TMP, "pf")
 os.makedirs(os.path.join(pd, "gl"))
 out, dt = still("sleep 2; for i in $(seq 40); do echo 16.7 >> %s/gl/frametime_x; done; sleep 30" % pd, 10, (pd, "60"))
 check("R2 readout file grows: frame, before wait ends", out == ["frame"] and dt < 10, (out, dt))
-out, dt = still("%s/bin/fossilize_replay 30 & sleep 30" % TMP, 1, ("", "6"), timeout=40)
+out, dt = still("%s/bin/fossilize_replay 30 & sleep 30" % TMP, 1, ("", "6"), timeout=40, pre="own_fdinfo = lambda: True")
 check("R3 fossilize_replay of this account: state shaders", out[:1] and out[0].startswith("state shaders "), out)
 check("R3 nosignal after no GPU client for nogpu seconds", out[-1:] == ["nosignal"], out)
 cache = os.path.join(HOME, ".cache", "mesa_shader_cache")
-out, dt = still("for i in $(seq 40); do head -c 4096 /dev/zero > %s/f$i; sleep 0.5; done" % cache, 1, ("", "13"))
+out, dt = still("for i in $(seq 40); do head -c 4096 /dev/zero > %s/f$i; sleep 0.5; done" % cache, 1, ("", "13"), pre="own_fdinfo = lambda: True")
 check("R4 shader cache grows: state shaders once window is full", any(l.startswith("state shaders ") for l in out), out)
-out, dt = still("sleep 30", 1, ("", "13"))
+out, dt = still("sleep 30", 1, ("", "13"), pre="own_fdinfo = lambda: True")
 check("R5 no CPU use for 10 s: state stuck, then nosignal (no GPU client)", out[:1] and out[0].startswith("state stuck ")
       and out[-1] == "nosignal", out)
-out, dt = still("timeout 30 sh -c 'while :; do :; done'", 1, ("", "13"))
+out, dt = still("timeout 30 sh -c 'while :; do :; done'", 1, ("", "13"), pre="own_fdinfo = lambda: True")
 check("R6 busy on CPU: state loading", out[:1] and out[0].startswith("state loading "), out)
+# per-process GPU lines in fdinfo: stand-in DRM file FD (fd 5 of every process of game), own render node probe OWN
+FD = os.path.join(TMP, "fdinfo")
+SIN = "drm_infos = lambda p: [('5', open(%r).read())]" % FD
+NODRM = "drm_infos = lambda p: []"
+open(FD, "w").write("pos:\t0\nflags:\t02100002\nmnt_id:\t25\nino:\t5\n")
+out, dt = still("sleep 30", 1, ("", "60"), timeout=20, pre=SIN)
+check("F1 DRM file without client lines: nosignal fdinfo before any state line", out == ["nosignal fdinfo"] and dt < 8, (out, dt))
+open(FD, "w").write("drm-driver:\tpanthor\ndrm-client-id:\t7\ndrm-engine-panthor:\t1000 ns\ndrm-cycles-panthor:\t50\n")
+out, dt = still("sleep 13", 1, ("", "60"), timeout=30, pre=SIN)
+check("F1 engine lines, no rise: state lines as before, gone at end", out[:1] and out[0].startswith("state stuck ")
+      and out[-1] == "gone", out)
+open(FD, "w").write("drm-driver:\tpanthor\ndrm-client-id:\t7\n")
+out, dt = still("sleep 1; for i in $(seq 20); do echo \"drm-engine-panthor: ${i}000 ns\" >> %s; sleep 0.5; done; sleep 20" % FD,
+                10, ("", "60"), timeout=30, pre=SIN)
+check("F1 engine time rising: frame", out == ["frame"] and dt < 10, (out, dt))
+open(FD, "w").write("drm-driver:\tv3d\ndrm-client-id:\t3\n")
+out, dt = still("sleep 1; for i in $(seq 20); do echo \"drm-cycles-render: ${i}00\" >> %s; sleep 0.5; done; sleep 20" % FD,
+                10, ("", "60"), timeout=30, pre=SIN)
+check("F1 cycles rising (no client id needed for signal): frame", out == ["frame"] and dt < 10, (out, dt))
+open(FD, "w").write("pos:\t0\nflags:\t02100002\n")
+pd2 = os.path.join(TMP, "pf2")
+os.makedirs(os.path.join(pd2, "gl"))
+out, dt = still("sleep 3; for i in $(seq 40); do echo 16.7 >> %s/gl/frametime_x; done; sleep 30" % pd2, 1, (pd2, "60"),
+                timeout=20, pre=SIN)
+check("F1 no client lines, readout on: readout growth still gives frame", out[-1:] == ["frame"] and "nosignal fdinfo" not in out,
+      (out, dt))
+out, dt = still("sleep 30", 1, ("", "60"), timeout=20, pre=NODRM + "\nown_fdinfo = lambda: False")
+check("F1 no DRM file yet, own render node without client lines: nosignal fdinfo", out == ["nosignal fdinfo"], (out, dt))
+out, dt = still("sleep 30", 1, ("", "13"), timeout=30, pre=NODRM + "\nown_fdinfo = lambda: True")
+check("F1 no DRM file yet, kernel reports client lines: states, nosignal at nogpu", out[:1] and out[0].startswith("state stuck ")
+      and out[-1] == "nosignal", out)
+out, dt = still("sleep 30", 1, ("", "13"), timeout=30, pre=NODRM + "\nown_fdinfo = lambda: None")
+check("F1 no render node to probe: states as before", out[:1] and out[0].startswith("state stuck ") and out[-1] == "nosignal", out)
+gt = M["gpu_time"]
+M["drm_infos"] = lambda p: [("5", "drm-driver: i915\ndrm-engine-render: 300 ns\ndrm-engine-capacity-video: 2\n"), ("6", "pos: 0\n")]
+check("F1 gpu_time: DRM open, client seen, busy keys, sum without engine capacity", gt([1]) == (True, True, True, 300), gt([1]))
+M["drm_infos"] = lambda p: [("5", "pos: 0\n")]
+check("F1 gpu_time: DRM open without client lines", gt([1]) == (True, False, False, 0), gt([1]))
+del M["drm_infos"]
+exec(compile(P, HELPER, "exec"), M)
+fd = os.open("/dev/null", os.O_RDONLY)
+check("F1 drm_infos: non-DRM files left out", M["drm_infos"](os.getpid()) == [] or all(
+    os.readlink("/proc/self/fd/%s" % f).startswith("/dev/dri/") for f, _ in M["drm_infos"](os.getpid())))
+os.close(fd)
 r = run("still", "--reaper", "x")
 check("R7 CLI: bad reaper pid refused with usage", r.returncode != 0 and "Usage" in r.stderr, r)
 check("R8 never signals game: no kill call in helper", "os.kill(" not in P and "signal." not in P)

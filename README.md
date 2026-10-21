@@ -1053,16 +1053,19 @@ notice service), replaced in place as state changes and closed on first frame:
   waited on disk (state D) for 10 s with no reads
 - loading: otherwise (game busy on CPU or disk)
 
-Frame signal: GPU engine time of game's processes in kernel `fdinfo` (`drm-engine-*`)
-rising over 2 polls, or growth of readout files while frame pacing readout is on. Kernel
-GPU driver without engine time in `fdinfo`, and games that draw on CPU, give no signal:
-watcher ends without notice (`no frame signal`). Watch ends after 15 minutes. Never sends
-signal to game. Lines go to `steam-arm.log` (`still-working:`).
+Frame signal: GPU engine time or cycles of game's processes in kernel `fdinfo`
+(`drm-engine-*`, `drm-cycles-*`) rising over 2 polls, or growth of readout files while
+frame pacing readout is on. Notice needs kernel that reports per-process GPU time: when no
+open DRM file of game carries such lines (`drm-driver`, `drm-engine-*`, `drm-cycles-*`), and
+readout is off, watcher ends silently before any notice and logs it once per game start.
+GPU driver without engine time, and games that draw on CPU, give no signal either: watcher
+ends without notice (`no frame signal`). Watch ends after 15 minutes. Never sends signal
+to game. Lines go to `steam-arm.log` (`still-working:`).
 
 `STILL_NOTICE` (settings menu Graphics, Still-working notice, or
 `steam-arm-config still-notice on|off|auto`): absent (`auto`) turns it on where display
-mode restore looks for games each second already (X11 session with `xrandr`), so it adds
-no work while no game runs; `on` adds one process check per second elsewhere (Wayland).
+mode restore looks for games each second already (sessions where display mode restore
+works), so it adds no work while no game runs; `on` adds one process check per second elsewhere.
 `STEAM_ARM_STILL_WORKING=0|1` decides for one session, `STEAM_ARM_STILL_AFTER=<seconds>`
 sets wait.
 

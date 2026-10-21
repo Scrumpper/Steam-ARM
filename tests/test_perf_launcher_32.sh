@@ -126,6 +126,10 @@ DISP=1 NOSVC=1 LINES='state loading 20\nnosignal\n' sr
 check "N6 display without notice service: terminal lines" "grep -q '^steam-arm: No frame for 20 s: loading' <<<\"\$OUT\" && grep -qx 'steam-arm: No frame signal; notice closed.' <<<\"\$OUT\""
 DISP=1 NOCLOSE=1 LINES='state loading 20\nframe\n' sr
 check "N7 no close call (notify-send): short replacement notice 'Game is drawing.'" "grep -qx 'NOTICE 77|Steam ARM|Game is drawing.|3000' <<<\"\$NL\""
+DISP=1 LINES='nosignal fdinfo\n' sr
+check "N8 kernel without per-process GPU time: no notice, no terminal line, one log line" "[ \"\$NL\" = 'LOG still-working: off for game start 4321 (kernel reports no per-process GPU time)' ] && [ -z \"\$OUT\" ]"
+DISP=1 LINES='nosignal\n' sr
+check "N8 plain nosignal before any state: nothing logged" "[ -z \"\$NL\" ] && [ -z \"\$OUT\" ]"
 
 # --- report and removal ---
 check "R1 hardware report: Frame pacing section from client home perf.log, last 12" "grep -q 'echo \"== Frame pacing (steam-arm --perf-stats, last 12 lines)\"' $INST && grep -q 'f=\"\$(arm_home)/.local/state/steam-arm/perf.log\"' $INST && grep -q 'tail -12 \"\$f\"' $INST"

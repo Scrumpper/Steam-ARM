@@ -149,7 +149,8 @@ steam-arm (launcher, desktop account only, refuses root)
 |    game start without frame 20 s -> one notice: compiling shaders (cache
 |    growth, fossilize_replay), loading, not responding (no CPU or disk wait
 |    10 s); frame = GPU engine time in fdinfo rising, or readout files growing;
-|    closed on first frame
+|    closed on first frame; no per-process GPU lines in fdinfo, readout off ->
+|    silent end before any notice
 |
 +- Play: Windows title -> Proton ARM64 -> DXVK -> system Vulkan (PanVK)
 |                                         vk-spoof reports features DXVK needs

@@ -3880,8 +3880,9 @@ When a game shows no frame for 20 s after start, a desktop notice
 (terminal line without notice service) names likely state:
 compiling shaders, loading, or not responding. It closes on first
 frame. Frame signal: GPU time of game (kernel fdinfo), or files of
-frame pacing readout (steam-arm --perf-stats).
-Auto: on in X11 sessions with display mode restore, which looks
+frame pacing readout (steam-arm --perf-stats). Kernel without
+per-process GPU time: no notice unless readout is on.
+Auto: on in sessions with display mode restore, which looks
 for games each second already; off elsewhere (no added cost)."
   c=$(ui_menu "Still-working notice" "$t" 1 "Auto" 2 "On" 3 "Off") || return
   case "$c" in 1) c=auto;; 2) c=on;; 3) c=off;; *) return;; esac
@@ -13953,7 +13954,8 @@ Usage:
   still --reaper PID [--after SECS] [--home H] [--perf DIR]
                           no-frame watch of one game start: prints "state shaders|loading|stuck SECONDS" when
                           state changes after SECS (20) without frame, "frame" on first frame, "gone" when game
-                          ends, "nosignal" when no frame signal exists; never signals game"""
+                          ends, "nosignal" when no frame signal exists ("nosignal fdinfo": kernel reports no
+                          per-process GPU time); never signals game"""
 import glob
 import math
 import os
@@ -14220,23 +14222,55 @@ def read_bytes(pid):
     return 0
 
 
+# kernel per-process GPU lines (drm-usage-stats)
+CLIENT_RE = re.compile(r"^drm-(driver|client-id|engine-[\w-]+|cycles-[\w-]+):", re.M)
+
+
+def drm_infos(p):
+    """(fd, fdinfo text) of open DRM files of process p."""
+    out = []
+    for f in glob.glob("/proc/%d/fd/*" % p):
+        fd = f.rsplit("/", 1)[1]
+        try:
+            if os.readlink(f).startswith("/dev/dri/"):
+                out.append((fd, open("/proc/%d/fdinfo/%s" % (p, fd)).read()))
+        except OSError:
+            continue
+    return out
+
+
+def own_fdinfo():
+    """Client lines on own open of first render node: True, False, None (none opened)."""
+    for n in sorted(glob.glob("/dev/dri/renderD*"))[:1]:
+        try:
+            fd = os.open(n, os.O_RDWR | os.O_CLOEXEC)
+        except OSError:
+            return None
+        try:
+            return bool(CLIENT_RE.search(open("/proc/self/fdinfo/%d" % fd).read()))
+        except OSError:
+            return None
+        finally:
+            os.close(fd)
+    return None
+
+
 def gpu_time(ps):
-    """(DRM client seen, engine keys seen, total engine ns) over fds of ps; each client id counted once."""
-    seen, keys, eng = False, False, {}
+    """(DRM file open, client lines seen, busy keys seen, engine ns plus cycles) over DRM files of ps; each client once."""
+    drm, seen, keys, eng = False, False, False, {}
     for p in ps:
-        for fd in glob.glob("/proc/%d/fdinfo/*" % p):
-            try:
-                txt = open(fd).read()
-            except OSError:
-                continue
-            m = re.search(r"^drm-client-id:\s*(\d+)", txt, re.M)
-            if not m:
+        for fd, txt in drm_infos(p):
+            drm = True
+            if not CLIENT_RE.search(txt):
                 continue
             seen = True
+            m = re.search(r"^drm-client-id:\s*(\d+)", txt, re.M)
+            cid = m.group(1) if m else "%d/%s" % (p, fd)
             ns = re.findall(r"^drm-engine-[\w-]+:\s*(\d+) ns", txt, re.M)
+            ns += re.findall(r"^drm-cycles-[\w-]+:\s*(\d+)", txt, re.M)
             keys = keys or bool(ns)
-            eng[m.group(1)] = max(eng.get(m.group(1), 0), sum(int(x) for x in ns))
-    return seen, keys, sum(eng.values())
+            eng[cid] = max(eng.get(cid, 0), sum(int(x) for x in ns))
+    return drm, seen, keys, sum(eng.values())
 
 
 def dir_size(d, depth=3):
@@ -14294,20 +14328,27 @@ def still(reaper, after=20.0, home=None, perf=None, poll=2.0, limit=900.0, nogpu
     m = re.search(r"AppId=(\d+)", cmdline(reaper))
     app = m.group(1) if m else ""
     t0 = time.time()
-    samples, last, gpu_prev, gpu_up, psz = [], None, None, 0, perf_size(perf)
+    samples, last, gpu_prev, gpu_up, psz, probe = [], None, None, 0, perf_size(perf), "?"
     while True:
         ps = tree(reaper)
         if not ps:
             print("gone", flush=True)
             return 0
         now = time.time() - t0
-        seen, keys, gpu = gpu_time(ps)
+        drm, seen, keys, gpu = gpu_time(ps)
         nps = perf_size(perf)
         gpu_up = gpu_up + 1 if gpu_prev is not None and gpu > gpu_prev else 0
         gpu_prev = gpu
         if nps > psz + 64 or gpu_up >= 2:
             print("frame", flush=True)
             return 0
+        if not seen and not perf and now >= after:
+            # kernel without per-process GPU lines: no guess, silent end
+            if not drm and probe == "?":
+                probe = own_fdinfo()
+            if drm or probe is False:
+                print("nosignal fdinfo", flush=True)
+                return 0
         if seen and not keys and not perf and now >= after:
             # driver without engine time in fdinfo: no frame signal
             print("nosignal", flush=True)
@@ -14776,7 +14817,7 @@ still_run(){
         fi
         { [ -z "$nid" ] || [ -t 2 ]; } && echo "steam-arm: $m" >&2;;
       frame|gone|nosignal)
-        [ "$shown" = 1 ] || exit 0
+        [ "$shown" = 1 ] || { [ "$st" = fdinfo ] && llog "still-working: off for game start $1 (kernel reports no per-process GPU time)"; exit 0; }
         case $k in frame) m="Game is drawing.";; gone) m="Game ended.";; *) m="No frame signal; notice closed.";; esac
         llog "still-working: $k (game start $1)"
         [ -n "$nid" ] && { notice_close "$nid" || notice "$nid" "Steam ARM" "$m" 3000 >/dev/null; }
