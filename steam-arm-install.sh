@@ -1864,6 +1864,7 @@ pi_summary(){
   [ "$z" = zink ] && ps+=(Zink)
   local IFS=,; printf '%s' "${ps[*]}" | sed 's/,/, /g'
 }
+still_notice(){ case "$(conf_get STILL_NOTICE)" in on) echo on;; off) echo off;; *) echo auto;; esac; }
 client_type(){ case "$(conf_get CLIENT)" in x86) echo x86;; *) echo arm64;; esac; }
 auto_build(){ case "$(conf_get AUTO_BUILD)" in off) echo off;; *) echo on;; esac; }
 cpu_notice(){ case "$(conf_get CPU_NOTICE)" in on) echo on;; *) echo off;; esac; }
@@ -3967,6 +3968,23 @@ in their video options."
     self_root cpu-notice on && ui_msg "Graphics" "CPU drawing notice: on. Applies from the next game start."
   fi
 }
+graphics_still_notice(){
+  local st c t; st=$(still_notice)
+  t="Still-working notice: $st
+
+When a game shows no frame for 20 s after start, a desktop notice
+(terminal line without notice service) names likely state:
+compiling shaders, loading, or not responding. It closes on first
+frame. Frame signal: GPU time of game (kernel fdinfo), or files of
+frame pacing readout (steam-arm --perf-stats). Kernel without
+per-process GPU time: no notice unless readout is on.
+Auto: on in sessions with display mode restore, which looks
+for games each second already; off elsewhere (no added cost)."
+  c=$(ui_menu "Still-working notice" "$t" 1 "Auto" 2 "On" 3 "Off") || return
+  case "$c" in 1) c=auto;; 2) c=on;; 3) c=off;; *) return;; esac
+  [ "$c" = "$st" ] && return
+  self_root still-notice "$c" && ui_msg "Graphics" "Still-working notice: $c. Applies at next start of Steam ARM."
+}
 menu_graphics(){
   local c=""
   is_installed || { offer_install; return; }
@@ -3974,8 +3992,10 @@ menu_graphics(){
   pi_family && intro="How games reach the GPU. A: forwarding to host drivers. Raspberry Pi GPU: Direct3D, OpenGL version and driver per game in Route per game."
   while c=$(ui_menu "Graphics" "$intro" --default "$c" \
       1 "Default route (now: $(gfx_default_label "$(gfx_default)"))" 2 "Route per game" \
-      3 "Automatic Windows build (now: $(auto_build))" 4 "CPU drawing notice (now: $(cpu_notice))"); do
-    case "$c" in 1) graphics_default;; 2) graphics_game;; 3) graphics_auto_build;; 4) graphics_cpu_notice;; esac
+      3 "Automatic Windows build (now: $(auto_build))" 4 "CPU drawing notice (now: $(cpu_notice))" \
+      5 "Still-working notice (now: $(still_notice))"); do
+    case "$c" in 1) graphics_default;; 2) graphics_game;; 3) graphics_auto_build;; 4) graphics_cpu_notice;;
+      5) graphics_still_notice;; esac
   done
 }
 
@@ -4427,6 +4447,10 @@ report_text(){
   renderer_lines | grep . || echo "(no renderer line yet: start game once)"
   f=$(fexlogs | head -1)
   if [ -n "$f" ] && [ -r "$f" ]; then echo; echo "== Last game start"; grep -a 'steam-arm:' "$f" | tail -15; fi
+  echo
+  echo "== Frame pacing (steam-arm --perf-stats, last 12 lines)"
+  f="$(arm_home)/.local/state/steam-arm/perf.log"
+  if [ -r "$f" ]; then tail -12 "$f" | grep . || echo "(empty)"; else echo "(none: start Steam with steam-arm --perf-stats, play, attach this report)"; fi
   echo
   echo "== Launcher log (last 20 lines)"
   f="$(arm_home)/steam-arm.log"
@@ -4913,6 +4937,7 @@ sa_owned_paths(){
     /usr/local/lib/steam-arm-handler.py /usr/local/lib/steam-arm-fexpatch.py /usr/local/lib/steam-arm-compatmap.py \
     /usr/local/lib/steam-arm-physx.py /usr/local/lib/steam-arm-kde-input /usr/local/lib/steam-arm-launchopts.py \
     /usr/local/lib/steam-arm-autobuild.py /usr/local/lib/steam-arm-appinfo.py /usr/local/lib/steam-arm-geproton.py \
+    /usr/local/lib/steam-arm-perf.py \
     /usr/local/lib/steam-arm-x86client.py /usr/local/lib/steam-arm-run.py /usr/local/lib/steam-arm-pv-bwrap \
     /usr/local/lib/steam-arm-python3 /usr/local/lib/steam-arm-entry.py /usr/local/lib/steam-arm-autotune.py \
     /usr/local/lib/steam-arm-cpu-report.sh /usr/local/lib/steam-arm-glx-lax-patch.py /usr/local/lib/steam-arm-glx-lax.src /usr/local/lib/steam-arm-glx-lax.stat \
@@ -6229,6 +6254,7 @@ SA_TUNED_RE='^([0-9]{1,10}( +(gfx=(a|b)|multiblock=(on|off)|gl32=off|glver=3\.3|
 # steam-arm.conf keys restored; every other key is machine state (GPU_FAMILY only when GPU_FAMILY_SET=user).
 SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN X87_CLIENT CLIENT_LIGHT CLIENT_GPU CEF_HANG_KILLS CLIENT_TSO"
 SA_BK_NAME='[A-Za-z0-9_+-][A-Za-z0-9._+-]*'
+SA_BK_KEYS="$SA_BK_KEYS STILL_NOTICE"
 part_label(){ case "$1" in
   setup) echo "Setup choices";; system-profiles) echo "System game profiles";;
   personal-profiles) echo "Personal game profiles";; compat-tools) echo "Proton/tool per game";;
@@ -6428,6 +6454,7 @@ rs_valid(){ case "$1" in
   AUTO_BUILD|CPU_NOTICE|RUN_HISTORY|UPDATE_CHECK_ON_OPEN|X87_CLIENT|CLIENT_LIGHT|CLIENT_GPU|CEF_HANG_KILLS) case "$2" in on|off|"") return 0;; esac; return 1;;
   CLIENT_TSO) case "$2" in strict|relaxed|"") return 0;; esac; return 1;;
   SNAPSHOT_KEEP) case "$2" in [1-5]|"") return 0;; esac; return 1;;
+  STILL_NOTICE) case "$2" in on|off|auto|"") return 0;; esac; return 1;;
   GPU_FAMILY) [[ "$2" =~ ^[a-z0-9-]+$ ]];;
   *) [[ "$2" =~ ^[a-z0-9,-]*$ ]];;
 esac; }
@@ -7424,6 +7451,11 @@ Commands
                             (.local/state/steam-arm/runs.log, newest 200
                             lines; off by default; off deletes it);
                             no value: state
+  still-notice [on|off|auto]
+                            notice when game shows no frame 20 s after
+                            start (shaders, loading, not responding);
+                            auto (default): on where display mode
+                            restore runs; no value: state
   components a,b,...        install exactly these parts (runs setup)
   driver-archive status|download|local FILE|custom FILE SHA256
                             driver archive of gpu-in-emulation: download
@@ -7520,6 +7552,7 @@ Files
   $SA_CONF      settings (GFX_DEFAULT=auto|a|b;
                             forward is read as a; AUTO_BUILD=on|off;
                             CPU_NOTICE=on|off; RUN_HISTORY=on|off;
+                            STILL_NOTICE=on|off (absent: auto);
                             SNAPSHOT_KEEP=1..5; UPDATE_CHECK_ON_OPEN=on|off;
                             X87_CLIENT=on|off; CLIENT_LIGHT=on|off;
                             CLIENT_GPU=on|off; CEF_HANG_KILLS=on|off;
@@ -7666,6 +7699,14 @@ cli_runreport(){
   fi
   if rr_save "$f" "$dest"; then echo "Saved to $dest (readable by you only). Read it before posting."; rm -f "$f"
   else echo "steam-arm-config: could not write $dest" >&2; rm -f "$f"; return 1; fi
+}
+cli_still_notice(){
+  case "${1:-}" in
+    on|off) conf_set STILL_NOTICE "$1" && echo "Still-working notice: $1 (from next start of Steam ARM)";;
+    auto) conf_del STILL_NOTICE && echo "Still-working notice: auto (from next start of Steam ARM)";;
+    '') echo "Still-working notice: $(still_notice)";;
+    *) echo "usage: steam-arm-config still-notice [on|off|auto]" >&2; return 2;;
+  esac
 }
 cli_cpu_notice(){
   case "${1:-}" in
@@ -7887,6 +7928,7 @@ main(){
     compat)      cli_root "$@"; shift; cli_compat "$@";;
     tune)        case "${3:-show}" in show) [ "$(id -un)" = "$(game_user)" ] || cli_root "$@";; *) cli_root "$@";; esac
                  shift; cli_tune "$@";;
+    still-notice) case "${2:-}" in on|off|auto) cli_root "$@";; esac; shift; cli_still_notice "$@";;
     auto-build)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_auto_build "$@";;
     cpu-notice)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_cpu_notice "$@";;
     cpu-report)  shift; cli_cpu_report "$@";;
@@ -8739,6 +8781,7 @@ remove_all(){
         /usr/local/lib/steam-arm-glx-lax-patch.py /usr/local/lib/steam-arm-glx-lax.src /usr/local/lib/steam-arm-glx-lax.stat \
         /usr/local/lib/steam-arm-glx-lax.state \
         /usr/local/lib/steam-arm-vk-spoof.c \
+        /usr/local/lib/steam-arm-perf.py \
         /usr/local/sbin/steam-arm-glx-lax /usr/local/sbin/steam-arm-xpad-dedup /usr/local/sbin/steam-arm-pad-xbox \
         /usr/local/sbin/steam-arm-governor /etc/sudoers.d/steam-arm-governor \
         /usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0 /usr/lib/aarch64-linux-gnu/libVkLayer_steam_arm_spoof.so \
@@ -12959,7 +13002,8 @@ GFX_BEGIN = "# Steam ARM begin: lines up to end mark rewritten at each Steam ARM
 GFX_END = "# Steam ARM end"
 GFX_LINE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[^\n]*\Z")
 # names the launcher writes (own lines when the end mark is gone)
-GFX_NAMES = ("DISABLE_VK_LAYER_VALVE_steam_fossilize_1", "STEAM_ARM_VK_SPOOF")
+GFX_NAMES = ("DISABLE_VK_LAYER_VALVE_steam_fossilize_1", "STEAM_ARM_VK_SPOOF", "VK_LOADER_LAYERS_ENABLE",
+             "VK_LAYER_MESA_OVERLAY_CONFIG", "GALLIUM_HUD", "GALLIUM_HUD_PERIOD", "GALLIUM_HUD_VISIBLE", "GALLIUM_HUD_DUMP_DIR")
 
 
 def put(path, data, mode):
@@ -14640,6 +14684,476 @@ if __name__ == "__main__":
     main()
 PHYSXPY
 chmod 755 /usr/local/lib/steam-arm-physx.py
+# Frame pacing readout (steam-arm --perf-stats) and still-working notice; launcher runs it.
+cat > /usr/local/lib/steam-arm-perf.py <<'PERFPY'
+#!/usr/bin/env python3
+"""steam-arm-perf.py: frame pacing readout (steam-arm --perf-stats) and still-working notice for game starts.
+
+Frame-time sources, both from Mesa, set through game environment and read here:
+  Vulkan   Mesa overlay layer (VK_LAYER_MESA_overlay, explicit layer of mesa-vulkan-drivers), no_display,
+           one CSV line per present (fps_sampling_period=1 ms), column frame_timing(us).
+  OpenGL   Gallium HUD dump (GALLIUM_HUD=frametime, hidden, period 0): one value in ms per frame.
+
+Usage:
+  env DIR                 game environment lines (NAME=VALUE) for sources found on host; DIR emptied; exit 1: none
+  stats [FILE...]         one summary line of frame intervals in ms (one number per line; stdin without FILE)
+  watch DIR LOG [SECS]    every SECS (5) one summary line per source with new frames: stdout and LOG (newest 200
+                          lines kept); ends when Steam client of this account is gone
+  still --reaper PID [--after SECS] [--home H] [--perf DIR]
+                          no-frame watch of one game start: prints "state shaders|loading|stuck SECONDS" when
+                          state changes after SECS (20) without frame, "frame" on first frame, "gone" when game
+                          ends, "nosignal" when no frame signal exists ("nosignal fdinfo": kernel reports no
+                          per-process GPU time); never signals game"""
+import glob
+import math
+import os
+import re
+import sys
+import time
+
+LAYER = "VK_LAYER_MESA_overlay"
+LAYER_DIRS = ("/usr/share/vulkan/explicit_layer.d", "/usr/local/share/vulkan/explicit_layer.d",
+              "/etc/vulkan/explicit_layer.d")
+VK_FILE = "vk-frames.csv"
+GL_DIR = "gl"
+LOG_KEEP = 200
+SLOW_MS = (25.0, 50.0)
+UID = os.getuid()
+TICK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+
+
+def overlay_layer():
+    """True when Mesa overlay layer manifest is on host."""
+    for d in LAYER_DIRS:
+        for p in glob.glob(os.path.join(d, "*.json")):
+            try:
+                if LAYER in open(p, errors="replace").read():
+                    return True
+            except OSError:
+                pass
+    return False
+
+
+def gallium():
+    """True when Gallium driver library of Mesa (dri or libgallium) is on host."""
+    pats = ("/usr/lib/*/dri/*_dri.so", "/usr/lib/*/libgallium*.so*", "/usr/lib/dri/*_dri.so", "/usr/lib64/dri/*_dri.so")
+    return any(glob.glob(p) for p in pats)
+
+
+def env_lines(d, layer=None, gl=None):
+    """NAME=VALUE lines for the sources found; empties d (old files of earlier sessions)."""
+    layer = overlay_layer() if layer is None else layer
+    gl = gallium() if gl is None else gl
+    os.makedirs(os.path.join(d, GL_DIR), mode=0o700, exist_ok=True)
+    for p in [os.path.join(d, VK_FILE)] + glob.glob(os.path.join(d, GL_DIR, "*")):
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+    out = []
+    if layer:
+        cur = [x for x in os.environ.get("VK_LOADER_LAYERS_ENABLE", "").split(",") if x and x != LAYER]
+        out.append("VK_LOADER_LAYERS_ENABLE=" + ",".join(cur + [LAYER]))
+        out.append("VK_LAYER_MESA_OVERLAY_CONFIG=no_display,output_file=%s,fps_sampling_period=1,frame_timing"
+                   % os.path.join(d, VK_FILE))
+    if gl:
+        out += ["GALLIUM_HUD=frametime", "GALLIUM_HUD_PERIOD=0", "GALLIUM_HUD_VISIBLE=false",
+                "GALLIUM_HUD_DUMP_DIR=" + os.path.join(d, GL_DIR)]
+    return out
+
+
+def pct(sorted_vals, q):
+    """Nearest-rank percentile of an ascending list (q in 0..100)."""
+    n = len(sorted_vals)
+    return sorted_vals[max(0, min(n - 1, int(math.ceil(q / 100.0 * n)) - 1))]
+
+
+def summary(vals):
+    """Dict of frame interval stats (ms) or None for no frames."""
+    v = sorted(x for x in vals if x > 0)
+    if not v:
+        return None
+    return {"frames": len(v), "p50": pct(v, 50), "p95": pct(v, 95), "p99": pct(v, 99), "max": v[-1],
+            "over25": sum(1 for x in v if x > SLOW_MS[0]), "over50": sum(1 for x in v if x > SLOW_MS[1])}
+
+
+def fmt(s):
+    return ("%d frames, interval p50 %.1f p95 %.1f p99 %.1f max %.1f ms, over 25 ms %d, over 50 ms %d"
+            % (s["frames"], s["p50"], s["p95"], s["p99"], s["max"], s["over25"], s["over50"]))
+
+
+class Tail:
+    """New complete lines of a file since last read; restarts at 0 when file is replaced or shrinks."""
+
+    def __init__(self, path):
+        self.path, self.ino, self.off, self.part = path, None, 0, b""
+
+    def lines(self):
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            return []
+        if st.st_ino != self.ino or st.st_size < self.off:
+            self.ino, self.off, self.part = st.st_ino, 0, b""
+        if st.st_size == self.off:
+            return []
+        try:
+            with open(self.path, "rb") as f:
+                f.seek(self.off)
+                data = f.read(st.st_size - self.off)
+        except OSError:
+            return []
+        self.off += len(data)
+        # second writer after truncation leaves a hole of NUL bytes
+        buf = (self.part + data).replace(b"\0", b"")
+        out = buf.split(b"\n")
+        self.part = out.pop()
+        return [x.decode("ascii", "replace") for x in out]
+
+
+def vk_values(lines, col):
+    """Frame times in ms from overlay CSV lines; col: [index of frame_timing column] kept across calls."""
+    out = []
+    for ln in lines:
+        parts = [p.strip() for p in ln.split(",")]
+        if any(p.startswith("frame_timing") for p in parts):
+            col[0] = next(i for i, p in enumerate(parts) if p.startswith("frame_timing"))
+            continue
+        try:
+            out.append(float(parts[col[0]]) / 1000.0)
+        except (ValueError, IndexError):
+            pass
+    return out
+
+
+def gl_values(lines):
+    """Frame times in ms from Gallium HUD dump lines (value is last field)."""
+    out = []
+    for ln in lines:
+        f = ln.replace(":", " ").split()
+        try:
+            out.append(float(f[-1]))
+        except (ValueError, IndexError):
+            pass
+    return out
+
+
+def pids():
+    for p in os.listdir("/proc"):
+        if p.isdigit():
+            yield int(p)
+
+
+def owned(pid):
+    try:
+        return os.stat("/proc/%d" % pid).st_uid == UID
+    except OSError:
+        return False
+
+
+def comm(pid):
+    try:
+        return open("/proc/%d/comm" % pid).read().strip()
+    except OSError:
+        return ""
+
+
+def cmdline(pid):
+    try:
+        return open("/proc/%d/cmdline" % pid, "rb").read().replace(b"\0", b" ").decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def client_up():
+    return any(comm(p) == "steam" and owned(p) for p in pids())
+
+
+def game_apps():
+    """Appids of running game starts of this account (Steam's reaper SteamLaunch AppId=N)."""
+    ids = []
+    for p in pids():
+        m = re.search(r"reaper SteamLaunch AppId=(\d+)", cmdline(p)) if owned(p) else None
+        if m and m.group(1) not in ids:
+            ids.append(m.group(1))
+    return ids
+
+
+def log_line(path, line):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            old = open(path).read().splitlines()
+        except OSError:
+            old = []
+        if len(old) >= 2 * LOG_KEEP:
+            with open(path, "w") as f:
+                f.write("\n".join(old[-(LOG_KEEP - 1):] + [line]) + "\n")
+        else:
+            with open(path, "a") as f:
+                f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def watch(d, log, secs=5.0, rounds=0):
+    """Summary lines every secs until client is gone; rounds > 0: that many rounds without waiting."""
+    vk, col, gl = Tail(os.path.join(d, VK_FILE)), [3], {}
+    gone, n = 0, 0
+    while True:
+        if rounds:
+            n += 1
+            if n > rounds:
+                return 0
+        else:
+            time.sleep(secs)
+            gone = 0 if client_up() else gone + 1
+            if gone >= 2:
+                return 0
+        for p in glob.glob(os.path.join(d, GL_DIR, "*")):
+            if os.path.basename(p).startswith("frametime"):
+                gl.setdefault(p, Tail(p))
+        res = [("vulkan", vk_values(vk.lines(), col))] + [("opengl", gl_values(t.lines())) for t in gl.values()]
+        apps = None
+        for src, vals in res:
+            s = summary(vals)
+            if not s:
+                continue
+            if apps is None:
+                apps = ",".join(game_apps()) or "unknown"
+            line = "%s app %s %s: %s" % (time.strftime("%F %T"), apps, src, fmt(s))
+            print("steam-arm: perf " + line[20:], flush=True)
+            log_line(log, line)
+
+
+# --- still-working notice ---
+
+def children():
+    kids = {}
+    for p in pids():
+        try:
+            pp = int(open("/proc/%d/stat" % p).read().rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        kids.setdefault(pp, []).append(p)
+    return kids
+
+
+def tree(root):
+    """Live processes of root and its descendants (zombies left out)."""
+    kids, out, todo = children(), [], [root]
+    while todo:
+        p = todo.pop()
+        st = proc_stat(p)
+        if st and st[0] != "Z":
+            out.append(p)
+        todo += kids.get(p, [])
+    return out
+
+
+def proc_stat(pid):
+    """(state, cpu seconds) of pid, or None."""
+    try:
+        f = open("/proc/%d/stat" % pid).read().rsplit(")", 1)[1].split()
+        return f[0], (int(f[11]) + int(f[12])) / float(TICK)
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def read_bytes(pid):
+    try:
+        for ln in open("/proc/%d/io" % pid):
+            if ln.startswith("read_bytes:"):
+                return int(ln.split()[1])
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+# kernel per-process GPU lines (drm-usage-stats)
+CLIENT_RE = re.compile(r"^drm-(driver|client-id|engine-[\w-]+|cycles-[\w-]+):", re.M)
+
+
+def drm_infos(p):
+    """(fd, fdinfo text) of open DRM files of process p."""
+    out = []
+    for f in glob.glob("/proc/%d/fd/*" % p):
+        fd = f.rsplit("/", 1)[1]
+        try:
+            if os.readlink(f).startswith("/dev/dri/"):
+                out.append((fd, open("/proc/%d/fdinfo/%s" % (p, fd)).read()))
+        except OSError:
+            continue
+    return out
+
+
+def own_fdinfo():
+    """Client lines on own open of first render node: True, False, None (none opened)."""
+    for n in sorted(glob.glob("/dev/dri/renderD*"))[:1]:
+        try:
+            fd = os.open(n, os.O_RDWR | os.O_CLOEXEC)
+        except OSError:
+            return None
+        try:
+            return bool(CLIENT_RE.search(open("/proc/self/fdinfo/%d" % fd).read()))
+        except OSError:
+            return None
+        finally:
+            os.close(fd)
+    return None
+
+
+def gpu_time(ps):
+    """(DRM file open, client lines seen, busy keys seen, engine ns plus cycles) over DRM files of ps; each client once."""
+    drm, seen, keys, eng = False, False, False, {}
+    for p in ps:
+        for fd, txt in drm_infos(p):
+            drm = True
+            if not CLIENT_RE.search(txt):
+                continue
+            seen = True
+            m = re.search(r"^drm-client-id:\s*(\d+)", txt, re.M)
+            cid = m.group(1) if m else "%d/%s" % (p, fd)
+            ns = re.findall(r"^drm-engine-[\w-]+:\s*(\d+) ns", txt, re.M)
+            ns += re.findall(r"^drm-cycles-[\w-]+:\s*(\d+)", txt, re.M)
+            keys = keys or bool(ns)
+            eng[cid] = max(eng.get(cid, 0), sum(int(x) for x in ns))
+    return drm, seen, keys, sum(eng.values())
+
+
+def dir_size(d, depth=3):
+    tot = 0
+    try:
+        for e in os.scandir(d):
+            try:
+                if e.is_file(follow_symlinks=False):
+                    tot += e.stat(follow_symlinks=False).st_size
+                elif depth and e.is_dir(follow_symlinks=False):
+                    tot += dir_size(e.path, depth - 1)
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return tot
+
+
+def cache_dirs(home, app):
+    s = os.path.join(home, ".local/share/Steam")
+    out = [os.path.join(home, ".cache", n) for n in ("mesa_shader_cache", "mesa_shader_cache_db", "radv_builtin_shaders")]
+    if app:
+        out.append(os.path.join(s, "steamapps/shadercache", app))
+    return out
+
+
+def shader_procs():
+    return any(comm(p).startswith("fossilize_repla") and owned(p) for p in pids())
+
+
+def perf_size(d):
+    return sum(os.path.getsize(p) for p in [os.path.join(d, VK_FILE)] + glob.glob(os.path.join(d, GL_DIR, "*"))
+               if os.path.isfile(p)) if d else 0
+
+
+def classify(samples, window=10.0):
+    """State from samples (t, cpu, io, cache, main_state, shader_proc) over last window seconds; None: window not full."""
+    last = samples[-1]
+    old = [s for s in samples if last[0] - s[0] >= window]
+    if last[5] or (old and last[3] > old[-1][3]):
+        return "shaders"
+    if not old:
+        return None
+    o = old[-1]
+    span = [s for s in samples if s[0] >= o[0]]
+    if last[1] - o[1] < 0.1:
+        return "stuck"
+    if all(s[4] == "D" for s in span) and last[2] == o[2]:
+        return "stuck"
+    return "loading"
+
+
+def still(reaper, after=20.0, home=None, perf=None, poll=2.0, limit=900.0, nogpu=120.0):
+    home = home or os.environ.get("HOME", "")
+    m = re.search(r"AppId=(\d+)", cmdline(reaper))
+    app = m.group(1) if m else ""
+    t0 = time.time()
+    samples, last, gpu_prev, gpu_up, psz, probe = [], None, None, 0, perf_size(perf), "?"
+    while True:
+        ps = tree(reaper)
+        if not ps:
+            print("gone", flush=True)
+            return 0
+        now = time.time() - t0
+        drm, seen, keys, gpu = gpu_time(ps)
+        nps = perf_size(perf)
+        gpu_up = gpu_up + 1 if gpu_prev is not None and gpu > gpu_prev else 0
+        gpu_prev = gpu
+        if nps > psz + 64 or gpu_up >= 2:
+            print("frame", flush=True)
+            return 0
+        if not seen and not perf and now >= after:
+            # kernel without per-process GPU lines: no guess, silent end
+            if not drm and probe == "?":
+                probe = own_fdinfo()
+            if drm or probe is False:
+                print("nosignal fdinfo", flush=True)
+                return 0
+        if seen and not keys and not perf and now >= after:
+            # driver without engine time in fdinfo: no frame signal
+            print("nosignal", flush=True)
+            return 0
+        if (not seen and now >= nogpu) or now >= limit:
+            print("nosignal", flush=True)
+            return 0
+        if now >= after - 10:
+            sts = [(p, proc_stat(p)) for p in ps]
+            sts = [(p, s) for p, s in sts if s]
+            main = max(sts, key=lambda x: x[1][1])[1][0] if sts else "?"
+            samples.append((now, sum(s[1] for _, s in sts), sum(read_bytes(p) for p, _ in sts),
+                            sum(dir_size(d) for d in cache_dirs(home, app)), main, shader_procs()))
+            samples = [s for s in samples if now - s[0] <= 30]
+        if now >= after and samples:
+            st = classify(samples)
+            if st and st != last:
+                print("state %s %d" % (st, now), flush=True)
+                last = st
+        time.sleep(poll)
+
+
+def main(a):
+    if a[:1] == ["env"] and len(a) == 2:
+        out = env_lines(a[1])
+        print("\n".join(out))
+        return 0 if out else 1
+    if a[:1] == ["stats"]:
+        vals = []
+        for src in (a[1:] or ["-"]):
+            lines = sys.stdin.read().splitlines() if src == "-" else open(src).read().splitlines()
+            vals += gl_values(lines)
+        s = summary(vals)
+        print(fmt(s) if s else "no frames")
+        return 0 if s else 1
+    if a[:1] == ["watch"] and len(a) in (3, 4):
+        return watch(a[1], a[2], float(a[3]) if len(a) == 4 else 5.0)
+    if a[:1] == ["still"]:
+        o = {"--reaper": None, "--after": "20", "--home": None, "--perf": None}
+        it = iter(a[1:])
+        for k in it:
+            if k not in o:
+                sys.exit(__doc__)
+            o[k] = next(it, None)
+        if not (o["--reaper"] or "").isdigit():
+            sys.exit(__doc__)
+        return still(int(o["--reaper"]), float(o["--after"]), o["--home"], o["--perf"] or None)
+    sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)
+PERFPY
+chmod 644 /usr/local/lib/steam-arm-perf.py
 cat > /usr/local/bin/steam-arm <<'LAUNCHER'
 #!/bin/sh
 # steam-arm: launches Steam client (native ARM64, or x86 through FEX on CPUs without Armv8.1 atomics); runs as desktop user.
@@ -14648,6 +15162,8 @@ case "${1:-}" in
   -h|--help|help)
     printf '%s\n' "Usage: steam-arm [Steam client options]" \
       "  steam-arm               start Steam client" \
+      "  steam-arm --perf-stats  also print frame pacing of running game every 5 s (Steam already running: games" \
+      "                          started from now on, until Ctrl+C or Steam exits)" \
       "  steam-arm --bigpicture  start client in Big Picture (restarts running client in it)" \
       "  steam-arm --desktop     start client in desktop interface (restarts running client in it)" \
       "  steam-arm --shutdown    stop running client (asks it to exit, SIGTERM after 20 s, x86 client 45 s)" \
@@ -14662,6 +15178,9 @@ esac
 if [ "$(id -u)" = 0 ]; then
   echo "steam-arm: run this as the desktop account that plays games, not as root" >&2; exit 1
 fi
+# Frame pacing readout: --perf-stats (taken out of client options) or STEAM_ARM_PERF_STATS=1.
+PERF=0; case "${STEAM_ARM_PERF_STATS:-0}" in 1|on|yes) PERF=1;; esac
+for a in "$@"; do shift; if [ "$a" = --perf-stats ]; then PERF=1; else set -- "$@" "$a"; fi; done
 REALHOME="$HOME"
 ARMHOME_DIR=.local/share/steam-arm            # relative to the user's home
 [ -r /etc/steam-arm/steam-arm.conf ] && . /etc/steam-arm/steam-arm.conf
@@ -14890,6 +15409,17 @@ fi
 # Proton titles use host Vulkan.
 comp_on vk-spoof && ! retired vk-spoof && [ -f /usr/share/vulkan/implicit_layer.d/VkLayer_steam_arm_spoof.json ] \
   && GAMEENV="${GAMEENV:+$GAMEENV }STEAM_ARM_VK_SPOOF=1"
+# Frame-time sources for games (Mesa Vulkan overlay layer, Gallium HUD dump) when readout is on; GAMEENV0 without them.
+GAMEENV0=$GAMEENV; PERFPY=/usr/local/lib/steam-arm-perf.py; PERFDIR=; PERFLOG="$ARMHOME/.local/state/steam-arm/perf.log"
+if [ "$PERF" = 1 ]; then
+  PERFDIR="$ARMHOME/.cache/steam-arm/perf"
+  case $PERFDIR in *[[:space:]]*) PERFDIR="/tmp/steam-arm-perf-$(id -u)";; esac
+  if [ -f "$PERFPY" ] && pe=$(python3 "$PERFPY" env "$PERFDIR" 2>>"$LOG"); then
+    GAMEENV="${GAMEENV:+$GAMEENV }$(printf '%s' "$pe" | paste -sd' ' -)"
+  else
+    PERFDIR=; lwarn "frame pacing readout off: no frame-time source (Mesa Vulkan overlay layer of mesa-vulkan-drivers, Gallium driver)"
+  fi
+fi
 # Game-only lines: native client gets them through Valve's game environment file (its launch wrapper sets them at each
 # game start; they win over launch options, so settings a title may override stay exports below); else exports.
 GFXOK=0
@@ -14897,6 +15427,17 @@ if [ "$CLIENT" = arm64 ]; then out=$(python3 /usr/local/lib/steam-arm-entry.py g
 else out=$(python3 /usr/local/lib/steam-arm-entry.py gfx "$S" 2>&1); fi
 [ -n "$out" ] && printf '%s\n' "$out" | while IFS= read -r l; do llog "$l"; done
 [ "$GFXOK" = 1 ] || for v in $GAMEENV; do export "$v"; done
+# Readout with Steam already running: game environment file reaches games started from now on; foreground until Ctrl+C.
+if [ -n "$PERFDIR" ] && client_running; then
+  if [ "$GFXOK" = 1 ]; then
+    echo "steam-arm: frame pacing of games started from now on, every 5 s; Ctrl+C stops it" >&2
+    trap 'exit 130' INT; trap 'exit 143' TERM
+    trap 'python3 /usr/local/lib/steam-arm-entry.py gfx "$S" $GAMEENV0 >/dev/null 2>&1' EXIT
+    python3 "$PERFPY" watch "$PERFDIR" "$PERFLOG" 5
+    exit 0
+  fi
+  stop "Frame pacing readout needs Steam started with it on this client: close Steam, then start steam-arm --perf-stats"
+fi
 case "${GPU_FAMILY:-}" in
   # Raspberry Pi GPU: DXVK cannot start on V3D's Vulkan driver, so Proton titles use WineD3D; d3d=dxvk per title.
   broadcom-v3d71|broadcom-v3d42|broadcom-vc4)
@@ -15014,6 +15555,9 @@ restore_gov(){ [ "$GOVSET" = 1 ] && sudo -n /usr/local/sbin/steam-arm-governor r
 # Modes are saved when a title starts and put back once no title runs, and when Steam closes.
 MODEF="$XDG_RUNTIME_DIR/steam-arm-display-mode"
 game_up(){ pgrep -u "$(id -u)" -f 'reaper SteamLaunch' >/dev/null 2>&1; }
+game_pid(){ pgrep -o -u "$(id -u)" -f 'reaper SteamLaunch' 2>/dev/null; }
+# Game check of this second: pid from the 1 s watcher (GPID set there, also when empty), else own look.
+game_seen(){ if [ -n "${GPID+x}" ]; then [ -n "$GPID" ]; else game_up; fi; }
 mode_ok(){ [ -n "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ] && [ "${STEAM_ARM_MODE_RESTORE:-1}" != 0 ] && command -v xrandr >/dev/null 2>&1; }
 # One line per active output: name, mode id, geometry (WxH+X+Y).
 mode_get(){ xrandr --verbose 2>/dev/null | awk '/^[^ \t].* connected/ { for (i = 3; i < NF; i++) if ($i ~ /^[0-9]+x[0-9]+\+-?[0-9]+\+-?[0-9]+$/ && $(i + 1) ~ /^\(0x[0-9a-f]+\)$/) { m = $(i + 1); gsub(/[()]/, "", m); print $1, m, $i } }'; }
@@ -15032,12 +15576,52 @@ mode_restore(){
 # Called every second by the watcher: save before a title switches, restore 2 s after the last one ends.
 mode_watch(){
   mode_ok || return 0
-  if game_up; then
+  if game_seen; then
     [ -s "$MODEF" ] || mode_get > "$MODEF"
   elif [ -s "$MODEF" ]; then
     sleep 2; game_up && return 0
     mode_restore; rm -f "$MODEF"
   fi
+}
+# Still-working notice: game start without frame for STEAM_ARM_STILL_AFTER seconds (20) names likely state; closed on
+# first frame. Started from the 1 s watcher, one per start. STILL_NOTICE absent (auto): on only where display mode restore
+# already looks for games each second (no added cost); on|off, or STEAM_ARM_STILL_WORKING=1|0, decides.
+STILL=auto; case "${STILL_NOTICE:-}" in on) STILL=1;; off) STILL=0;; esac
+case "${STEAM_ARM_STILL_WORKING:-}" in 0|off) STILL=0;; 1|on) STILL=1;; esac
+STILLAFTER=${STEAM_ARM_STILL_AFTER:-20}; case $STILLAFTER in ''|*[!0-9]*) STILLAFTER=20;; esac
+STILLR=; STILLW=
+still_msg(){ case $1 in
+  shaders) echo "No frame for $2 s: compiling shaders (shader cache growing or Steam shader pre-caching running). First start of a game, or start after driver or game update, can take minutes.";;
+  stuck) echo "No frame for $2 s: game not responding (no CPU use, or waiting on disk, for 10 s or more). Stop it from Steam if this stays.";;
+  *) echo "No frame for $2 s: loading (game busy on CPU or disk).";;
+esac; }
+# $1 reaper pid: state lines of steam-arm-perf.py still -> one notice replaced in place (terminal line without one).
+still_run(){
+  python3 "$PERFPY" still --reaper "$1" --after "$STILLAFTER" --home "$ARMHOME" ${PERFDIR:+--perf "$PERFDIR"} 2>/dev/null \
+  | { nid=; shown=0; while read -r k st t; do
+    case $k in
+      state)
+        m=$(still_msg "$st" "$t"); shown=1; llog "still-working: $st after $t s (game start $1)"
+        if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+          i=$(notice "${nid:-0}" "Steam ARM: game still starting" "$m" 0); case $i in ''|0) ;; *) nid=$i;; esac
+        fi
+        { [ -z "$nid" ] || [ -t 2 ]; } && echo "steam-arm: $m" >&2;;
+      frame|gone|nosignal)
+        [ "$shown" = 1 ] || { [ "$st" = fdinfo ] && llog "still-working: off for game start $1 (kernel reports no per-process GPU time)"; exit 0; }
+        case $k in frame) m="Game is drawing.";; gone) m="Game ended.";; *) m="No frame signal; notice closed.";; esac
+        llog "still-working: $k (game start $1)"
+        [ -n "$nid" ] && { notice_close "$nid" || notice "$nid" "Steam ARM" "$m" 3000 >/dev/null; }
+        { [ -z "$nid" ] || [ -t 2 ]; } && echo "steam-arm: $m" >&2
+        exit 0;;
+    esac
+  done; }
+}
+still_watch(){
+  [ "$STILL" != 0 ] && [ -n "$GPID" ] && [ "$GPID" != "$STILLR" ] || return 0
+  [ -n "$STILLW" ] && kill -0 "$STILLW" 2>/dev/null && return 0
+  STILLR=$GPID
+  still_run "$GPID" </dev/null >/dev/null &
+  STILLW=$!
 }
 # Bluetooth: SteamOS mode sets adapter power from saved System/Bluetooth/Enabled (unset = off); host state is saved there first.
 BTPOW=; BTSEED=
@@ -15099,9 +15683,12 @@ bt_restore(){
   if timeout 10 bluetoothctl power on >/dev/null 2>&1; then lwarn "Bluetooth adapter left off by client; powered on again"
   else lnote "Bluetooth adapter left off by client and could not be powered on; turn it on in system settings"; fi
 }
-FEXWATCH=; PHYSXWATCH=; NOTEWATCH=
+FEXWATCH=; PHYSXWATCH=; NOTEWATCH=; PERFWATCH=
 # Single exit path: stop the watchers, put back a display mode a title left, restore the pad service and Bluetooth power.
-on_exit(){ [ -n "$FEXWATCH" ] && kill "$FEXWATCH" 2>/dev/null; [ -n "$PHYSXWATCH" ] && kill "$PHYSXWATCH" 2>/dev/null
+# Readout stop: watcher ended, frame-time sources out of game environment file once client is closed.
+perf_stop(){ [ -n "$PERFWATCH" ] && kill "$PERFWATCH" 2>/dev/null
+  [ -n "$PERFDIR" ] && [ "$GFXOK" = 1 ] && ! client_running && python3 "$ENTRYPY" gfx "$S" $GAMEENV0 >/dev/null 2>&1; }
+on_exit(){ perf_stop; [ -n "$FEXWATCH" ] && kill "$FEXWATCH" 2>/dev/null; [ -n "$PHYSXWATCH" ] && kill "$PHYSXWATCH" 2>/dev/null
   [ -n "$NOTEWATCH" ] && kill "$NOTEWATCH" 2>/dev/null
   mode_ok && ! game_up && { mode_restore; rm -f "$MODEF"; }; restore_pad; restore_gov; bt_restore; }
 trap on_exit EXIT
@@ -15309,8 +15896,13 @@ for f in glob.glob("/dev/shm/fex-*-stats"):
 SHMPY
 }
 shm_sweep
-( n=0; while sleep 1; do entry_check; fex_check; mode_watch; n=$((n + 1)); [ $((n % 60)) -eq 0 ] && shm_sweep; done ) &
+( n=0; while sleep 1; do entry_check; fex_check; GPID=; { mode_ok || [ "$STILL" = 1 ]; } && GPID=$(game_pid)
+  mode_watch; still_watch; n=$((n + 1)); [ $((n % 60)) -eq 0 ] && shm_sweep; done ) &
 FEXWATCH=$!
+if [ -n "$PERFDIR" ]; then
+  python3 "$PERFPY" watch "$PERFDIR" "$PERFLOG" 5 </dev/null &
+  PERFWATCH=$!
+fi
 # physx-skip (listed by name; old settings file = on): PhysX install step of Proton titles hangs, mark it done in the prefix, else SIGTERM it after 60 s.
 # STEAM_ARM_PHYSX_SKIP=0 or =1 overrides it for this session.
 PHYSX=1

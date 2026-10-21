@@ -112,7 +112,7 @@ run 'stop_client'; rc=$?
 check "stop: no client -> nothing sent" "[ $rc = 0 ] && [ ! -f $STUB/steam.log ]"
 check "launcher: --shutdown handled before watchers start" "awk '/--shutdown\) stop_client/{a=NR} /^FEXWATCH=\\\$!/{b=NR} END{exit !(a && b && a < b)}' $L"
 check "launcher: interface switch uses stop_client" "grep -q 'stop_client || exit 1' $L && ! grep -q 'did not exit within 60 s' $L"
-check "launcher: watcher loop calls mode_watch" "grep -q 'fex_check; mode_watch;' $L"
+check "launcher: watcher loop calls mode_watch" "grep -q '^  mode_watch; still_watch;' $L"
 check "installer: x11-xserver-utils in host packages" "grep -q 'xdotool x11-xserver-utils' $INST"
 echo "passed $pass, failed $fail"
 [ "$fail" = 0 ]

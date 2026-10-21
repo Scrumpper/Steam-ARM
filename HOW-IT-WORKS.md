@@ -173,6 +173,16 @@ steam-arm (launcher, desktop account only, refuses root)
 |    exits, top group, fex client settings, clock floor, Vulkan class, next step);
 |    hardware report takes its static sections
 +- kde-input-prompt: sets or puts back KDE input permission in desktop session
++- --perf-stats (off by default): Mesa overlay layer (Vulkan) and Gallium HUD dump
+|    (OpenGL) set hidden in game environment; steam-arm-perf.py watch prints frame
+|    interval p50/p95/p99/max and counts over 25 and 50 ms every 5 s, perf.log;
+|    Steam already running: foreground for games started from then on
++- still-working notice (1 s watcher, auto: where display mode restore runs):
+|    game start without frame 20 s -> one notice: compiling shaders (cache
+|    growth, fossilize_replay), loading, not responding (no CPU or disk wait
+|    10 s); frame = GPU engine time in fdinfo rising, or readout files growing;
+|    closed on first frame; no per-process GPU lines in fdinfo, readout off ->
+|    silent end before any notice
 |
 +- Play: Windows title -> Proton ARM64 -> DXVK -> system Vulkan (PanVK)
 |                                         vk-spoof reports features DXVK needs

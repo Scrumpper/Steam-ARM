@@ -38,6 +38,8 @@ Other routes to Steam on ARM64, and where each one runs: `COMPARISON.md`.
     - Windows titles
     - GE-Proton (optional)
     - Shader pre-caching
+    - Frame pacing readout
+    - Still-working notice
     - PhysX install step
     - Linux build installed as Windows build
     - Title profiles and launch options
@@ -299,6 +301,7 @@ Command line, same settings from scripts:
 | `cef-hang-kills [on\|off]`              | x86 client: Chromium's kills and restarts of hung views (on by default); no value: state |
 | `client-tso [strict\|relaxed\|retry]`   | x86 client on Armv8.0 CPU: FEX memory model of client window programs (strict by default, guarded); no value: state |
 | `run-history [on\|off]`                 | Run history; no value: state                            |
+| `still-notice [on\|off\|auto]`         | Still-working notice; no value: state                   |
 | `components a,b,...`                   | Install exactly these parts (runs setup)                |
 | `driver-archive status\|download`      | Archive source, extra Mesa; `download` clears saved file |
 | `driver-archive local FILE`            | Local copy of published archive (runs setup)            |
@@ -1051,6 +1054,73 @@ keeps downloaded cache, and turning it on again reuses it. Settings menu shows s
 stops Steam from downloading those caches again: client's records in `config.vdf` still
 list them as present, and videos then show colour bars with part on.
 
+### Frame pacing readout
+
+Off by default. `steam-arm --perf-stats` (or `STEAM_ARM_PERF_STATS=1 steam-arm`) prints one
+line per frame source every 5 s while game draws: frame count, frame interval p50, p95, p99
+and maximum in ms, and count of intervals over 25 ms and over 50 ms. Percentiles use
+nearest rank over frames of those 5 s.
+
+```
+steam-arm: perf app 1234567 vulkan: 298 frames, interval p50 16.7 p95 18.1 p99 33.4 max 41.0 ms, over 25 ms 3, over 50 ms 0
+```
+
+Same lines go to `.local/state/steam-arm/perf.log` in client home (newest 200 kept);
+hardware report (`steam-arm-config report`, Maintenance, Hardware report) lists last 12
+under `Frame pacing`, ready to attach to compatibility report.
+
+Frame times come from Mesa, through game environment file (x86 client: launcher
+environment), only while readout is on:
+
+- Vulkan (Windows titles on Proton, Vulkan titles through emulation): Mesa overlay layer
+  `VK_LAYER_MESA_overlay` with `no_display`, one line per present into
+  `.cache/steam-arm/perf/vk-frames.csv` of client home. Layer comes with Mesa's Vulkan
+  drivers (`mesa-vulkan-drivers` on Debian and Ubuntu).
+- OpenGL (forwarded titles, route B, WineD3D): Gallium HUD dump (`GALLIUM_HUD=frametime`,
+  hidden, one value per frame) into `.cache/steam-arm/perf/gl/`.
+
+Limits:
+
+- Interval is time between presents of game; frames compositor or display drop are not
+  seen.
+- No Mesa overlay layer on host: Vulkan titles report nothing; no Gallium driver: OpenGL
+  titles report nothing. Launcher log names missing source. Proprietary drivers report
+  nothing.
+- Steam client already running: readout covers games started from then on, prints in that
+  terminal until Ctrl+C or Steam exits, and takes its lines out of game environment file
+  on exit. x86 client takes them only at client start: close Steam and start it with
+  `--perf-stats`.
+- Several Vulkan instances in one game share one file; readout skips damaged lines.
+- While off, nothing is set and no watcher runs.
+
+### Still-working notice
+
+Game that shows no frame 20 s after start gets one desktop notice (terminal line without
+notice service), replaced in place as state changes and closed on first frame:
+
+- compiling shaders: shader cache of game or Mesa (`steamapps/shadercache/<appid>`,
+  `.cache/mesa_shader_cache*` in client home) grew during last 10 s, or Steam's
+  `fossilize_replay` runs
+- not responding: game's processes used under 0.1 s CPU in last 10 s, or busiest one
+  waited on disk (state D) for 10 s with no reads
+- loading: otherwise (game busy on CPU or disk)
+
+Frame signal: GPU engine time or cycles of game's processes in kernel `fdinfo`
+(`drm-engine-*`, `drm-cycles-*`) rising over 2 polls, or growth of readout files while
+frame pacing readout is on. Notice needs kernel that reports per-process GPU time: when no
+open DRM file of game carries such lines (`drm-driver`, `drm-engine-*`, `drm-cycles-*`), and
+readout is off, watcher ends silently before any notice and logs it once per game start.
+GPU driver without engine time, and games that draw on CPU, give no signal either: watcher
+ends without notice (`no frame signal`). Watch ends after 15 minutes. Never sends signal
+to game. Lines go to `steam-arm.log` (`still-working:`).
+
+`STILL_NOTICE` (settings menu Graphics, Still-working notice, or
+`steam-arm-config still-notice on|off|auto`): absent (`auto`) turns it on where display
+mode restore looks for games each second already (sessions where display mode restore
+works), so it adds no work while no game runs; `on` adds one process check per second elsewhere.
+`STEAM_ARM_STILL_WORKING=0|1` decides for one session, `STEAM_ARM_STILL_AFTER=<seconds>`
+sets wait.
+
 ### PhysX install step
 
 Some older Windows titles run legacy PhysX installer on first start, which waits with no
@@ -1654,6 +1724,7 @@ quotes (launcher reads it as shell):
 | `AUTO_BUILD`             | menu        | `off`: no automatic Windows build (absent: on)   |
 | `CPU_NOTICE`             | menu        | `on`: notice on CPU drawing (absent: off)        |
 | `RUN_HISTORY`            | menu        | `on`: run history (absent: off)                  |
+| `STILL_NOTICE`           | menu        | `on\|off`: still-working notice (absent: auto)   |
 | `VERSION`                | setup       | Installer version of last run                    |
 | `ACCOUNT_CREATED`        | setup       | `1` when setup created game account              |
 | `LINGER_SET`             | setup       | `1` when setup turned lingering on               |
@@ -1700,6 +1771,10 @@ Environment for launcher (`steam-arm`) and its helpers:
   session, over saved component setting: `STEAM_ARM_PHYSX_SKIP=0 steam-arm`.
 - `STEAM_ARM_VK_SPOOF_DEBUG=1`: troubleshooting; `vk-spoof` layer prints its decisions
   to game's output.
+- `STEAM_ARM_PERF_STATS=1`: frame pacing readout, same as `steam-arm --perf-stats` (Frame
+  pacing readout).
+- `STEAM_ARM_STILL_WORKING=0` or `=1`: still-working notice off or on for that session;
+  `STEAM_ARM_STILL_AFTER=<seconds>`: wait before notice (default 20).
 - `steam-arm --desktop` and `steam-arm --bigpicture` start client in that interface, or
   restart running client in it. `steam-arm --open steam://...` passes link to running
   client and never starts one. `steam-arm --help` lists launcher options, also as root.
