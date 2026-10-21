@@ -1831,6 +1831,7 @@ auto_build(){ case "$(conf_get AUTO_BUILD)" in off) echo off;; *) echo on;; esac
 cpu_notice(){ case "$(conf_get CPU_NOTICE)" in on) echo on;; *) echo off;; esac; }
 x87_client(){ case "$(conf_get X87_CLIENT)" in on) echo on;; *) echo off;; esac; }
 client_light(){ case "$(conf_get CLIENT_LIGHT)" in off) echo off;; *) echo on;; esac; }
+client_gpu(){ case "$(conf_get CLIENT_GPU)" in on) echo on;; *) echo off;; esac; }
 # Appids whose newest game log says CPU drawing (renderer warning line).
 cpu_apps(){
   local f id l seen=" "
@@ -6174,7 +6175,7 @@ SA_BK_PERSONAL="personal-profiles compat-tools fex mangohud personal-tuning"
 # tuned.conf lines: comments, blank, or appid with tuning keys only
 SA_TUNED_RE='^([0-9]{1,10}( +(gfx=(a|b)|multiblock=(on|off)|gl32=off|glver=3\.3|gl=zink))*)? *(#.*)?$'
 # steam-arm.conf keys restored; every other key is machine state (GPU_FAMILY only when GPU_FAMILY_SET=user).
-SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN X87_CLIENT CLIENT_LIGHT"
+SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN X87_CLIENT CLIENT_LIGHT CLIENT_GPU"
 SA_BK_NAME='[A-Za-z0-9_+-][A-Za-z0-9._+-]*'
 part_label(){ case "$1" in
   setup) echo "Setup choices";; system-profiles) echo "System game profiles";;
@@ -6372,7 +6373,7 @@ rs_val(){ sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -1 | sed "s/^[\"']//; s/[\"
 rs_norm(){ tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -; }
 rs_valid(){ case "$1" in
   GFX_DEFAULT) case "$2" in auto|a|b|forward) return 0;; esac; return 1;;
-  AUTO_BUILD|CPU_NOTICE|RUN_HISTORY|UPDATE_CHECK_ON_OPEN|X87_CLIENT|CLIENT_LIGHT) case "$2" in on|off|"") return 0;; esac; return 1;;
+  AUTO_BUILD|CPU_NOTICE|RUN_HISTORY|UPDATE_CHECK_ON_OPEN|X87_CLIENT|CLIENT_LIGHT|CLIENT_GPU) case "$2" in on|off|"") return 0;; esac; return 1;;
   SNAPSHOT_KEEP) case "$2" in [1-5]|"") return 0;; esac; return 1;;
   GPU_FAMILY) [[ "$2" =~ ^[a-z0-9-]+$ ]];;
   *) [[ "$2" =~ ^[a-z0-9,-]*$ ]];;
@@ -6864,7 +6865,13 @@ On: launcher sets performance on every CPU policy while Steam ARM runs and puts 
 maint_lab(){
   local c
   c=$(ui_menu "Experiment: client window through GPU" "x86 client. Next start of Steam ARM runs the client window with GPU forwarding on and ANGLE (Chromium's GL layer) on Vulkan or GL, for that start only; the start after draws on CPU again. Result (cef-gpu=ok or failed:reason) lands in client home .config/steam-arm/state and in steam-arm --cpu-report. Low odds; the window may stay black for that start.
-Now: $(lab_state)." vulkan "ANGLE on Vulkan at next start" gl "ANGLE on OpenGL at next start (reports GL 4.5)" off "Off (next start draws on CPU)" retry "Remove earlier result (allows another trial)") || return
+Keep after a cef-gpu=ok result: steam-arm-config client-gpu on (Vulkan variant at every start; a failed start turns it off again). Now: $(lab_state); keep: $(client_gpu)." vulkan "ANGLE on Vulkan at next start" gl "ANGLE on OpenGL at next start (reports GL 4.5)" off "Off (next start draws on CPU)" retry "Remove earlier result (allows another trial)" keep "Keep ANGLE on Vulkan at every start (now: $(client_gpu))") || return
+  if [ "$c" = keep ]; then
+    if [ "$(client_gpu)" = on ]; then self_root client-gpu off && ui_msg "Experiment" "Client window through GPU at every start: off. Next start draws on CPU."
+    else ui_yesno "Keep client window through GPU" "Every start of Steam ARM runs the client window with ANGLE on Vulkan (GPU forwarding on for the client window processes). A start the watcher marks failed (GPU process exits, compositing off, client gone) turns this off again and raises a notice. Turn on?" "Turn on" Back || return
+      self_root client-gpu on && ui_msg "Experiment" "Client window through GPU at every start: on."; fi
+    return
+  fi
   self_root lab-cef-gpu "$c" && ui_msg "Experiment" "Client window through GPU: $(lab_state)."
 }
 # Lighter client window on CPUs without Armv8.1 atomics (x86 client): desktop interface and no friends view, on by default.
@@ -7306,6 +7313,9 @@ Commands
                             GPU (ANGLE on Vulkan or GL) at next start only;
                             result cef-gpu=ok|failed:... in client home
                             .config/steam-arm/state; retry removes it
+  client-gpu [on|off]       x86 client: ANGLE on Vulkan at every start (off
+                            by default; a failed start turns it off again);
+                            no value: state and last result
   run-history [on|off]      record start and end of each x86 game start
                             through emulation in client folder
                             (.local/state/steam-arm/runs.log, newest 200
@@ -7409,7 +7419,7 @@ Files
                             CPU_NOTICE=on|off; RUN_HISTORY=on|off;
                             SNAPSHOT_KEEP=1..5; UPDATE_CHECK_ON_OPEN=on|off;
                             X87_CLIENT=on|off; CLIENT_LIGHT=on|off;
-                            CLIENT=arm64|x86 set by
+                            CLIENT_GPU=on|off; CLIENT=arm64|x86 set by
                             setup, Maintenance > Client type)
   $SA_LIB/snapshots  earlier versions (Go back)
   $SA_LIB/history.log  version changes
@@ -7572,6 +7582,15 @@ cli_client_light(){
     on|off) conf_set CLIENT_LIGHT "$1" && echo "client window lighter: $1";;
     '') echo "client window lighter: $(client_light)";;
     *) echo "usage: steam-arm-config client-light [on|off]" >&2; return 2;;
+  esac
+}
+# client-gpu on: Vulkan variant of the experiment at every start; an earlier failed result is cleared so the next start tries.
+cli_client_gpu(){
+  case "${1:-}" in
+    on) conf_set CLIENT_GPU on && { acct_run "$(game_user)" sed -i '/^cef-gpu=failed:/d' "$(arm_home)/.config/steam-arm/state" 2>/dev/null; echo "client window through GPU at every start: on (ANGLE on Vulkan; a failed start turns it off)"; };;
+    off) conf_set CLIENT_GPU off && echo "client window through GPU at every start: off";;
+    '') echo "client window through GPU at every start: $(client_gpu); last result: $(game_read sed -n 's/^cef-gpu=//p' "$(arm_home)/.config/steam-arm/state" 2>/dev/null | tail -1 | grep . || echo none)";;
+    *) echo "usage: steam-arm-config client-gpu [on|off]" >&2; return 2;;
   esac
 }
 # Experiment: client window through the GPU at the next start (one-shot file in the client home, read and removed by the launcher).
@@ -7754,6 +7773,7 @@ main(){
     cpu-report)  shift; cli_cpu_report "$@";;
     x87-client)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_x87_client "$@";;
     client-light) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_client_light "$@";;
+    client-gpu)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_client_gpu "$@";;
     lab-cef-gpu) case "${2:-}" in vulkan|gl|off|retry) cli_root "$@";; esac; shift; cli_lab_cef "$@";;
     run-history) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_run_history "$@";;
     components)  cli_root "$@"; shift; cli_components "$@";;
@@ -10245,7 +10265,8 @@ def prepare(s, armhome):
     d = os.path.join(armhome, ".fex-emu/AppConfig")
     cw = json.loads(json.dumps(APPCFG_WANT))
     if lab:
-        cw["ThunksDB"] = {"GL": 1, "Vulkan": 1}
+        # GL thunk stays off on the Vulkan variant (ANGLE on GL thunk breaks on Chromium's xcb GLX pattern, FEX's own default)
+        cw["ThunksDB"] = {"GL": 0, "Vulkan": 1} if lab == "vulkan" else {"GL": 1, "Vulkan": 1}
     for n in APPCFG:
         f = os.path.join(d, n)
         try:
@@ -10254,7 +10275,7 @@ def prepare(s, armhome):
             warn.append("FEX app setting %s is not valid JSON; left as it is (client window may fail)" % n)
             continue
         if st:
-            print("x86 client: FEX app setting %s: thunks %s, code cache off, logging off%s" % (n, "on (lab, this start)" if lab else "off", " (other keys kept)" if st == "changed" else ""))
+            print("x86 client: FEX app setting %s: thunks %s, code cache off, logging off%s" % (n, ("Vulkan on, GL off (lab, this start)" if lab == "vulkan" else "on (lab, this start)") if lab else "off", " (other keys kept)" if st == "changed" else ""))
     f = os.path.join(d, STEAM_JSON)
     try:
         if appcfg_merge(f, STEAM_BASE):
@@ -14880,9 +14901,14 @@ LABF="$ARMHOME/.config/steam-arm/lab-cef-gpu"; LABST="$ARMHOME/.config/steam-arm
 LAB=${STEAM_ARM_LAB_CEF_GPU:-}
 if [ -z "$LAB" ] && [ -f "$LABF" ]; then LAB=$(head -n 1 "$LABF"); rm -f "$LABF"; fi
 case "$LAB" in vulkan|gl) ;; *) LAB=;; esac
+# CLIENT_GPU=on (steam-arm-config client-gpu on): Vulkan variant at every start; a failed result turns it off until client-gpu on again
+[ -z "$LAB" ] && [ "${CLIENT_GPU:-off}" = on ] && LAB=vulkan
 if [ -n "$LAB" ] && grep -qs '^cef-gpu=failed:' "$LABST"; then
-  lwarn "lab: client window through GPU failed earlier ($(sed -n 's/^cef-gpu=failed://p' "$LABST" | head -n 1)); drawing on CPU; remove the cef-gpu line from $LABST to try again"; LAB=
+  lwarn "lab: client window through GPU failed earlier ($(sed -n 's/^cef-gpu=failed://p' "$LABST" | head -n 1)); drawing on CPU; $([ "${CLIENT_GPU:-off}" = on ] && printf 'steam-arm-config client-gpu on' || printf 'steam-arm-config lab-cef-gpu retry') allows another trial"; LAB=
 fi
+# ANGLE's GPU process adds memory the 4 GB boards may lack
+MEMAV=$(awk '/^MemAvailable:/{print int($2 / 1024)}' /proc/meminfo 2>/dev/null)
+if [ -n "$LAB" ] && [ -n "$MEMAV" ] && [ "$MEMAV" -lt 1536 ]; then lwarn "lab: client window through GPU skipped: $MEMAV MB available, below 1536 MB"; LAB=; fi
 export STEAM_ARM_LAB_CEF_GPU="$LAB"
 if [ -n "$LAB" ]; then
   # ANGLE on GL needs more than the host's OpenGL 3.1 report (lab, this session only)
@@ -15172,7 +15198,7 @@ if [ "$CLIENT" = x86 ]; then
   if [ "$LIGHT" = 1 ] && [ "${STEAM_ARM_FRIENDS:-0}" != 1 ]; then
     XFLAGS="$XFLAGS -nofriendsui"; llog "client window: friends view off (slow emulation class; STEAM_ARM_FRIENDS=1 keeps it)"
   fi
-  [ -n "$LAB" ] && XFLAGS="-steamos3 -cef-force-gpu${XFLAGS#*-cef-disable-gpu-compositing}"
+  [ -n "$LAB" ] && XFLAGS="-steamos3 -cef-force-gpu -cef-disable-gpu-sandbox${XFLAGS#*-cef-disable-gpu-compositing}"
   # lab result: new client log lines only (sizes at start); three GPU process exits within 120 s or compositing off
   # after 60 s = failed, compositing on = ok; recorded as cef-gpu=... in the state file, one notice
   LABOFF="$ARMHOME/.config/steam-arm/lab-offsets"
@@ -15182,8 +15208,8 @@ if [ "$CLIENT" = x86 ]; then
     mkdir -p "${LABST%/*}"; { grep -v '^cef-gpu=' "$LABST" 2>/dev/null; echo "cef-gpu=$1"; } > "$LABST.new" && mv -f "$LABST.new" "$LABST"
     rm -f "$LABOFF"
     case "$1" in
-      ok:*) lnote "lab: client window through GPU (ANGLE $LAB): GPU compositing enabled; details in $LABST and steam-arm --cpu-report" "Steam ARM: experiment";;
-      *) lnote "lab: client window through GPU (ANGLE $LAB) failed (${1#failed:}); next start draws on CPU again; remove the cef-gpu line from $LABST to try again" "Steam ARM: experiment";;
+      ok:*) lnote "lab: client window through GPU (ANGLE $LAB): GPU compositing enabled; details in $LABST and steam-arm --cpu-report$([ "${CLIENT_GPU:-off}" = on ] || printf '; steam-arm-config client-gpu on keeps it')" "Steam ARM: experiment";;
+      *) lnote "lab: client window through GPU (ANGLE $LAB) failed (${1#failed:}); next start draws on CPU again; $([ "${CLIENT_GPU:-off}" = on ] && printf 'steam-arm-config client-gpu on' || printf 'steam-arm-config lab-cef-gpu retry') allows another trial" "Steam ARM: experiment";;
     esac
   }
   lab_watch(){
@@ -15194,11 +15220,11 @@ if [ "$CLIENT" = x86 ]; then
       now=$(( $(date +%s) - t0 ))
       n=$(lab_new | grep -c 'GPU process exited')
       if [ "$n" -ge 3 ] && [ "$now" -le 120 ]; then lab_result "failed:gpu-process-exits"; return 0; fi
-      if lab_new | grep -q 'gpu_compositing: enabled'; then
+      if lab_new | grep -qE 'gpu_compositing[] ]*: *enabled'; then
         lab_new | grep -aiE 'GL_RENDERER|renderer|Loaded GL' | tail -n 3 | while IFS= read -r l; do llog "lab: $l"; done
         lab_result "ok:$LAB"; return 0
       fi
-      [ "$now" -ge 60 ] && lab_new | grep -q 'gpu_compositing: disabled' && { lab_result "failed:compositing-disabled"; return 0; }
+      [ "$now" -ge 60 ] && lab_new | grep -qE 'gpu_compositing[] ]*: *disabled' && { lab_result "failed:compositing-disabled"; return 0; }
       [ "$now" -ge 180 ] && { lab_result "failed:no-result"; return 0; }
       client_running || { lab_result "failed:client-exited"; return 0; }
     done

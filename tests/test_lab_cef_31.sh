@@ -11,25 +11,33 @@ check(){ if eval "$2"; then echo "PASS $1"; pass=$((pass + 1)); else echo "FAIL 
 L=$T/launcher.sh
 awk '/^cat > \/usr\/local\/bin\/steam-arm <<.LAUNCHER.$/{f=1;next} /^LAUNCHER$/{f=0} f' "$INST" > "$L"
 check "L0 launcher parses" "sh -n $L"
-DB=$T/decide.sh; awk '/^# --- Experiment: client window through the GPU for this start only/{f=1} f{print} f && /^# --- x86 client: webhelper flag/{exit}' "$L" | sed '$d' > "$DB"
+DB=$T/decide.sh; awk '/^# --- Experiment: client window through the GPU for this start only/{f=1} f{print} f && /^# --- x86 client: webhelper flag/{exit}' "$L" | sed '$d' | sed "s#/proc/meminfo#$T/meminfo#" > "$DB"
+printf 'MemTotal:        3884000 kB\nMemAvailable:    2500000 kB\n' > "$T/meminfo"
 check "L0b decision block before the per-start prepare call" "grep -q '^export STEAM_ARM_LAB_CEF_GPU=\"\$LAB\"' $DB && [ \$(grep -n '^# --- Experiment: client window' $L | cut -d: -f1) -lt \$(grep -n 'x86client.py prepare \"\$S\" \"\$ARMHOME\" 2>&1); xrc=' $L | head -1 | cut -d: -f1) ]"
 dec(){ # CLIENT env(-) onefile(-) state(-)
   rm -rf "$T/d"; mkdir -p "$T/d/.config/steam-arm"; rm -f "$T/d.log"
   [ "$3" = - ] || echo "$3" > "$T/d/.config/steam-arm/lab-cef-gpu"; [ "$4" = - ] || echo "cef-gpu=$4" > "$T/d/.config/steam-arm/state"
-  ( CLIENT=$1 ARMHOME=$T/d LOG=$T/d.log; unset STEAM_ARM_LAB_CEF_GPU MESA_GL_VERSION_OVERRIDE MESA_GLSL_VERSION_OVERRIDE; [ "$2" = - ] || export STEAM_ARM_LAB_CEF_GPU=$2
+  ( CLIENT=$1 ARMHOME=$T/d LOG=$T/d.log; unset STEAM_ARM_LAB_CEF_GPU MESA_GL_VERSION_OVERRIDE MESA_GLSL_VERSION_OVERRIDE CLIENT_GPU; [ "$2" = - ] || export STEAM_ARM_LAB_CEF_GPU=$2; [ -z "${5:-}" ] || CLIENT_GPU=$5
     lwarn(){ echo "$*" >> "$LOG"; }; . "$DB"; echo "LAB=[$LAB] env=[$STEAM_ARM_LAB_CEF_GPU] gl=[${MESA_GL_VERSION_OVERRIDE:-}] file=$([ -f "$T/d/.config/steam-arm/lab-cef-gpu" ] && echo kept || echo gone)" ) 2>&1; cat "$T/d.log" 2>/dev/null; }
 OUT=$(dec x86 vulkan - -); check "D1 environment vulkan: LAB=vulkan exported, logged with state path" "grep -qx 'LAB=\[vulkan\] env=\[vulkan\] gl=\[\] file=gone' <<<\"\$OUT\" && grep -q '^lab: client window through GPU (ANGLE vulkan) for this start; result recorded in .*/state (cef-gpu=...)$' <<<\"\$OUT\""
 OUT=$(dec x86 gl - -); check "D2 environment gl: GL 4.5 report for the session" "grep -qx 'LAB=\[gl\] env=\[gl\] gl=\[4.5\] file=gone' <<<\"\$OUT\""
 OUT=$(dec x86 - gl -); check "D3 one-shot file gl: used once and removed" "grep -qx 'LAB=\[gl\] env=\[gl\] gl=\[4.5\] file=gone' <<<\"\$OUT\""
 OUT=$(dec x86 - - -); check "D4 nothing armed: LAB empty, environment exported empty" "grep -qx 'LAB=\[\] env=\[\] gl=\[\] file=gone' <<<\"\$OUT\" && [ -z \"\$(grep '^lab' <<<\"\$OUT\")\" ]"
-OUT=$(dec x86 vulkan - failed:gpu-process-exits); check "D5 earlier failed result: software, reason logged with retry hint" "grep -qx 'LAB=\[\] env=\[\] gl=\[\] file=gone' <<<\"\$OUT\" && grep -q '^lab: client window through GPU failed earlier (gpu-process-exits); drawing on CPU; remove the cef-gpu line from .*/state to try again$' <<<\"\$OUT\""
+OUT=$(dec x86 vulkan - failed:gpu-process-exits); check "D5 earlier failed result: software, reason logged with retry hint" "grep -qx 'LAB=\[\] env=\[\] gl=\[\] file=gone' <<<\"\$OUT\" && grep -q '^lab: client window through GPU failed earlier (gpu-process-exits); drawing on CPU; steam-arm-config lab-cef-gpu retry allows another trial$' <<<\"\$OUT\""
+OUT=$(dec x86 - - - on); check "D8 CLIENT_GPU=on: Vulkan variant armed without file or environment" "grep -qx 'LAB=\[vulkan\] env=\[vulkan\] gl=\[\] file=gone' <<<\"\$OUT\""
+OUT=$(dec x86 - gl - on); check "D8b one-shot file wins over CLIENT_GPU=on" "grep -qx 'LAB=\[gl\] env=\[gl\] gl=\[4.5\] file=gone' <<<\"\$OUT\""
+OUT=$(dec x86 - - failed:compositing-disabled on); check "D8c CLIENT_GPU=on with an earlier failed result: software, hint names client-gpu on" "grep -qx 'LAB=\[\] env=\[\] gl=\[\] file=gone' <<<\"\$OUT\" && grep -q 'drawing on CPU; steam-arm-config client-gpu on allows another trial$' <<<\"\$OUT\""
+OUT=$(dec x86 - - - off); check "D8d CLIENT_GPU=off: nothing armed" "grep -qx 'LAB=\[\] env=\[\] gl=\[\] file=gone' <<<\"\$OUT\""
+printf 'MemTotal:        3884000 kB\nMemAvailable:     900000 kB\n' > "$T/meminfo"
+OUT=$(dec x86 vulkan - -); check "D9 MemAvailable below 1536 MB: trial skipped with the figure" "grep -qx 'LAB=\[\] env=\[\] gl=\[\] file=gone' <<<\"\$OUT\" && grep -q '^lab: client window through GPU skipped: 878 MB available, below 1536 MB$' <<<\"\$OUT\""
+printf 'MemTotal:        3884000 kB\nMemAvailable:    2500000 kB\n' > "$T/meminfo"
 OUT=$(dec x86 vulkan - ok:vulkan); check "D6 earlier ok result: trial allowed again" "grep -qx 'LAB=\[vulkan\] env=\[vulkan\] gl=\[\] file=gone' <<<\"\$OUT\""
 OUT=$(dec x86 bogus - -); check "D7 unknown value: ignored" "grep -qx 'LAB=\[\] env=\[\] gl=\[\] file=gone' <<<\"\$OUT\""
 # flags in the x86 block
 XF=$T/xf.sh; awk '/^  XFLAGS="-steamos3 -cef-disable-gpu -cef-disable-gpu-compositing"$/{f=1} f{print} f && /^  \[ -n "\$LAB" \] && XFLAGS=/{exit}' "$L" > "$XF"
 xf(){ ( LIGHT=$1 LAB=$2; unset STEAM_ARM_FRIENDS; LOG=/dev/null; llog(){ :; }; . "$XF"; echo "XFLAGS=[$XFLAGS]" ) 2>&1; }
-OUT=$(xf 0 vulkan); check "F1 lab: -cef-force-gpu in place of the disable flags" "grep -qx 'XFLAGS=\[-steamos3 -cef-force-gpu\]' <<<\"\$OUT\""
-OUT=$(xf 1 gl); check "F2 lab on the slow class: friends view flag kept" "grep -qx 'XFLAGS=\[-steamos3 -cef-force-gpu -nofriendsui\]' <<<\"\$OUT\""
+OUT=$(xf 0 vulkan); check "F1 lab: -cef-force-gpu and GPU sandbox off in place of the disable flags" "grep -qx 'XFLAGS=\[-steamos3 -cef-force-gpu -cef-disable-gpu-sandbox\]' <<<\"\$OUT\""
+OUT=$(xf 1 gl); check "F2 lab on the slow class: friends view flag kept" "grep -qx 'XFLAGS=\[-steamos3 -cef-force-gpu -cef-disable-gpu-sandbox -nofriendsui\]' <<<\"\$OUT\""
 OUT=$(xf 0 ""); check "F3 no lab: flags as before" "grep -qx 'XFLAGS=\[-steamos3 -cef-disable-gpu -cef-disable-gpu-compositing\]' <<<\"\$OUT\""
 # watcher on synthetic logs
 WB=$T/watch.sh; awk '/^  LABOFF="\$ARMHOME\/.config\/steam-arm\/lab-offsets"$/{f=1} f{print} f && /^  }$/{c++; if (c == 3) exit}' "$L" > "$WB"
@@ -49,7 +57,11 @@ OUT=$(wrun vulkan "GPU process exited|GPU process exited|GPU process exited")
 check "W1 three new GPU process exits within 120 s: failed:gpu-process-exits, old lines not counted, one notice" \
   "grep -qx 'cef-gpu=failed:gpu-process-exits' <<<\"\$OUT\" && grep -q '^NOTE lab: client window through GPU (ANGLE vulkan) failed (gpu-process-exits); next start draws on CPU again' <<<\"\$OUT\" && [ \$(grep -c '^NOTE' <<<\"\$OUT\") = 1 ]"
 OUT=$(wrun gl "-|GL_RENDERER: V3D 4.2|gpu_compositing: enabled")
-check "W2 compositing enabled: ok:gl, renderer line logged, notice names --cpu-report" "grep -qx 'cef-gpu=ok:gl' <<<\"\$OUT\" && grep -q '^lab: GL_RENDERER: V3D 4.2' <<<\"\$OUT\" && grep -q 'GPU compositing enabled; details in .* and steam-arm --cpu-report' <<<\"\$OUT\""
+check "W2 compositing enabled: ok:gl, renderer line logged, notice names --cpu-report and client-gpu on" "grep -qx 'cef-gpu=ok:gl' <<<\"\$OUT\" && grep -q '^lab: GL_RENDERER: V3D 4.2' <<<\"\$OUT\" && grep -q 'GPU compositing enabled; details in .* and steam-arm --cpu-report; steam-arm-config client-gpu on keeps it' <<<\"\$OUT\""
+OUT=$(wrun vulkan "-|[2026-10-20 10:00:00]                 [ GL_RENDERER ]: ANGLE (Broadcom, V3D 4.2)|[2026-10-20 10:00:00]                     [ gpu_compositing ]: enabled")
+check "W2b Chromium's own line form ([ gpu_compositing ]: enabled): ok:vulkan" "grep -qx 'cef-gpu=ok:vulkan' <<<\"\$OUT\""
+OUT=$(CLIENT_GPU=on; export CLIENT_GPU; wrun vulkan "GPU process exited|GPU process exited|GPU process exited")
+check "W2c failed with CLIENT_GPU=on: notice names client-gpu on for another trial, no keep hint" "grep -q 'failed (gpu-process-exits); next start draws on CPU again; steam-arm-config client-gpu on allows another trial' <<<\"\$OUT\""
 ev=""; for i in $(seq 1 13); do ev="$ev-|"; done
 OUT=$(wrun vulkan "gpu_compositing: disabled|${ev}-")
 check "W3 compositing disabled, still so after 60 s: failed:compositing-disabled (not before 60 s)" "grep -qx 'cef-gpu=failed:compositing-disabled' <<<\"\$OUT\""
@@ -93,6 +105,18 @@ mkdir -p "$AH/.config/steam-arm"; printf 'cef-gpu=failed:gpu-process-exits\n' > 
 cli lab-cef-gpu status; check "M4 status shows last result" "grep -q 'last result: failed:gpu-process-exits' <<<\"\$OUT\""
 cli lab-cef-gpu retry; check "M5 retry removes the result line" "[ $RC = 0 ] && ! grep -q cef-gpu $AH/.config/steam-arm/state"
 cli lab-cef-gpu maybe; check "M6 bad value: usage" "[ $RC = 2 ]"
+# client-gpu: setting key, failed result cleared by on, lab screen keep item
+printf 'cef-gpu=failed:no-result\n' > "$AH/.config/steam-arm/state"
+cli client-gpu; check "K1 CLI state: off, last result shown" "[ $RC = 0 ] && grep -q '^client window through GPU at every start: off; last result: failed:no-result$' <<<\"\$OUT\""
+cli client-gpu on; check "K2 CLI on: CLIENT_GPU=on written, failed result cleared, line names Vulkan and the turn-off rule" "[ $RC = 0 ] && grep -qx 'CLIENT_GPU=on' '$CONF' && ! grep -q cef-gpu $AH/.config/steam-arm/state && grep -q 'on (ANGLE on Vulkan; a failed start turns it off)' <<<\"\$OUT\""
+cli client-gpu off; check "K3 CLI off" "[ $RC = 0 ] && grep -qx 'CLIENT_GPU=off' '$CONF'"
+cli client-gpu maybe; check "K4 bad value: usage" "[ $RC = 2 ]"
+ui menu_maintenance 21 keep yes
+check "K5 lab screen: keep item, confirmation names the turn-off rule, CLIENT_GPU=on" "grep -q 'keep Keep ANGLE on Vulkan at every start (now: off)' <<<\"\$OUT\" && grep -q '^YESNO Keep client window through GPU|' <<<\"\$OUT\" && grep -q 'turns this off again' <<<\"\$OUT\" && grep -qx 'CLIENT_GPU=on' '$CONF' && grep -q '^MSG Experiment|Client window through GPU at every start: on.' <<<\"\$OUT\""
+ui menu_maintenance 21 keep
+check "K6 lab screen keep with on: turned off without question" "grep -qx 'CLIENT_GPU=off' '$CONF' && grep -q '^MSG Experiment|Client window through GPU at every start: off.' <<<\"\$OUT\""
+check "K7 CLIENT_GPU in backup key list and value rule, --help lists client-gpu and CLIENT_GPU" "grep -q '^SA_BK_KEYS=.* CLIENT_LIGHT CLIENT_GPU' '$CFG' && grep -q 'X87_CLIENT|CLIENT_LIGHT|CLIENT_GPU) case \"\$2\" in on|off|\"\") return 0;; esac; return 1;;' '$CFG'"
+cli --help; check "K8 --help lists client-gpu and CLIENT_GPU" "grep -q '^  client-gpu \[on|off\]' <<<\"\$OUT\" && grep -q 'CLIENT_GPU=on|off' <<<\"\$OUT\""
 sed -i 's/^CLIENT=x86$/CLIENT=arm64/' "$CONF"; ui menu_maintenance BACK
 check "M7 native client: no item 21" "! grep -q ' 21 Experiment' <<<\"\$OUT\""
 ui menu_help 2 BACK

@@ -288,14 +288,15 @@ check("P15 lab vulkan: wrap line gets transport flag plus ANGLE Vulkan flags, sh
       b'"${DIR}/steamwebhelper_sniper_wrap.sh" "$@" --enable-features=NetworkServiceInProcess2 --use-gl=angle --use-angle=vulkan --ignore-gpu-blocklist --enable-gpu-rasterization\n' in web
       and read(os.path.join(s2, "ubuntu12_64/steamwebhelper.sh.steam-arm-sha")).decode().strip() == __import__("hashlib").sha256(web).hexdigest()
       and "client window through GPU (ANGLE vulkan), this start" in outl, outl)
-check("P15b lab: client FEX app settings thunks on, code cache off",
-      all(json.load(open(os.path.join(a2, ".fex-emu/AppConfig", n))) == {"ThunksDB": {"GL": 1, "Vulkan": 1}, "Config": {"DiskCache": "0", "SilentLog": "1"}} for n in ("steamwebhelper.json", "exe.json"))
-      and "thunks on (lab, this start)" in outl, outl)
+check("P15b lab vulkan: client FEX app settings Vulkan thunk on, GL thunk off, code cache off",
+      all(json.load(open(os.path.join(a2, ".fex-emu/AppConfig", n))) == {"ThunksDB": {"GL": 0, "Vulkan": 1}, "Config": {"DiskCache": "0", "SilentLog": "1"}} for n in ("steamwebhelper.json", "exe.json"))
+      and "thunks Vulkan on, GL off (lab, this start)" in outl, outl)
 rc, outl2 = quiet(x.prepare, s2, a2)
 check("P15c lab prepare again: idempotent", rc == 0 and outl2 == "", outl2)
 os.environ["STEAM_ARM_LAB_CEF_GPU"] = "gl"
 quiet(x.prepare, s2, a2)
-check("P15d lab gl replaces the vulkan flags", b' --use-angle=gl --ignore-gpu-blocklist' in read(os.path.join(s2, "ubuntu12_64/steamwebhelper.sh")) and b"use-angle=vulkan" not in read(os.path.join(s2, "ubuntu12_64/steamwebhelper.sh")))
+check("P15d lab gl replaces the vulkan flags, both thunks on", b' --use-angle=gl --ignore-gpu-blocklist' in read(os.path.join(s2, "ubuntu12_64/steamwebhelper.sh")) and b"use-angle=vulkan" not in read(os.path.join(s2, "ubuntu12_64/steamwebhelper.sh"))
+      and all(json.load(open(os.path.join(a2, ".fex-emu/AppConfig", n)))["ThunksDB"] == {"GL": 1, "Vulkan": 1} for n in ("steamwebhelper.json", "exe.json")))
 del os.environ["STEAM_ARM_LAB_CEF_GPU"]
 rc, outl3 = quiet(x.prepare, s2, a2)
 check("P16 next start without lab: base line back (transport flag only), thunks off, logged",

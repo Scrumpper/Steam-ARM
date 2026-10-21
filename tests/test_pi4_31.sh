@@ -197,7 +197,7 @@ cli x87-client; check "M5 CLI state line" "[ $RC = 0 ] && grep -q '^reduced x87 
 cli x87-client on; check "M5b CLI on writes key" "[ $RC = 0 ] && grep -qx 'X87_CLIENT=on' '$CONF'"
 cli x87-client maybe; check "M5c CLI bad value: usage, status 2" "[ $RC = 2 ]"
 cli --help; check "M6 --help lists x87-client and X87_CLIENT" "grep -q '^  x87-client \\[on|off\\]' <<<\"\$OUT\" && grep -q 'X87_CLIENT=on|off' <<<\"\$OUT\""
-check "M7 X87_CLIENT and CLIENT_LIGHT in backup key list and value rule" "grep -q '^SA_BK_KEYS=.* X87_CLIENT CLIENT_LIGHT\"' '$CFG' && grep -q 'UPDATE_CHECK_ON_OPEN|X87_CLIENT|CLIENT_LIGHT) case \"\$2\" in on|off|\"\") return 0;; esac; return 1;;' '$CFG'"
+check "M7 X87_CLIENT and CLIENT_LIGHT in backup key list and value rule" "grep -q '^SA_BK_KEYS=.* X87_CLIENT CLIENT_LIGHT' '$CFG' && grep -q 'UPDATE_CHECK_ON_OPEN|X87_CLIENT|CLIENT_LIGHT' '$CFG' && grep -q 'CLIENT_LIGHT|CLIENT_GPU) case \"\$2\" in on|off|\"\") return 0;; esac; return 1;;' '$CFG'"
 
 # launcher: GPU forwarding notice on Pi platforms when the copied FEX config has thunks off
 TN=$T/tn.sh; awk '/^# GPU forwarding libraries: ThunksDB GL or Vulkan 0 in the copied FEX config/{f=1} f{print} f && /^esac$/{exit}' "$L" > "$TN"
