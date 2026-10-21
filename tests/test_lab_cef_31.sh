@@ -35,10 +35,15 @@ OUT=$(dec x86 vulkan - ok:vulkan); check "D6 earlier ok result: trial allowed ag
 OUT=$(dec x86 bogus - -); check "D7 unknown value: ignored" "grep -qx 'LAB=\[\] env=\[\] gl=\[\] file=gone' <<<\"\$OUT\""
 # flags in the x86 block
 XF=$T/xf.sh; awk '/^  XFLAGS="-steamos3 -cef-disable-gpu -cef-disable-gpu-compositing"$/{f=1} f{print} f && /^  \[ -n "\$LAB" \] && XFLAGS=/{exit}' "$L" > "$XF"
-xf(){ ( LIGHT=$1 LAB=$2; unset STEAM_ARM_FRIENDS; LOG=/dev/null; llog(){ :; }; . "$XF"; echo "XFLAGS=[$XFLAGS]" ) 2>&1; }
+xf(){ ( LIGHT=$1 LAB=$2; unset STEAM_ARM_FRIENDS CEF_HANG_KILLS; [ -z "${3:-}" ] || CEF_HANG_KILLS=$3; LOG=/dev/null; llog(){ :; }; . "$XF"; echo "XFLAGS=[$XFLAGS]" ) 2>&1; }
 OUT=$(xf 0 vulkan); check "F1 lab: -cef-force-gpu and GPU sandbox off in place of the disable flags" "grep -qx 'XFLAGS=\[-steamos3 -cef-force-gpu -cef-disable-gpu-sandbox\]' <<<\"\$OUT\""
-OUT=$(xf 1 gl); check "F2 lab on the slow class: friends view flag kept" "grep -qx 'XFLAGS=\[-steamos3 -cef-force-gpu -cef-disable-gpu-sandbox -nofriendsui\]' <<<\"\$OUT\""
+OUT=$(xf 1 gl); check "F2 lab on the slow class: friends view and site isolation flags kept" "grep -qx 'XFLAGS=\[-steamos3 -cef-force-gpu -cef-disable-gpu-sandbox -nofriendsui -cef-disable-site-isolation\]' <<<\"\$OUT\""
 OUT=$(xf 0 ""); check "F3 no lab: flags as before" "grep -qx 'XFLAGS=\[-steamos3 -cef-disable-gpu -cef-disable-gpu-compositing\]' <<<\"\$OUT\""
+OUT=$(xf 1 ""); check "F4 slow class (LIGHT=1): friends view off and site isolation off" "grep -qx 'XFLAGS=\[-steamos3 -cef-disable-gpu -cef-disable-gpu-compositing -nofriendsui -cef-disable-site-isolation\]' <<<\"\$OUT\""
+OUT=$(STEAM_ARM_FRIENDS=1; export STEAM_ARM_FRIENDS; ( LIGHT=1 LAB=; LOG=/dev/null; llog(){ :; }; . "$XF"; echo "XFLAGS=[$XFLAGS]" ) 2>&1); check "F4b STEAM_ARM_FRIENDS=1 keeps the friends view, site isolation still off" "grep -qx 'XFLAGS=\[-steamos3 -cef-disable-gpu -cef-disable-gpu-compositing -cef-disable-site-isolation\]' <<<\"\$OUT\""
+OUT=$(xf 0 "" off); check "F5 CEF_HANG_KILLS=off: hang timeouts and renderer restarts off" "grep -qx 'XFLAGS=\[-steamos3 -cef-disable-gpu -cef-disable-gpu-compositing -cef-disable-hang-timeouts -cef-disable-renderer-restart\]' <<<\"\$OUT\""
+OUT=$(xf 0 "" on); check "F5b CEF_HANG_KILLS=on: Chromium behaviour, no flag" "grep -qx 'XFLAGS=\[-steamos3 -cef-disable-gpu -cef-disable-gpu-compositing\]' <<<\"\$OUT\""
+OUT=$(xf 1 vulkan off); check "F6 all together: lab, light, hang kills off" "grep -qx 'XFLAGS=\[-steamos3 -cef-force-gpu -cef-disable-gpu-sandbox -nofriendsui -cef-disable-site-isolation -cef-disable-hang-timeouts -cef-disable-renderer-restart\]' <<<\"\$OUT\""
 # watcher on synthetic logs
 WB=$T/watch.sh; awk '/^  LABOFF="\$ARMHOME\/.config\/steam-arm\/lab-offsets"$/{f=1} f{print} f && /^  }$/{c++; if (c == 3) exit}' "$L" > "$WB"
 check "W0 watcher functions extracted (lab_new, lab_result, lab_watch), started beside the restart watcher" "grep -q '^  lab_watch(){' $WB && grep -q '^  lab_new(){' $WB && grep -q '^  lab_watch </dev/null >/dev/null 2>&1 &$' $L"
@@ -115,8 +120,21 @@ ui menu_maintenance 21 keep yes
 check "K5 lab screen: keep item, confirmation names the turn-off rule, CLIENT_GPU=on" "grep -q 'keep Keep ANGLE on Vulkan at every start (now: off)' <<<\"\$OUT\" && grep -q '^YESNO Keep client window through GPU|' <<<\"\$OUT\" && grep -q 'turns this off again' <<<\"\$OUT\" && grep -qx 'CLIENT_GPU=on' '$CONF' && grep -q '^MSG Experiment|Client window through GPU at every start: on.' <<<\"\$OUT\""
 ui menu_maintenance 21 keep
 check "K6 lab screen keep with on: turned off without question" "grep -qx 'CLIENT_GPU=off' '$CONF' && grep -q '^MSG Experiment|Client window through GPU at every start: off.' <<<\"\$OUT\""
-check "K7 CLIENT_GPU in backup key list and value rule, --help lists client-gpu and CLIENT_GPU" "grep -q '^SA_BK_KEYS=.* CLIENT_LIGHT CLIENT_GPU' '$CFG' && grep -q 'X87_CLIENT|CLIENT_LIGHT|CLIENT_GPU) case \"\$2\" in on|off|\"\") return 0;; esac; return 1;;' '$CFG'"
+check "K7 CLIENT_GPU in backup key list and value rule, --help lists client-gpu and CLIENT_GPU" "grep -q '^SA_BK_KEYS=.* CLIENT_LIGHT CLIENT_GPU' '$CFG' && grep -q 'X87_CLIENT|CLIENT_LIGHT|CLIENT_GPU[|)].*case \"\$2\" in on|off|\"\") return 0;; esac; return 1;;' '$CFG'"
 cli --help; check "K8 --help lists client-gpu and CLIENT_GPU" "grep -q '^  client-gpu \[on|off\]' <<<\"\$OUT\" && grep -q 'CLIENT_GPU=on|off' <<<\"\$OUT\""
+# cef-hang-kills: item 23, screen, CLI, key
+sed -i 's/^CLIENT=arm64$/CLIENT=x86/' "$CONF"
+ui menu_maintenance 23 yes
+check "H1 Maintenance item 23 (x86 client, now: on); screen names both flags, the restart loop verdict and the hung-stays-hung cost; Turn off writes CEF_HANG_KILLS=off" \
+  "grep -q ' 23 Client window: hung view kills and restarts (now: on)' <<<\"\$OUT\" && grep -q 'cef-disable-hang-timeouts -cef-disable-renderer-restart' <<<\"\$OUT\" && grep -q 'restart loop' <<<\"\$OUT\" && grep -q 'stays hung' <<<\"\$OUT\" && grep -qx 'CEF_HANG_KILLS=off' '$CONF' && grep -q '^MSG Maintenance|Client window: hung view kills and restarts: off. Applies from next start of Steam ARM.' <<<\"\$OUT\""
+ui menu_maintenance 23 yes; check "H2 Turn on again" "grep -qx 'CEF_HANG_KILLS=on' '$CONF'"
+cli cef-hang-kills; check "H3 CLI state" "[ $RC = 0 ] && grep -q '^client window hung view kills and restarts: on$' <<<\"\$OUT\""
+cli cef-hang-kills off; check "H3b CLI off writes key" "[ $RC = 0 ] && grep -qx 'CEF_HANG_KILLS=off' '$CONF'"
+cli cef-hang-kills maybe; check "H3c bad value: usage" "[ $RC = 2 ]"
+cli --help; check "H4 --help lists cef-hang-kills and CEF_HANG_KILLS" "grep -q '^  cef-hang-kills \[on|off\]' <<<\"\$OUT\" && grep -q 'CEF_HANG_KILLS=on|off' <<<\"\$OUT\""
+check "H5 CEF_HANG_KILLS in backup key list and value rule" "grep -q '^SA_BK_KEYS=.* CLIENT_GPU CEF_HANG_KILLS\"' '$CFG' && grep -q 'CLIENT_GPU|CEF_HANG_KILLS) case \"\$2\" in on|off|\"\") return 0;; esac; return 1;;' '$CFG'"
+sed -i 's/^CLIENT=x86$/CLIENT=arm64/' "$CONF"; ui menu_maintenance BACK
+check "H6 native client: no item 23" "! grep -q ' 23 Client window' <<<\"\$OUT\""
 sed -i 's/^CLIENT=x86$/CLIENT=arm64/' "$CONF"; ui menu_maintenance BACK
 check "M7 native client: no item 21" "! grep -q ' 21 Experiment' <<<\"\$OUT\""
 ui menu_help 2 BACK

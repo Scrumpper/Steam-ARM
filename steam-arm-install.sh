@@ -1832,6 +1832,7 @@ cpu_notice(){ case "$(conf_get CPU_NOTICE)" in on) echo on;; *) echo off;; esac;
 x87_client(){ case "$(conf_get X87_CLIENT)" in on) echo on;; *) echo off;; esac; }
 client_light(){ case "$(conf_get CLIENT_LIGHT)" in off) echo off;; *) echo on;; esac; }
 client_gpu(){ case "$(conf_get CLIENT_GPU)" in on) echo on;; *) echo off;; esac; }
+cef_hang_kills(){ case "$(conf_get CEF_HANG_KILLS)" in off) echo off;; *) echo on;; esac; }
 # Appids whose newest game log says CPU drawing (renderer warning line).
 cpu_apps(){
   local f id l seen=" "
@@ -6175,7 +6176,7 @@ SA_BK_PERSONAL="personal-profiles compat-tools fex mangohud personal-tuning"
 # tuned.conf lines: comments, blank, or appid with tuning keys only
 SA_TUNED_RE='^([0-9]{1,10}( +(gfx=(a|b)|multiblock=(on|off)|gl32=off|glver=3\.3|gl=zink))*)? *(#.*)?$'
 # steam-arm.conf keys restored; every other key is machine state (GPU_FAMILY only when GPU_FAMILY_SET=user).
-SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN X87_CLIENT CLIENT_LIGHT CLIENT_GPU"
+SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN X87_CLIENT CLIENT_LIGHT CLIENT_GPU CEF_HANG_KILLS"
 SA_BK_NAME='[A-Za-z0-9_+-][A-Za-z0-9._+-]*'
 part_label(){ case "$1" in
   setup) echo "Setup choices";; system-profiles) echo "System game profiles";;
@@ -6373,7 +6374,7 @@ rs_val(){ sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -1 | sed "s/^[\"']//; s/[\"
 rs_norm(){ tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -; }
 rs_valid(){ case "$1" in
   GFX_DEFAULT) case "$2" in auto|a|b|forward) return 0;; esac; return 1;;
-  AUTO_BUILD|CPU_NOTICE|RUN_HISTORY|UPDATE_CHECK_ON_OPEN|X87_CLIENT|CLIENT_LIGHT|CLIENT_GPU) case "$2" in on|off|"") return 0;; esac; return 1;;
+  AUTO_BUILD|CPU_NOTICE|RUN_HISTORY|UPDATE_CHECK_ON_OPEN|X87_CLIENT|CLIENT_LIGHT|CLIENT_GPU|CEF_HANG_KILLS) case "$2" in on|off|"") return 0;; esac; return 1;;
   SNAPSHOT_KEEP) case "$2" in [1-5]|"") return 0;; esac; return 1;;
   GPU_FAMILY) [[ "$2" =~ ^[a-z0-9-]+$ ]];;
   *) [[ "$2" =~ ^[a-z0-9,-]*$ ]];;
@@ -6812,6 +6813,7 @@ menu_maintenance(){
     [ "$(client_type)" = x86 ] && ! cpu_has_lse && up+=(20 "Client window: lighter (now: $(client_light))")
     [ "$(client_type)" = x86 ] && up+=(21 "Experiment: client window through GPU at next start")
     gov_applies && up+=(22 "CPU governor while Steam runs (now: $(gov_state))")
+    [ "$(client_type)" = x86 ] && up+=(23 "Client window: hung view kills and restarts (now: $(cef_hang_kills))")
     c=$(ui_menu "Maintenance" "Keep Steam ARM working." --default "$c" \
       1 "Update / Repair (run setup again, same parts)" 2 "View logs" \
       3 "Hardware report (for a compatibility report)" 4 "Free /dev/shm now" \
@@ -6847,6 +6849,7 @@ Setup reinstalls packages, launcher, helpers and rules for those parts. Games, s
       20) maint_light;;
       21) maint_lab;;
       22) maint_governor;;
+      23) maint_hangkills;;
     esac
   done
 }
@@ -6879,13 +6882,27 @@ maint_light(){
   local st t; st=$(client_light)
   t="Client window: lighter: $st
 
-x86 client on CPU without Armv8.1 atomics. On: client opens its desktop window (Deck interface is one animated page drawn on CPU through emulation) and starts without friends view (one browser view fewer). steam-arm --bigpicture opens Deck interface for one start; STEAM_ARM_FRIENDS=1 keeps friends view. Off: Deck interface and friends view as on other boards. Applies from next start of Steam ARM."
+x86 client on CPU without Armv8.1 atomics. On: client opens its desktop window (Deck interface is one animated page drawn on CPU through emulation), starts without friends view (one browser view fewer) and with site isolation off (one renderer process for store and library instead of one per site). steam-arm --bigpicture opens Deck interface for one start; STEAM_ARM_FRIENDS=1 keeps friends view. Off: Deck interface, friends view and per-site renderers as on other boards. Applies from next start of Steam ARM."
   if [ "$st" = on ]; then
     ui_yesno "Client window: lighter" "$t" "Turn off" Back defaultno || return
     self_root client-light off && ui_msg "Maintenance" "Client window: lighter: off. Applies from next start of Steam ARM."
   else
     ui_yesno "Client window: lighter" "$t" "Turn on" Back || return
     self_root client-light on && ui_msg "Maintenance" "Client window: lighter: on. Applies from next start of Steam ARM."
+  fi
+}
+# Chromium's hang timeouts and renderer restarts for the client window (x86 client), on by default (Chromium behaviour).
+maint_hangkills(){
+  local st t; st=$(cef_hang_kills)
+  t="Client window: hung view kills and restarts: $st
+
+x86 client. On (default): Chromium ends a view it holds for hung and starts it again; under slow emulation a busy view can be taken for hung, which shows as repeated restarts (steam-arm --cpu-report, verdict: restart loop). Off: client flags -cef-disable-hang-timeouts -cef-disable-renderer-restart; a view that hangs stays hung until Steam is restarted. Turn off only after the report names a restart loop. Applies from next start of Steam ARM."
+  if [ "$st" = on ]; then
+    ui_yesno "Hung view kills" "$t" "Turn off" Back defaultno || return
+    self_root cef-hang-kills off && ui_msg "Maintenance" "Client window: hung view kills and restarts: off. Applies from next start of Steam ARM."
+  else
+    ui_yesno "Hung view kills" "$t" "Turn on" Back || return
+    self_root cef-hang-kills on && ui_msg "Maintenance" "Client window: hung view kills and restarts: on. Applies from next start of Steam ARM."
   fi
 }
 # Reduced x87 precision for the 32-bit x86 client binary (FEX X87ReducedPrecision in steam.json), off by default.
@@ -7316,6 +7333,10 @@ Commands
   client-gpu [on|off]       x86 client: ANGLE on Vulkan at every start (off
                             by default; a failed start turns it off again);
                             no value: state and last result
+  cef-hang-kills [on|off]   x86 client: Chromium's kills and restarts of
+                            views it holds for hung (on by default); off
+                            after --cpu-report names a restart loop;
+                            no value: state
   run-history [on|off]      record start and end of each x86 game start
                             through emulation in client folder
                             (.local/state/steam-arm/runs.log, newest 200
@@ -7419,7 +7440,8 @@ Files
                             CPU_NOTICE=on|off; RUN_HISTORY=on|off;
                             SNAPSHOT_KEEP=1..5; UPDATE_CHECK_ON_OPEN=on|off;
                             X87_CLIENT=on|off; CLIENT_LIGHT=on|off;
-                            CLIENT_GPU=on|off; CLIENT=arm64|x86 set by
+                            CLIENT_GPU=on|off; CEF_HANG_KILLS=on|off;
+                            CLIENT=arm64|x86 set by
                             setup, Maintenance > Client type)
   $SA_LIB/snapshots  earlier versions (Go back)
   $SA_LIB/history.log  version changes
@@ -7582,6 +7604,13 @@ cli_client_light(){
     on|off) conf_set CLIENT_LIGHT "$1" && echo "client window lighter: $1";;
     '') echo "client window lighter: $(client_light)";;
     *) echo "usage: steam-arm-config client-light [on|off]" >&2; return 2;;
+  esac
+}
+cli_cef_hang_kills(){
+  case "${1:-}" in
+    on|off) conf_set CEF_HANG_KILLS "$1" && echo "client window hung view kills and restarts: $1";;
+    '') echo "client window hung view kills and restarts: $(cef_hang_kills)";;
+    *) echo "usage: steam-arm-config cef-hang-kills [on|off]" >&2; return 2;;
   esac
 }
 # client-gpu on: Vulkan variant of the experiment at every start; an earlier failed result is cleared so the next start tries.
@@ -7774,6 +7803,7 @@ main(){
     x87-client)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_x87_client "$@";;
     client-light) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_client_light "$@";;
     client-gpu)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_client_gpu "$@";;
+    cef-hang-kills) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_cef_hang_kills "$@";;
     lab-cef-gpu) case "${2:-}" in vulkan|gl|off|retry) cli_root "$@";; esac; shift; cli_lab_cef "$@";;
     run-history) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_run_history "$@";;
     components)  cli_root "$@"; shift; cli_components "$@";;
@@ -15197,6 +15227,14 @@ if [ "$CLIENT" = x86 ]; then
   # lighter client window: no friends view (one browser view and its polling fewer); STEAM_ARM_FRIENDS=1 keeps it
   if [ "$LIGHT" = 1 ] && [ "${STEAM_ARM_FRIENDS:-0}" != 1 ]; then
     XFLAGS="$XFLAGS -nofriendsui"; llog "client window: friends view off (slow emulation class; STEAM_ARM_FRIENDS=1 keeps it)"
+  fi
+  # lighter client window: one renderer process for store and library instead of one per site (fewer emulated processes)
+  if [ "$LIGHT" = 1 ]; then
+    XFLAGS="$XFLAGS -cef-disable-site-isolation"; llog "client window: site isolation off (slow emulation class; steam-arm-config client-light off keeps it)"
+  fi
+  # CEF_HANG_KILLS=off (steam-arm-config cef-hang-kills off): Chromium neither kills nor restarts a view it holds for hung
+  if [ "${CEF_HANG_KILLS:-on}" = off ]; then
+    XFLAGS="$XFLAGS -cef-disable-hang-timeouts -cef-disable-renderer-restart"; llog "client window: hang timeouts and renderer restarts off (CEF_HANG_KILLS=off)"
   fi
   [ -n "$LAB" ] && XFLAGS="-steamos3 -cef-force-gpu -cef-disable-gpu-sandbox${XFLAGS#*-cef-disable-gpu-compositing}"
   # lab result: new client log lines only (sizes at start); three GPU process exits within 120 s or compositing off
