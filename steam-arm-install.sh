@@ -9964,10 +9964,12 @@ MARK = "# steam-arm stand-in"
 PY = "/usr/local/lib/steam-arm-python3"
 RUN = "/usr/local/lib/steam-arm-run.py"
 APPCFG = ("steamwebhelper.json", "exe.json")
-# client window processes: thunks off (window on CPU), FEX code cache off (FEX #5996: zygote crash loop with FEX-2610's cache)
-APPCFG_WANT = {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0"}}
-# 32-bit client binary (FEX keys app settings by program name): reduced x87 precision when chosen (STEAM_ARM_X87=reduced)
+# client window processes: thunks off (window on CPU), FEX code cache off (FEX #5996: zygote crash loop with FEX-2610's
+# cache), FEX logging off (FEX-2603 names it as a steamwebhelper crash cause; nothing reads these logs)
+APPCFG_WANT = {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0", "SilentLog": "1"}}
+# 32-bit client binary (FEX keys app settings by program name): logging off always, reduced x87 precision when chosen
 STEAM_JSON = "steam.json"
+STEAM_BASE = {"Config": {"SilentLog": "1"}}
 X87_WANT = {"Config": {"X87ReducedPrecision": "1"}}
 BETA_SAVE = "package/beta.steam-arm-arm64"
 X11_SRC = "/usr/lib/aarch64-linux-gnu/libX11.so.6"
@@ -10252,9 +10254,11 @@ def prepare(s, armhome):
             warn.append("FEX app setting %s is not valid JSON; left as it is (client window may fail)" % n)
             continue
         if st:
-            print("x86 client: FEX app setting %s: thunks %s, code cache off%s" % (n, "on (lab, this start)" if lab else "off", " (other keys kept)" if st == "changed" else ""))
+            print("x86 client: FEX app setting %s: thunks %s, code cache off, logging off%s" % (n, "on (lab, this start)" if lab else "off", " (other keys kept)" if st == "changed" else ""))
     f = os.path.join(d, STEAM_JSON)
     try:
+        if appcfg_merge(f, STEAM_BASE):
+            print("x86 client: FEX app setting %s: logging off" % STEAM_JSON)
         if os.environ.get("STEAM_ARM_X87") == "reduced":
             if appcfg_merge(f, X87_WANT):
                 print("x86 client: FEX app setting %s: reduced x87 precision (faster client start; rendering errors possible)" % STEAM_JSON)
@@ -10313,6 +10317,8 @@ def restore(s, armhome):
         w = json.loads(json.dumps(want))
         if mb and n in APPCFG:
             w.setdefault("Config", {})["Multiblock"] = "0"
+        if n == STEAM_JSON:
+            w["Config"].update(STEAM_BASE["Config"])
         if appcfg_strip(f, w):
             done.append("FEX app setting %s %s" % (n, "removed" if not os.path.exists(f) else "own keys removed"))
     if mb:

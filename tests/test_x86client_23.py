@@ -189,10 +189,11 @@ check("P3 prepare: Valve's ELF moved to .real, stand-in runs handler through hos
 r1 = subprocess.run(["sh", "-n", w])
 check("P4 stand-in parses (sh -n)", r1.returncode == 0)
 cfgd = os.path.join(a, ".fex-emu/AppConfig")
-WANT = {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0"}}
-check("P5 prepare: FEX app settings steamwebhelper.json and exe.json, thunks off, code cache off (3.1)",
-      all(json.load(open(os.path.join(cfgd, n))) == WANT for n in ("steamwebhelper.json", "exe.json")))
-check("P5b prepare: no steam.json without STEAM_ARM_X87=reduced", not os.path.exists(os.path.join(cfgd, "steam.json")))
+WANT = {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0", "SilentLog": "1"}}
+check("P5 prepare: FEX app settings steamwebhelper.json and exe.json, thunks off, code cache off, logging off (3.1)",
+      all(json.load(open(os.path.join(cfgd, n))) == WANT for n in ("steamwebhelper.json", "exe.json")) and "code cache off, logging off" in out, out)
+check("P5b prepare: steam.json with logging off only without STEAM_ARM_X87=reduced, logged",
+      json.load(open(os.path.join(cfgd, "steam.json"))) == {"Config": {"SilentLog": "1"}} and "steam.json: logging off" in out, out)
 check("P6 prepare: native update channel set aside", not os.path.exists(os.path.join(s, "package/beta"))
       and read(os.path.join(s, "package/beta.steam-arm-arm64")) == b"arm-channel\n")
 snap = {p: read(os.path.join(s, p)) for p in ("ubuntu12_64/steamwebhelper.sh", "ubuntu12_32/steam-launch-wrapper")}
@@ -246,10 +247,10 @@ put(os.path.join(a, ".fex-emu/AppConfig/exe.json"), '{"Config": {"Multiblock": "
 put(os.path.join(a, ".fex-emu/AppConfig/steamwebhelper.json"), '{"ThunksDB":{"GL":0,"Vulkan":0}}\n')
 rc, out8 = quiet(x.prepare, s, a)
 check("P11 FEX app setting with other keys: own keys merged, Multiblock kept, no warning, status 0",
-      json.load(open(os.path.join(a, ".fex-emu/AppConfig/exe.json"))) == {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0", "Multiblock": "0"}}
-      and rc == 0 and "exe.json: thunks off, code cache off (other keys kept)" in out8, out8)
+      json.load(open(os.path.join(a, ".fex-emu/AppConfig/exe.json"))) == {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0", "SilentLog": "1", "Multiblock": "0"}}
+      and rc == 0 and "exe.json: thunks off, code cache off, logging off (other keys kept)" in out8, out8)
 check("P11b 3.0 content (thunk keys only) rewritten with code cache off",
-      json.load(open(os.path.join(a, ".fex-emu/AppConfig/steamwebhelper.json"))) == WANT and "steamwebhelper.json: thunks off, code cache off (other keys kept)" in out8, out8)
+      json.load(open(os.path.join(a, ".fex-emu/AppConfig/steamwebhelper.json"))) == WANT and "steamwebhelper.json: thunks off, code cache off, logging off (other keys kept)" in out8, out8)
 rc, out8b = quiet(x.prepare, s, a)
 check("P11c prepare again: no change, no output", rc == 0 and out8b == "", out8b)
 put(os.path.join(a, ".fex-emu/AppConfig/steamwebhelper.json"), '{"ThunksDB":{"GL":0,"Vulkan":0}\n')
@@ -262,18 +263,22 @@ put(os.path.join(a, ".fex-emu/AppConfig/steamwebhelper.json"), json.dumps(WANT))
 os.environ["STEAM_ARM_X87"] = "reduced"
 rc, out9 = quiet(x.prepare, s, a)
 sj = os.path.join(a, ".fex-emu/AppConfig/steam.json")
-check("P12 STEAM_ARM_X87=reduced: steam.json with X87ReducedPrecision 1, line names faster start and rendering errors",
-      json.load(open(sj)) == {"Config": {"X87ReducedPrecision": "1"}} and "steam.json: reduced x87 precision (faster client start; rendering errors possible)" in out9, out9)
+check("P12 STEAM_ARM_X87=reduced: steam.json with X87ReducedPrecision 1 beside SilentLog, line names faster start and rendering errors",
+      json.load(open(sj)) == {"Config": {"X87ReducedPrecision": "1", "SilentLog": "1"}} and "steam.json: reduced x87 precision (faster client start; rendering errors possible)" in out9, out9)
 os.environ["STEAM_ARM_X87"] = "exact"
 rc, out9b = quiet(x.prepare, s, a)
-check("P12b STEAM_ARM_X87=exact: steam.json removed, logged", not os.path.exists(sj) and "steam.json: reduced x87 precision removed" in out9b, out9b)
+check("P12b STEAM_ARM_X87=exact: x87 key removed, logging key stays, logged", json.load(open(sj)) == {"Config": {"SilentLog": "1"}} and "steam.json: reduced x87 precision removed" in out9b, out9b)
 put(sj, '{"Config": {"X87ReducedPrecision": "1", "Multiblock": "1"}}\n')
 quiet(x.prepare, s, a)
-check("P12c exact with other key in steam.json: own key removed, other kept", json.load(open(sj)) == {"Config": {"Multiblock": "1"}})
+check("P12c exact with other key in steam.json: own key removed, other kept, logging key added", json.load(open(sj)) == {"Config": {"Multiblock": "1", "SilentLog": "1"}})
 os.unlink(sj)
 del os.environ["STEAM_ARM_X87"]
 rc, out9c = quiet(x.prepare, s, a)
-check("P12d STEAM_ARM_X87 unset: no steam.json, nothing logged", not os.path.exists(sj) and rc == 0 and out9c == "", out9c)
+check("P12d STEAM_ARM_X87 unset: steam.json with logging off only, that line alone", json.load(open(sj)) == {"Config": {"SilentLog": "1"}} and rc == 0 and out9c.strip() == "x86 client: FEX app setting steam.json: logging off", out9c)
+rc, out9d = quiet(x.prepare, s, a)
+check("P12e prepare again: idempotent", rc == 0 and out9d == "", out9d)
+quiet(x.restore, s, a)
+check("P12f restore removes steam.json (logging key was the only one)", not os.path.exists(sj))
 # lab: client window through GPU for one start (STEAM_ARM_LAB_CEF_GPU), base put back without it
 s2, a2 = client_folder(arm_beta=False)
 os.environ["STEAM_ARM_LAB_CEF_GPU"] = "vulkan"
@@ -284,7 +289,7 @@ check("P15 lab vulkan: wrap line gets transport flag plus ANGLE Vulkan flags, sh
       and read(os.path.join(s2, "ubuntu12_64/steamwebhelper.sh.steam-arm-sha")).decode().strip() == __import__("hashlib").sha256(web).hexdigest()
       and "client window through GPU (ANGLE vulkan), this start" in outl, outl)
 check("P15b lab: client FEX app settings thunks on, code cache off",
-      all(json.load(open(os.path.join(a2, ".fex-emu/AppConfig", n))) == {"ThunksDB": {"GL": 1, "Vulkan": 1}, "Config": {"DiskCache": "0"}} for n in ("steamwebhelper.json", "exe.json"))
+      all(json.load(open(os.path.join(a2, ".fex-emu/AppConfig", n))) == {"ThunksDB": {"GL": 1, "Vulkan": 1}, "Config": {"DiskCache": "0", "SilentLog": "1"}} for n in ("steamwebhelper.json", "exe.json"))
       and "thunks on (lab, this start)" in outl, outl)
 rc, outl2 = quiet(x.prepare, s2, a2)
 check("P15c lab prepare again: idempotent", rc == 0 and outl2 == "", outl2)
@@ -309,9 +314,10 @@ check("P16c restore after a lab start: Valve's wrap line without any own flag", 
       and b"--enable-features" not in read(os.path.join(s2, "ubuntu12_64/steamwebhelper.sh")))
 # multiblock-off (launcher restart counter): Multiblock 0 into both client files, own keys kept; second call silent
 put(os.path.join(a, ".fex-emu/AppConfig/exe.json"), json.dumps(WANT))
+put(os.path.join(a, ".fex-emu/AppConfig/steamwebhelper.json"), json.dumps(WANT))
 rc, out10 = quiet(x.multiblock_off, s, a)
 check("P13 multiblock-off: Multiblock 0 in steamwebhelper.json and exe.json beside own keys",
-      rc == 0 and all(json.load(open(os.path.join(a, ".fex-emu/AppConfig", n))) == {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0", "Multiblock": "0"}}
+      rc == 0 and all(json.load(open(os.path.join(a, ".fex-emu/AppConfig", n))) == {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0", "SilentLog": "1", "Multiblock": "0"}}
                       for n in ("steamwebhelper.json", "exe.json")) and out10.count("Multiblock off") == 2, out10)
 rc, out10b = quiet(x.multiblock_off, s, a)
 check("P13b multiblock-off again: no change, no output", rc == 0 and out10b == "", out10b)
