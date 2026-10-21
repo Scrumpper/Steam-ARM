@@ -1839,7 +1839,7 @@ route_b_ok(){ mali_family || { mali_ready && mali_custom; }; }
 SA_PI_FAMILIES="broadcom-v3d71 broadcom-v3d42 broadcom-vc4"
 pi_family(){ case " $SA_PI_FAMILIES " in *" $(route_family) "*) return 0;; esac; return 1; }
 SA_GL_VERSIONS="3.2 3.3 4.0 4.1 4.2 4.3 4.4 4.5 4.6"
-d3d_label(){ case "$1" in dxvk) echo "DXVK (stops at start)";; *) echo "WineD3D";; esac; }
+d3d_label(){ case "$1" in dxvk) echo "DXVK (not applied on this GPU)";; *) echo "WineD3D";; esac; }
 glver_label(){ if [ -n "$1" ]; then echo "$1 report"; else echo "off (driver: 3.1)"; fi; }
 zink_label(){ case "$1" in zink) echo "Zink (experimental)";; *) echo "v3d";; esac; }
 # Raspberry Pi title settings of appid, short (list column): "DXVK, GL 3.3, Zink"; empty when none.
@@ -3864,9 +3864,9 @@ SA_PI_APPLY="Linux games and x86 Proton: next start of game. Windows games on AR
 pi_d3d(){
   local id=$1 name=$2 cur c
   cur=$(tc_get "$id" d3d)
-  c=$(ui_menu "Direct3D: ${name:0:40}" "Windows games on Raspberry Pi GPU run Direct3D 8 to 11 through WineD3D (OpenGL). DXVK (Vulkan) needs Vulkan features this GPU lacks: game stops at start. Direct3D 12 does not run.
+  c=$(ui_menu "Direct3D: ${name:0:40}" "Windows games on Raspberry Pi GPU run Direct3D 8 to 11 through WineD3D (OpenGL). DXVK (Vulkan) needs shaderInt64, robustBufferAccess2, textureCompressionBC, multiViewport and tessellationShader, which V3DV lacks: setting d3d=dxvk is kept but not applied, game runs through WineD3D. Direct3D 12 does not run.
 Now: $(d3d_label "$cur")." --default "${cur:-default}" \
-      wined3d "WineD3D (OpenGL)" dxvk "DXVK (Vulkan), stops at start on this GPU" default "Default: WineD3D (remove this setting)") || return
+      wined3d "WineD3D (OpenGL)" dxvk "DXVK (Vulkan), not applied: V3DV lacks shaderInt64, robustBufferAccess2, textureCompressionBC, multiViewport, tessellationShader" default "Default: WineD3D (remove this setting)") || return
   [ "$c" = default ] && c=""
   game_set "$id" d3d "$c" && ui_msg "Graphics" "${name}: Direct3D through $(d3d_label "$c").
 
@@ -12259,16 +12259,20 @@ d3d = prof.get("d3d")
 if d3d not in (None, "dxvk", "wined3d"):
     log("pi gpu: title setting d3d=%s unknown (values: dxvk, wined3d)" % d3d)
     d3d = None
+DXVK_NEEDS = "shaderInt64, robustBufferAccess2, textureCompressionBC, multiViewport, tessellationShader"
 if gpu_family() in PI_FAMILIES:
     if x86_proton:
-        want = "0" if d3d == "dxvk" else "1"
         mine = own_launch("PROTON_USE_WINED3D")
-        if mine is not None and mine != want:
+        if d3d == "dxvk":
+            # V3DV reports none of the five; DXVK stops in device creation, so the run proceeds on WineD3D
+            log("d3d: WineD3D kept (title setting d3d=dxvk not applied): DXVK needs %s; V3DV reports none" % DXVK_NEEDS)
+            desktop_notice("DXVK not available on this GPU", "DXVK needs %s; this GPU's Vulkan driver (V3DV) reports none. "
+                           "Game runs through WineD3D (OpenGL); setting d3d=dxvk kept, not applied." % DXVK_NEEDS, urgency=1, timeout=15)
+        if mine is not None and mine != "1":
             log("launch option kept: PROTON_USE_WINED3D=%s (title setting d3d=%s)" % (mine, d3d or "wined3d"))
         else:
-            os.environ["PROTON_USE_WINED3D"] = want
-            log("d3d: DXVK (title setting d3d=dxvk); Vulkan driver of this GPU lacks features DXVK requires, start may fail"
-                if want == "0" else "d3d: WineD3D (OpenGL): Raspberry Pi GPU, DXVK cannot start on V3D")
+            os.environ["PROTON_USE_WINED3D"] = "1"
+            log("d3d: WineD3D (OpenGL): Raspberry Pi GPU, DXVK cannot start on V3D")
 elif d3d or prof.get("glver") or prof.get("gl"):
     log("pi gpu: title settings d3d, glver, gl not applied: Raspberry Pi GPU only (GPU family %s)" % gpu_family())
 # Automatic Windows build: a start the launcher has not switched yet is skipped (SystemExit passes the tool's handler try).
@@ -12549,6 +12553,9 @@ if gfx == "a":
 if gfx == "a" and vk and prof.get("vk32") != "keep":
     sys.argv = [a for a in sys.argv if a not in vk]
     log("32-bit: removed", vk, "(Vulkan would run on CPU; vk32=keep keeps it)")
+elif gfx == "a" and vk:
+    RUN["reason"] = "vk32-cpu"
+    log("32-bit: kept", vk, "(vk32=keep): no 32-bit Vulkan forwarding, Vulkan runs on lavapipe (CPU); reason vk32-cpu in the run record")
 # gl32=off: emulated x86 Mesa instead of the host GL thunk, for titles the thunk breaks.
 if gfx == "a" and prof.get("gl32") == "off" and bits != 64:
     try:
