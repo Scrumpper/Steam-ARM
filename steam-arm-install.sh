@@ -4034,7 +4034,7 @@ emu_summary(){ local t x; t=$(tc_get "$1" tso); x=$(tc_get "$1" x87); echo "$([ 
 game_emulation(){
   local id=$1 name=$2 c="" cur
   while :; do
-    c=$(ui_menu "Emulation: ${name:0:40}" "FEX settings for this game only. Both trade correctness for speed; never set by rules or automatic tuning. Run report and run record name them." --default "$c" \
+    c=$(ui_menu "Emulation: ${name:0:40}" "FEX settings for this game only. Both trade correctness for speed; never set by rules or automatic tuning. Run report and run record name them. Memory model relaxed goes back to strict for one start after two runs that ended badly (run history on); a run that ends well re-arms it." --default "$c" \
         tso "Memory model: $(tso_label "$(tc_get "$id" tso)")" x87 "x87 precision: $(x87_label "$(tc_get "$id" x87)")") || return
     case "$c" in
       tso) cur=$(tc_get "$id" tso)
@@ -12014,6 +12014,38 @@ def proc_cpu(pid):
         return None
 
 
+def load_watch(root, step=5):
+    """CPU seconds of every process below root summed into RUN["cpu_s"] (slow class only), for the end hint."""
+    last = {}
+    while True:
+        time.sleep(step)
+        cur = {p: c for p, c in ((p, proc_cpu(p)) for p in descendants(root)) if c is not None}
+        if not cur and last:
+            return
+        RUN["cpu_s"] = RUN.get("cpu_s", 0.0) + sum(max(0.0, c - last.get(p, 0.0)) for p, c in cur.items())
+        last = cur
+
+
+def end_hint(secs):
+    """Slow class, renderer GPU, title above 90 % of all cores for a run of 120 s or more, no tso=off yet: one notice that
+    names the per-title emulation settings. No change made."""
+    if not slow_class() or RUN["renderer"] != "gpu" or secs < 120 or (globals().get("prof") or {}).get("tso") == "off":
+        return None
+    try:
+        share = RUN.get("cpu_s", 0.0) / (secs * (os.cpu_count() or 1))
+    except ZeroDivisionError:
+        return None
+    if share < 0.9:
+        return None
+    log("end hint: title used %.0f %% of all cores over %d s on GPU; per-title emulation settings may help (not applied)" % (share * 100, secs))
+    bits = globals().get("bits")
+    desktop_notice("Game ran at the CPU limit",
+                   "This game kept all cores busy while drawing on GPU. Per-game emulation settings may help (correctness trades, "
+                   "steam-arm-config, Games, this game, Emulation): Memory model relaxed (tso=off)%s."
+                   % (", x87 precision reduced (x87=reduced)" if bits == 32 else ""), urgency=1, timeout=0)
+    return share
+
+
 def hang_watch(root, window, cpu_max, limit, step=2):
     """Until the title holds GPU memory: CPU time of every process below root; less than cpu_max s per s over `window` s
     is a hang verdict (log line, one notice). Titles that link GL load it before they hang, so the graphics library is
@@ -12145,6 +12177,10 @@ def run_exit(rc):
                        + ([("reason", RUN["reason"])] if RUN.get("reason") else []))
         except OSError as e:
             log("run record: exit line not written:", e)
+    try:
+        end_hint(secs)
+    except Exception as e:
+        log("end hint: not shown:", e)
     if AT:
         log("autotune: app %s: graphics library at %s s (process %s), renderer %s at %s s, run %d s" % (
             APPID, RUN.get("t_gfx", "-"), RUN.get("gfx_comm", "-"), RUN["renderer"], RUN.get("t_render", "-"), secs))
@@ -12510,6 +12546,31 @@ if mbp in ("on", "off"):
 # Correctness trades, never set by rules or automatic tuning; run record and report name them.
 EMU_KEYS = (("tso", "off", "TSOEnabled", "0", "memory model relaxed (TSO emulation off)"),
             ("x87", "reduced", "X87ReducedPrecision", "1", "x87 precision reduced"))
+
+
+def tso_failed_twice(appid):
+    """True when the last two recorded runs of appid started with tso=off and ended crash or hang (autotune verdict), or
+    without verdict under CRASH_S seconds; the run record is the only source, so without it (RUN_HISTORY off) False."""
+    try:
+        rows = open(runs_path()).read().splitlines()
+    except OSError:
+        return False
+    recs = [dict(f.split("=", 1) for f in r.split() if "=" in f) for r in rows if r.strip()]
+    starts = {r.get("run"): r for r in recs if r.get("ev") == "start" and r.get("app") == appid}
+    ends = [r for r in recs if r.get("ev") == "exit" and r.get("app") == appid and (starts.get(r.get("run")) or {}).get("tso", "").startswith("off")]
+    if len(ends) < 2:
+        return False
+
+    def failed(r):
+        if r.get("verdict"):
+            return r["verdict"] in ("crash", "hang")
+        try:
+            return int(r.get("secs", "0")) < 60
+        except ValueError:
+            return False
+    return failed(ends[-1]) and failed(ends[-2])
+
+
 for _k, _v, _fk, _fv, _what in EMU_KEYS:
     _p = prof.get(_k)
     if _p is None:
@@ -12517,6 +12578,13 @@ for _k, _v, _fk, _fv, _what in EMU_KEYS:
     if _p != _v:
         log("fex: title setting %s=%s unknown (value: %s); not applied" % (_k, _p, _v))
         prof.pop(_k, None)
+        continue
+    if _k == "tso" and tso_failed_twice(APPID):
+        # two failed relaxed runs in a row: this start strict; the title setting stays, a run that ends well re-arms it
+        RUN["tso_strict"] = True
+        log("memory model: back to strict after 2 failed runs (title setting kept; a run that ends well re-arms it)")
+        desktop_notice("Memory model back to strict", "This game ended badly twice with Memory model: relaxed; this start runs strict. "
+                       "Setting kept (steam-arm-config, Games, Emulation); a run that ends well re-arms it.", urgency=1, timeout=15)
         continue
     lc = LAUNCH_FEX.get("Config") if isinstance(LAUNCH_FEX.get("Config"), dict) else {}
     if _fk in lc:
@@ -12579,6 +12647,8 @@ if AT:
     threading.Thread(target=hang_thread, args=(os.getpid(), AT["HANG_S"], AT["HANG_CPU"], AT["NOGFX_S"]), daemon=True).start()
 if os.environ.get("STEAM_ARM_RENDERER_CHECK", "1") != "0" or AT:
     threading.Thread(target=renderer_thread, args=(os.getpid(), AT["NOGFX_S"] if AT else 180), daemon=True).start()
+if slow_class() and os.environ.get("STEAM_ARM_RENDERER_CHECK", "1") != "0":
+    threading.Thread(target=load_watch, args=(os.getpid(),), daemon=True).start()
 if ENTRY == "arm64":
     threading.Thread(target=private_tool_logs, args=(os.getpid(),), daemon=True).start()
 
@@ -12620,7 +12690,8 @@ if _why:
                     ("gfx", gfx), ("overlay", globals().get("mode") or "keep"), ("engine", engine or "-"), ("bits", bits or "-"),
                     ("fex", fex_ver_str(_fv) if _fv else "unknown"), ("tool", tool_kind(tool_dir()) if tool_dir() else "-"),
                     ("mesa", mesa_version(mroot if gfx == "b" else "")), ("proton", (tool or "x86") if x86_proton else "-"),
-                    ("multiblock", mbp or "-"), ("diskcache", dcp or "-"), ("tso", prof.get("tso") or "-"),
+                    ("multiblock", mbp or "-"), ("diskcache", dcp or "-"),
+                    ("tso", (prof.get("tso") or "-") + (":strict" if RUN.get("tso_strict") else "")),
                     ("x87", prof.get("x87") or "-"), ("vkhost", conf_value("VK_HOST") or "-"),
                     ("profile", ",".join(sorted(prof)) or "-")])
         log("run record: on (%s)" % _why)

@@ -2,7 +2,8 @@
 """Steam ARM 3.1 per-title emulation keys tso=off and x87=reduced: handler writes TSOEnabled 0 or X87ReducedPrecision 1
 into FEX_APP_CONFIG (tool entry and x86 entry), launch-option FEX_APP_CONFIG and Steam's FEX setting win, unknown
 values logged and dropped, run record start line carries tso and x87, CPU drawing notice on the slow class names the
-memory model setting, autotune knobs stay free of both. Handler extracted from the installer under test (SARM_INST
+memory model setting, autotune knobs stay free of both; strict for one start after two failed relaxed runs (run
+record), end hint on the slow class (fabricated records and shares). Handler extracted from the installer under test (SARM_INST
 picks another); settings file path rewritten in the extract only. Internal; not for release zips."""
 import json
 import os
@@ -121,6 +122,74 @@ r = run(conf="GPU_FAMILY=other\nGFX_DEFAULT=auto\nRUN_HISTORY=on\n")
 runs = os.path.join(r["home"], ".local/state/steam-arm/runs.log")
 line = open(runs).read().splitlines()[-1] if os.path.exists(runs) else ""
 check("E8b without settings: tso=- x87=-", " tso=- x87=- " in line, line)
+# memory model back to strict after two failed relaxed runs (run record), re-armed by a run that ends well
+def recs(home, *runs):
+    """runs: (tso-of-start, exit fields) pairs written as start+exit lines for app 100."""
+    lines = []
+    for i, (tso, ex) in enumerate(runs):
+        lines.append("t=2026-10-20T00:00:%02dZ ev=start app=100 run=%d entry=tool client=arm64 gfx=a tso=%s x87=- profile=tso" % (i, 1000 + i, tso))
+        lines.append("t=2026-10-20T00:01:%02dZ ev=exit app=100 run=%d %s" % (i, 1000 + i, ex))
+    put(os.path.join(home, ".local/state/steam-arm/runs.log"), "\n".join(lines) + "\n")
+    os.chmod(os.path.join(home, ".local/state/steam-arm/runs.log"), 0o600)
+
+
+RH = "GPU_FAMILY=other\nGFX_DEFAULT=auto\nRUN_HISTORY=on\n"
+h = tempfile.mkdtemp(dir=TMP)
+recs(h, ("off", "status=0 secs=12 renderer=unknown verdict=crash"), ("off", "status=0 secs=300 renderer=gpu verdict=hang"))
+r = run("tso=off", conf=RH, home=h)
+line = open(os.path.join(h, ".local/state/steam-arm/runs.log")).read().splitlines()[-1]
+check("T1 two failed relaxed runs (crash, hang verdicts): this start strict, nothing written, log line, start record tso=off:strict",
+      "TSOEnabled" not in r["cfg"] and "memory model: back to strict after 2 failed runs (title setting kept; a run that ends well re-arms it)" in r["log"]
+      and " tso=off:strict " in line and r["run"].get("tso_strict") is True, (r["cfg"], r["log"][-500:], line))
+h = tempfile.mkdtemp(dir=TMP)
+recs(h, ("off", "status=0 secs=12 renderer=unknown verdict=crash"), ("off", "status=0 secs=900 renderer=gpu verdict=ok"), ("off", "status=0 secs=20 renderer=unknown verdict=crash"))
+r = run("tso=off", conf=RH, home=h)
+check("T2 crash, ok, crash: relaxed kept (last two not both failed)", r["cfg"].get("TSOEnabled") == "0" and "back to strict" not in r["log"], r["cfg"])
+h = tempfile.mkdtemp(dir=TMP)
+recs(h, ("off", "status=0 secs=12 renderer=unknown"), ("off", "status=sig11 secs=40 renderer=unknown"))
+r = run("tso=off", conf=RH, home=h)
+check("T3 no verdicts (no autotune): two exits under 60 s count as failed", "TSOEnabled" not in r["cfg"] and "back to strict" in r["log"], r["cfg"])
+h = tempfile.mkdtemp(dir=TMP)
+recs(h, ("-", "status=0 secs=12 renderer=unknown verdict=crash"), ("-", "status=0 secs=12 renderer=unknown verdict=crash"))
+r = run("tso=off", conf=RH, home=h)
+check("T4 failed runs that were strict (tso=-) do not count", r["cfg"].get("TSOEnabled") == "0", r["cfg"])
+h = tempfile.mkdtemp(dir=TMP)
+recs(h, ("off", "status=0 secs=12 renderer=unknown verdict=crash"), ("off:strict", "status=0 secs=12 renderer=unknown verdict=crash"))
+r = run("tso=off", conf=RH, home=h)
+check("T5 strict retry that failed too keeps strict (both last runs carry tso off)", "TSOEnabled" not in r["cfg"], r["cfg"])
+h = tempfile.mkdtemp(dir=TMP)
+recs(h, ("off", "status=0 secs=12 renderer=unknown verdict=crash"), ("off", "status=0 secs=12 renderer=unknown verdict=crash"))
+r = run("tso=off", conf="GPU_FAMILY=other\nGFX_DEFAULT=auto\n", home=h)
+check("T6 run history off: records still read (file present), strict", "TSOEnabled" not in r["cfg"], r["cfg"])
+r = run("tso=off", conf=RH)
+check("T7 no run record file: relaxed applied", r["cfg"].get("TSOEnabled") == "0", r["cfg"])
+# end hint: slow class, GPU renderer, 90 % of all cores over 120 s and more, no tso=off yet
+m = re.search(r"^def end_hint\(secs\):.*?^    return share\n", H, re.M | re.S)
+check("T8 end_hint defined, called from run_exit, load_watch thread on the slow class only", bool(m) and "        end_hint(secs)\n" in H
+      and 'if slow_class() and os.environ.get("STEAM_ARM_RENDERER_CHECK", "1") != "0":\n    threading.Thread(target=load_watch' in H)
+EH = {}
+notes = []
+exec("import os\n" + m.group(0), EH)
+EH.update(RUN={"renderer": "gpu", "cpu_s": 0.0}, prof={}, bits=32, log=lambda *a: notes.append(("log",) + a),
+          desktop_notice=lambda s, b, **k: notes.append(("notice", s, b)), slow_class=lambda: True)
+EH["os"] = type("o", (), {"cpu_count": staticmethod(lambda: 4)})
+EH["RUN"]["cpu_s"] = 0.95 * 4 * 300
+v = EH["end_hint"](300)
+check("T9 95 % of four cores over 300 s, GPU, 32-bit: notice names tso=off and x87=reduced with the menu path",
+      v and v > 0.9 and any(n[0] == "notice" and "Memory model relaxed (tso=off)" in n[2] and "x87 precision reduced (x87=reduced)" in n[2] and "Games, this game, Emulation" in n[2] for n in notes), notes)
+notes.clear(); EH["bits"] = 64; EH["end_hint"](300)
+check("T9b 64-bit: x87 not named", any(n[0] == "notice" and "x87" not in n[2] for n in notes), notes)
+notes.clear(); EH["RUN"]["cpu_s"] = 0.5 * 4 * 300
+check("T10 50 % share: nothing", EH["end_hint"](300) is None and not notes, notes)
+notes.clear(); EH["RUN"]["cpu_s"] = 0.95 * 4 * 300; EH["RUN"]["renderer"] = "cpu"
+check("T10b renderer CPU: nothing (CPU drawing notice covers it)", EH["end_hint"](300) is None and not notes)
+EH["RUN"]["renderer"] = "gpu"; EH["prof"] = {"tso": "off"}
+check("T10c tso=off already set: nothing", EH["end_hint"](300) is None and not notes)
+EH["prof"] = {}; EH["RUN"]["cpu_s"] = 0.95 * 4 * 60
+check("T10d run under 120 s: nothing", EH["end_hint"](60) is None and not notes)
+EH["slow_class"] = lambda: False; EH["RUN"]["cpu_s"] = 0.95 * 4 * 300
+check("T10e not slow class: nothing", EH["end_hint"](300) is None and not notes)
+
 # CPU drawing notice text: slow class sentence from the handler source
 m = re.search(r'slow = \("CPU without Armv8.1 atomics: title setting Memory model: relaxed \(steam-arm-config, Games, Emulation\) "\n\s+"speeds up emulation at a stability cost." if slow_class\(\) else ""\)', H)
 check("E9 CPU drawing notice adds the memory model sentence on the slow class only", bool(m))
