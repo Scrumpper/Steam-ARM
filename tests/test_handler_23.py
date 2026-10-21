@@ -395,5 +395,14 @@ out, note = notice("CPU_NOTICE=on", state=["Game.exe", [], True, ["panthor rende
 check("N12 Windows title process holding GPU: GPU verdict names it", "renderer: GPU (panthor renderD128)" in out
       and "process Game.exe" in out, out[-400:])
 
+# experiment lab-cef-gpu gl: launcher's OpenGL 4.5 report for the client window is not a launch option of the game
+r = run(plain, env={"STEAM_ARM_LAB_CEF_GPU": "gl", "MESA_GL_VERSION_OVERRIDE": "4.5", "MESA_GLSL_VERSION_OVERRIDE": "450"})
+check("L1 lab gl session: 4.5 report dropped before rules, logged", "lab gl: OpenGL 4.5 report of client window not passed to game" in r["log"]
+      and "launch option kept: MESA_GL_VERSION_OVERRIDE" not in r["log"], r["log"][-600:])
+r = run(plain, env={"MESA_GL_VERSION_OVERRIDE": "4.5", "MESA_GLSL_VERSION_OVERRIDE": "450"})
+check("L2 same variables without the lab: kept (launch option)", "lab gl:" not in r["log"], r["log"][-600:])
+r = run(plain, env={"STEAM_ARM_LAB_CEF_GPU": "vulkan"})
+check("L3 lab vulkan: nothing to drop", "lab gl:" not in r["log"], r["log"][-600:])
+
 print("handler 2.3: %d failed" % len(FAILS))
 sys.exit(1 if FAILS else 0)

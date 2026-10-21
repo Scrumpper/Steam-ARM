@@ -29,7 +29,7 @@ check "profile --clear drops multiblock" "! grep -q '^401' $E"
 check "--help lists multiblock key" "bash $APP --help | grep -q multiblock"
 
 # components: kde-input-prompt off by default, known to the menu
-check "kde-input-prompt in fallback list and default-off" "grep -q 'SA_DEFAULT_OFF=\"pad-xbox shader-cache kde-input-prompt\"' $APP && grep -q 'tray kde-input-prompt page-size' $APP"
+check "kde-input-prompt in fallback list and default-off" "grep -q 'SA_DEFAULT_OFF=\"pad-xbox shader-cache kde-input-prompt pi-governor\"' $APP && grep -q 'tray kde-input-prompt page-size' $APP"
 rec=$(bash -c ". $T/harness.sh --help >/dev/null; comp_recommended auto yes")
 check "recommended set unchanged (kde-input-prompt off)" "[ \"\$rec\" = 'glx-lax vk-spoof gpu-in-emulation map-count xpad-dedup pad-hidraw desktop desktop-mode icon-bigpicture icon-desktop tray page-size' ]"
 lab=$(bash -c ". $T/harness.sh --help >/dev/null; comp_short kde-input-prompt")

@@ -11,6 +11,11 @@ Builds the x86-64 and i386 Mesa driver archive for gpu-in-emulation on an x86-64
 Defaults reproduce the published archive (Mesa 26.1.8, panfrost and panvk, CPU fallbacks).
 
 Options
+  --family mali|broadcom
+                       driver preset: mali (default: panfrost, panvk and CPU fallbacks)
+                       or broadcom (v3d, vc4, zink, llvmpipe, softpipe; Vulkan broadcom
+                       and swrast; archive name carries -broadcom). Research preset for
+                       Raspberry Pi GPUs inside the emulation; setup never selects it
   --mesa VERSION       Mesa release from archive.mesa3d.org (default 26.1.8)
   --mesa-sha256 SHA    sha256 of that release tarball (known for 26.1.8, 26.2.3, 26.2.4)
   --mesa-ref REF       Mesa git tag, branch or commit from gitlab.freedesktop.org in
@@ -44,8 +49,10 @@ MESA_VER=26.1.8
 MESA_SHA=b320f65874fd9653ac6c0bd1616605387344e1247411a50c797b5f3fb9dc0b55
 MESA_REF=""
 SHA_SET=0
+FAMILY=mali
 GALLIUM=panfrost,llvmpipe,softpipe,zink
 VULKAN=panfrost,swrast
+GALLIUM_SET=0; VULKAN_SET=0
 PATCHES=1
 SNAPSHOT=20260929T000000Z
 WORK=$PWD/driver-build
@@ -67,8 +74,9 @@ while [ $# -gt 0 ]; do
     --mesa) need "$@"; MESA_VER=$2; [ "$SHA_SET" = 1 ] || MESA_SHA=""; shift;;
     --mesa-sha256) need "$@"; MESA_SHA=$2; SHA_SET=1; shift;;
     --mesa-ref) need "$@"; MESA_REF=$2; shift;;
-    --gallium) need "$@"; GALLIUM=$2; shift;;
-    --vulkan) need "$@"; VULKAN=$2; shift;;
+    --family) need "$@"; FAMILY=$2; shift;;
+    --gallium) need "$@"; GALLIUM=$2; GALLIUM_SET=1; shift;;
+    --vulkan) need "$@"; VULKAN=$2; VULKAN_SET=1; shift;;
     --no-patches) PATCHES=0;;
     --snapshot) need "$@"; SNAPSHOT=$2; shift;;
     --work) need "$@"; WORK=$(realpath -m -- "$2"); shift;;
@@ -92,6 +100,12 @@ known_sha(){
 [ "$SHA_SET" = 1 ] || MESA_SHA=$(known_sha "$MESA_VER")
 
 # --- option checks ---
+# family preset: driver lists unless given by hand
+case $FAMILY in
+  mali) ;;
+  broadcom) [ "$GALLIUM_SET" = 1 ] || GALLIUM=v3d,vc4,zink,llvmpipe,softpipe; [ "$VULKAN_SET" = 1 ] || VULKAN=broadcom,swrast;;
+  *) die "--family: mali or broadcom";;
+esac
 [[ "$MESA_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]] || die "--mesa: release number such as 26.1.8"
 [ -z "$MESA_SHA" ] || [[ "$MESA_SHA" =~ ^[0-9a-f]{64}$ ]] || die "--mesa-sha256: 64 hex characters"
 [ -z "$MESA_REF" ] || [[ "$MESA_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || die "--mesa-ref: tag, branch or commit"
@@ -99,7 +113,7 @@ known_sha(){
 [[ "$VULKAN" =~ ^[a-z0-9_]+(,[a-z0-9_]+)*$ ]] || die "--vulkan: comma separated driver names"
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs: a number"
 [[ "$SNAPSHOT" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || die "--snapshot: form 20260929T000000Z"
-case ",$GALLIUM,$VULKAN," in *,panfrost,*) ;; *) echo "note: no panfrost driver selected; Mali GPUs get no driver from this archive" >&2;; esac
+[ "$FAMILY" = broadcom ] || case ",$GALLIUM,$VULKAN," in *,panfrost,*) ;; *) echo "note: no panfrost driver selected; Mali GPUs get no driver from this archive" >&2;; esac
 [ "$(uname -m)" = x86_64 ] || die "builds run on an x86-64 PC (this is $(uname -m))"
 if [ -n "$MESA_REF" ]; then
   VER=git-$(printf '%s' "$MESA_REF" | tr '/' '-')
@@ -108,7 +122,7 @@ else
   VER=$MESA_VER
   SRC_DESC="Mesa $MESA_VER (archive.mesa3d.org, sha256 ${MESA_SHA:-not pinned})"
 fi
-NAME=steam-arm-fex-mesa-$VER-x86_64-i386
+if [ "$FAMILY" = broadcom ]; then NAME=steam-arm-fex-mesa-$VER-broadcom-x86_64-i386; else NAME=steam-arm-fex-mesa-$VER-x86_64-i386; fi
 # patch set by Mesa major.minor; other versions try the newest
 PSETS="26.1 26.2"
 pset_for(){ case $1 in 26.1|26.1.*) echo 26.1;; *) echo 26.2;; esac; }
@@ -125,6 +139,7 @@ fi
 if [ -n "$MESA_REF" ]; then PLAN_SET="from source VERSION"; else PLAN_SET=$(pset_for "$MESA_VER"); fi
 cat <<EOF
 Plan
+  family     $FAMILY
   source     $SRC_DESC
   patches    $([ "$PATCHES" = 1 ] && echo "glx cross-thread current, panvk DXVK features (set $PLAN_SET)" || echo none)
   gallium    $GALLIUM
@@ -625,6 +640,12 @@ echo "$T: libraries the drivers load from the RootFS:"
 find "$L" -type f -name "*.so*" -exec readelf -d {} + 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort -u |
   while read -r n; do [ -e "$L/$n" ] || echo "  $n"; done
 check "$T: LLVM linked in (no libLLVM NEEDED)" bash -c "! find '$L' -type f -name '*.so*' -exec readelf -d {} + | grep -q libLLVM"
+# family drivers present in the archive layout (dri entry per gallium driver, Vulkan driver library)
+case $FAMILY in
+  broadcom) for f in dri/v3d_dri.so dri/vc4_dri.so libvulkan_broadcom.so; do check "$T: $f present" test -e "$L/$f"; done;;
+  mali) for f in dri/panfrost_dri.so; do check "$T: $f present" test -e "$L/$f"; done
+        case ",$VULKAN," in *,panfrost,*) check "$T: libvulkan_panfrost.so present" test -e "$L/libvulkan_panfrost.so";; esac;;
+esac
 case ",$GALLIUM," in
   *,llvmpipe,*)
     cat > /tmp/egl_surfaceless.c <<'CSRC'
@@ -690,7 +711,7 @@ inroot(){
     mount --bind $W $R/work; mount --bind $H $R/recipe
     exec chroot $R /usr/bin/env -i PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
       DEBIAN_FRONTEND=noninteractive LC_ALL=C.UTF-8 JOBS='"$JOBS"' MESA_VER='"$VER"' SNAPSHOT='"$SNAPSHOT"' \
-      GALLIUM='"$GALLIUM"' VULKAN='"$VULKAN"' /bin/bash "$@"'
+      GALLIUM='"$GALLIUM"' VULKAN='"$VULKAN"' FAMILY='"$FAMILY"' /bin/bash "$@"'
   if [ "$(id -u)" = 0 ]; then
     unshare --mount --fork --pid bash -c "$setup" _ "$root" "$WORK/share" "$R" "$@"
   else

@@ -229,7 +229,7 @@ FAKE_NOT_INSTALLED=1 cu menu_caches
 check "C8 not installed: install offer" "grep -q '^YESNO Steam ARM|Steam ARM is not installed' <<<\"\$OUT\" && ! grep -q '^MENU' <<<\"\$OUT\""
 TC=$R/etc/steam-arm/titles.conf; VT=$S/steamapps/common/FEX-Emu/VERSIONS.txt
 cu "game_menu 312520" diskcache on BACK
-check "C9 Linux game: FEX code cache and automatic tuning rows between args and rules, [off]" "grep -m1 -A1 '^MENU Game: Rain World' <<<\"\$OUT\" | paste -sd ' ' | grep -q 'args Extra arguments      \\[none\\] diskcache FEX code cache       \\[off\\] mesa Mesa, route B        \\[default\\] autotune Automatic tuning     \\[off\\] rules Rules'"
+check "C9 Linux game: FEX code cache and automatic tuning rows between args and rules, [off]" "grep -m1 -A1 '^MENU Game: Rain World' <<<\"\$OUT\" | paste -sd ' ' | grep -q 'args Extra arguments      \\[none\\] diskcache FEX code cache       \\[off\\] emu Emulation            \\[strict, x87 full\\] mesa Mesa, route B        \\[default\\] autotune Automatic tuning     \\[off\\] rules Rules'"
 check "C9 choice screen: text, FEX-2609.1 has no needs-tool note" "grep -q '^MENU FEX code cache|Stores translated code of this game for its next start.' <<<\"\$OUT\" && grep -q '^Now: off. FEX tool: FEX-2609.1.|' <<<\"\$OUT\" && ! grep -q 'Needs FEX-2609.1' <<<\"\$OUT\""
 check "C9 On written to profile, row then shows [on]" "grep -qE '^312520 .*diskcache=on' '$TC' && grep -A1 '^MENU Game: Rain World' <<<\"\$OUT\" | tail -n 2 | paste -sd ' ' | grep -q 'FEX code cache       \\[on\\]'"
 echo "FEX-2607-76-gabc1234" > "$VT"
@@ -373,7 +373,7 @@ check "P4 CLI bad value: usage, exit 2, key unchanged" "[ $RC = 2 ] && grep -q '
 OUT=$(bash "$CFG" --help)
 check "P4 --help lists cpu-notice and CPU_NOTICE key" "grep -q '^  cpu-notice \\[on|off\\]  ' <<<\"\$OUT\" && grep -q 'CPU_NOTICE=on|off' <<<\"\$OUT\""
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; echo \"\$SA_BK_KEYS\"; for v in on off '' maybe; do rs_valid CPU_NOTICE \"\$v\" && echo \"ok:\$v\" || echo \"bad:\$v\"; done" 2>&1)
-check "P5 backup keys carry CPU_NOTICE after AUTO_BUILD (then RUN_HISTORY of 3.0, SNAPSHOT_KEEP and UPDATE_CHECK_ON_OPEN of 3.1); restore accepts on, off, empty only" "grep -q 'GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN\$' <<<\"\$OUT\" && [ \"\$(grep -c '^ok:' <<<\"\$OUT\")\" = 3 ] && grep -qx 'bad:maybe' <<<\"\$OUT\""
+check "P5 backup keys carry CPU_NOTICE after AUTO_BUILD (then RUN_HISTORY of 3.0, SNAPSHOT_KEEP and UPDATE_CHECK_ON_OPEN of 3.1); restore accepts on, off, empty only" "grep -q 'GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN\( \|$\)' <<<\"\$OUT\" && [ \"\$(grep -c '^ok:' <<<\"\$OUT\")\" = 3 ] && grep -qx 'bad:maybe' <<<\"\$OUT\""
 # game logs: 400 newest log CPU, 312520 newest GPU (older CPU log ignored), 219150 CPU log without id line ignored
 L=$R/tmp
 printf 'SteamAppId=312520\nsteam-arm: renderer: warning: GPU forwarding not active: rendering on CPU (llvmpipe); no GPU device in use, process a\n' > "$L/fex-compat-tool-3001.log"
@@ -558,7 +558,7 @@ CPUF=$R/proc/cpuinfo; mkdir -p "$R/proc"
 v80(){ printf 'processor\t: 0\nFeatures\t: fp asimd evtstrm crc32 cpuid\nCPU part\t: 0xd08\n' > "$CPUF"; }
 v82(){ printf 'processor\t: 0\nFeatures\t: fp asimd evtstrm crc32 atomics cpuid\nCPU part\t: 0xd0b\n' > "$CPUF"; }
 XS="need_root(){ :; }; close_steam(){ :; }"
-v80; fresh CLIENT=x86 CLIENT_SET=auto CLIENT_PROBE=1788652215:lse; ui "info_status | sed -n '1,6p' >> \$LOG"
+v80; fresh CLIENT=x86 CLIENT_SET=auto CLIENT_PROBE=1788652215:lse; ui "info_status | sed -n '1,8p' >> \$LOG"
 check "XM1 status: Client type row after Installed (x86 by CPU rule); FEX tool row says system FEX" "sed -n 2p <<<\"\$OUT\" | grep -qx 'Client type    x86 through emulation (CPU without Armv8.1 atomics)' && grep -qx 'FEX tool       not used (x86 client runs on system FEX)' <<<\"\$OUT\""
 fresh CLIENT=x86 CLIENT_SET=user; ui "info_status >> \$LOG"
 check "XM2 status: x86 chosen by hand" "grep -qx 'Client type    x86 through emulation (chosen by hand)' <<<\"\$OUT\""

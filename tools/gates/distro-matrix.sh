@@ -8,13 +8,13 @@
 #         dpkg/uname answer arm64; package install simulated, FEX and client downloads replaced by stand-ins
 #   qemu  arm64 rootfs, real package install (qemu-aarch64 binfmt with F flag; native on arm64 hosts)
 #   --cached-only  rows without a cached image SKIP (no download); --fast  gate and preflight rows only
-# Hardware facts are stand-ins: arm64 cpuinfo, device-tree model (Pi row); no GPU. Images pinned in distro-matrix.lock,
+# Hardware facts are stand-ins: arm64 cpuinfo, device-tree model and compatible (Pi rows), v3d render node (Pi rows); no GPU elsewhere. Images pinned in distro-matrix.lock,
 # cached in SARM_MATRIX_CACHE (default ~/.cache/sarm-matrix). SARM_INST picks the installer.
 set -u
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd -P)
 LOCK=$HERE/distro-matrix.lock TREE=$HERE/distro-matrix-tree.py FETCH=$HERE/fetch-image.py REMOVAL=$HERE/check-removal.py
 CACHE=${SARM_MATRIX_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/sarm-matrix}
-PREP_VER=5
+PREP_VER=7
 GAMEUSER=gamer
 # row|kind|image (amd64,arm64 when they differ)|label; kind: install, preflight (stops at host packages), pagesize
 # (16K page kernel: setup switches the Pi kernel and stops), gate, x86
@@ -26,6 +26,7 @@ debian-14|install|debian:forky-slim|Debian 14 forky (testing)
 debian-12|preflight|debian:bookworm-slim|Debian 12 bookworm
 raspios|install|debian:trixie-slim|Raspberry Pi OS trixie (Debian 13 + Pi archive, Pi 5 model)
 raspios-16k|pagesize|debian:trixie-slim|Raspberry Pi OS trixie, Pi 5 on its 16K page kernel
+raspios-pi4|install|debian:trixie-slim|Raspberry Pi OS trixie, Pi 4 model (Cortex-A72 without LSE, VideoCore VI, x86 client)
 fedora-44|gate|fedora:44|Fedora 44
 arch|gate|archlinux:latest,menci/archlinuxarm:latest|Arch Linux (ARM on arm64)
 opensuse|gate|opensuse/tumbleweed:latest|openSUSE Tumbleweed
@@ -149,6 +150,13 @@ G=$(for g in video render input audio; do getent group "$g" >/dev/null && printf
 id "$GU" >/dev/null 2>&1 || useradd -m -s /bin/bash ${G:+-G "${G%,}"} "$GU"
 # folders a desktop session leaves in an account that has logged in once
 su -s /bin/sh -c 'mkdir -p ~/.config ~/.local/share ~/.cache ~/Desktop' "$GU"
+# no init system in the chroot: maintainer scripts' service restarts succeed as on a booted system, daemons stay down
+mkdir -p /usr/local/sbin
+printf '#!/bin/sh\necho "matrix stand-in: service $*" >&2\nexit 0\n' > /usr/local/sbin/service
+printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+chmod 755 /usr/local/sbin/service /usr/sbin/policy-rc.d
+# apt runs maintainer scripts with DPkg::Path, default without /usr/local/sbin
+echo 'DPkg::Path "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";' > /etc/apt/apt.conf.d/00matrix-dpkg-path
 mkdir -p /etc/udev/rules.d
 apt-get clean
 PREP
@@ -219,11 +227,23 @@ standins(){
   ns mkdir -p "$R/sim/bin" "$R/sim/log" "$R/sim/fex/usr/bin" "$R/sim/www"
   chmod 1777 "$R/sim/log"
   printf 'SIM_APT=%s\nSIM_MODE=%s\n' "$simapt" "$mode" > "$R/sim/env"
-  # arm64 CPU with LSE atomics (Cortex-A76 class); Pi row: Pi 5 model
-  for c in 0 1 2 3; do printf 'processor\t: %s\nBogoMIPS\t: 108.00\nFeatures\t: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp\nCPU implementer\t: 0x41\nCPU architecture: 8\nCPU variant\t: 0x4\nCPU part\t: 0xd0b\nCPU revision\t: 1\n\n' "$c"; done > "$R/sim/cpuinfo"
+  # arm64 CPU with LSE atomics (Cortex-A76 class); Pi 4 row: Cortex-A72 without LSE (x86 client path)
+  local feat="fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp" part=0xd0b
+  [ "$r" = raspios-pi4 ] && { feat="fp asimd evtstrm crc32 cpuid"; part=0xd08; : > "$R/sim/nolse"; }
+  for c in 0 1 2 3; do printf 'processor\t: %s\nBogoMIPS\t: 108.00\nFeatures\t: %s\nCPU implementer\t: 0x41\nCPU architecture: 8\nCPU variant\t: 0x4\nCPU part\t: %s\nCPU revision\t: 1\n\n' "$c" "$feat" "$part"; done > "$R/sim/cpuinfo"
   if is_pi_row "$r"; then
-    mkdir -p "$R/sys/firmware/devicetree/base"
-    printf 'Raspberry Pi 5 Model B Rev 1.0\0' > "$R/sys/firmware/devicetree/base/model"
+    # device tree (model, compatible) and the v3d render node of that board
+    mkdir -p "$R/sys/firmware/devicetree/base" "$R/sys/class/drm/renderD128/device/of_node" "$R/sys/bus/platform/drivers/v3d"
+    if [ "$r" = raspios-pi4 ]; then
+      printf 'Raspberry Pi 4 Model B Rev 1.4\0' > "$R/sys/firmware/devicetree/base/model"
+      printf 'raspberrypi,4-model-b\0brcm,bcm2711\0' > "$R/sys/firmware/devicetree/base/compatible"
+      printf 'brcm,2711-v3d\0' > "$R/sys/class/drm/renderD128/device/of_node/compatible"
+    else
+      printf 'Raspberry Pi 5 Model B Rev 1.0\0' > "$R/sys/firmware/devicetree/base/model"
+      printf 'raspberrypi,5-model-b\0brcm,bcm2712\0' > "$R/sys/firmware/devicetree/base/compatible"
+      printf 'brcm,2712-v3d\0' > "$R/sys/class/drm/renderD128/device/of_node/compatible"
+    fi
+    ln -sfn ../../../../bus/platform/drivers/v3d "$R/sys/class/drm/renderD128/device/driver"
     [ -e /proc/device-tree/model ] || mkdir -p "$R/sim/realproc"
   fi
   stub "$R" log <<'EOF'
@@ -303,6 +323,13 @@ EOF
 # matrix stand-in: arm64 machine name
 /usr/bin/uname "$@" | sed 's/x86_64/aarch64/g'
 EOF
+  # sim on a non-arm64 rootfs: host programs read as arm64 builds; bubblewrap of the simulated install (x86 client path)
+  [ "$simapt" = 1 ] && { stub "$R" file <<'EOF'
+#!/bin/bash
+# matrix stand-in: file reports host programs as arm64 builds
+/usr/bin/file "$@" | sed 's/x86-64/aarch64/g; s/x86_64/aarch64/g'
+EOF
+    cp /bin/true "$R/sim/bin/bwrap"; }
   # FEX package stand-ins, made when the (simulated) install names a fex-emu build
   stub "$R" sim-fex <<'EOF'
 #!/bin/sh
@@ -339,22 +366,38 @@ EOF
 [ "${1:-}" = PAGESIZE ] && [ -s /sim/pagesize ] && { cat /sim/pagesize; exit 0; }
 exec /usr/bin/getconf "$@"
 EOF
-  # Valve client download: stand-in manifest and package served for the client URLs, real curl otherwise
+  # Valve client download: stand-in manifests and packages served for the client URLs, real curl otherwise;
+  # native client stand-in stops with SIGILL when /sim/nolse is there (CPU without LSE: setup keeps the x86 client)
   python3 -I - "$R/sim/www" <<'PY'
 import hashlib, io, os, sys, zipfile
 w = sys.argv[1]
-b = io.BytesIO()
-with zipfile.ZipFile(b, "w") as z:
-    for n, body in (("steamrtarm64\\steam", "#!/bin/sh\necho stand-in client\n"), ("steamrtarm64\\builddate.txt", "stand-in\n")):
-        i = zipfile.ZipInfo(n)
-        i.external_attr = 0o755 << 16
-        z.writestr(i, body)
-data = b.getvalue()
+
+
+def zipped(members):
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w") as z:
+        for n, body in members:
+            i = zipfile.ZipInfo(n)
+            i.external_attr = 0o755 << 16
+            z.writestr(i, body)
+    return b.getvalue()
+
+
+def entry(name, data):
+    return ('\t"%s"\n\t{\n\t\t"file"\t\t"%s.zip.%s"\n\t\t"sha2"\t\t"%s"\n\t}\n'
+            % (name, name, hashlib.sha1(data).hexdigest(), hashlib.sha256(data).hexdigest()))
+
+
+data = zipped((("steamrtarm64\\steam", "#!/bin/sh\n[ -e /sim/nolse ] && kill -ILL $$\necho stand-in client\n"),
+               ("steamrtarm64\\builddate.txt", "stand-in\n")))
 open(os.path.join(w, "client.zip"), "wb").write(data)
-m = ('"linuxarm64"\n{\n\t"version"\t\t"1790000000"\n\t"bins_linuxarm64_linuxarm64"\n\t{\n'
-     '\t\t"file"\t\t"bins_linuxarm64_linuxarm64.zip.%s"\n\t\t"sha2"\t\t"%s"\n\t}\n}\n'
-     % (hashlib.sha1(data).hexdigest(), hashlib.sha256(data).hexdigest()))
-open(os.path.join(w, "manifest"), "w").write(m)
+open(os.path.join(w, "manifest"), "w").write('"linuxarm64"\n{\n\t"version"\t\t"1790000000"\n' + entry("bins_linuxarm64_linuxarm64", data) + "}\n")
+boot = zipped((("steam.sh", "#!/bin/sh\necho stand-in x86 client\n"), ("ubuntu12_32/steam", b"\x7fELF\x01\x01\x01" + b"\0" * 57),
+               ("ubuntu12_64/steamwebhelper.sh", "#!/bin/bash\nexec \\\n  \"${DIR}/steamwebhelper_sniper_wrap.sh\" \"$@\"\n")))
+rt = zipped((("ubuntu12_32/steam-runtime.tar.xz", b"stand-in runtime"), ("ubuntu12_32/steam-runtime.tar.xz.checksum", "0  steam-runtime.tar.xz\n")))
+open(os.path.join(w, "x86boot.zip"), "wb").write(boot)
+open(os.path.join(w, "x86rt.zip"), "wb").write(rt)
+open(os.path.join(w, "manifest-x86"), "w").write('"ubuntu12"\n{\n\t"version"\t\t"1790000001"\n' + entry("steam_ubuntu12", boot) + entry("runtime_scout_ubuntu12", rt) + "}\n")
 PY
   stub "$R" curl <<'EOF'
 #!/bin/bash
@@ -363,6 +406,9 @@ PY
 u=; o=; a=("$@")
 while [ $# -gt 0 ]; do case $1 in -o|--output) o=$2; shift;; https://*|http://*) u=$1;; esac; shift; done
 case $u in
+  https://client-update.steamstatic.com/steam_client_ubuntu12) cp /sim/www/manifest-x86 "$o"; exit 0;;
+  https://client-update.steamstatic.com/steam_ubuntu12.zip.*) cp /sim/www/x86boot.zip "$o"; exit 0;;
+  https://client-update.steamstatic.com/runtime_scout_ubuntu12.zip.*) cp /sim/www/x86rt.zip "$o"; exit 0;;
   https://client-update.steamstatic.com/steam_client_*) cp /sim/www/manifest "$o"; exit 0;;
   https://client-update.steamstatic.com/bins_*|https://client-update.steamstatic.com/*.zip.*) cp /sim/www/client.zip "$o"; exit 0;;
 esac
@@ -390,6 +436,8 @@ row(){
   if [ "$FAST" = 1 ] && case $kind in install|pagesize) true;; *) false;; esac; then res SKIP "$r ($label): full install row (left out by --fast)"; return; fi
   # x86 row belongs to the sim backend only
   [ "$kind" = x86 ] && [ "$BACKEND" = qemu ] && return
+  # Pi 4 row: qemu-user shows the host CPU's features (LSE present), so the Cortex-A72 path exists in the sim backend only
+  [ "$r" = raspios-pi4 ] && [ "$BACKEND" = qemu ] && { res SKIP "$r ($label): qemu-user presents host CPU features (LSE), Cortex-A72 path runs in sim backend only"; return; }
   can_exec "$a" || { res SKIP "$r ($label): $(exec_why "$a")"; return; }
   case $kind in install|pagesize) [ "$MAPAUTO" = 0 ];; *) false;; esac && { res SKIP "$r ($label): no subordinate id range for the game account (unshare --map-auto)"; return; }
   [ -n "$(lock_digest "$i" "$a")" ] || { res SKIP "$r ($label): no $a image of $i in distro-matrix.lock"; return; }
@@ -404,7 +452,8 @@ row(){
   [ "$a" != arm64 ] && [ "$kind" != x86 ] && simapt=1
   case $kind in gate|x86) SIMPATH=;; *) standins "$R" $simapt $mode "$r"; SIMPATH=/sim/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin;; esac
   export SIMPATH
-  [ $mode = real ] && in_root "$R" dpkg-query -W -f='${Package}\n' 2>/dev/null | sort > "$L/pkgs-before.txt"
+  [ $mode = real ] && in_root "$R" dpkg-query -W -f='${Package} ${Version}\n' 2>/dev/null | sort > "$L/pkgver-before.txt" \
+    && cut -d' ' -f1 "$L/pkgver-before.txt" > "$L/pkgs-before.txt"
   snap "$R" "$L/before.tsv"
   case $kind in
     gate|x86)
@@ -471,6 +520,25 @@ row_install(){
   if grep -q '^added  */usr/local/bin/steam-arm$' "$L/install-diff.txt" && grep -q '^added  */etc/steam-arm/steam-arm.conf$' "$L/install-diff.txt"; then
     res PASS "$r ($label): setup wrote launcher and settings ($n paths added)"
   else res FAIL "$r ($label): launcher or settings file missing after setup"; fi
+  if [ "$r" = raspios-pi4 ]; then
+    # Pi 4 facts: x86 client by CPU rule, platform pi4, VideoCore VI family, FEX build for Armv8.0, host Mesa from Pi archive
+    d=$(grep -E '^(CLIENT|CLIENT_SET|PLATFORM|CPU_LSE|GPU_FAMILY)=' "$R/etc/steam-arm/steam-arm.conf" 2>/dev/null | sort | paste -sd' ' -)
+    if [ "$d" = "CLIENT=x86 CLIENT_SET=auto CPU_LSE=0 GPU_FAMILY=broadcom-v3d42 PLATFORM=pi4" ]; then res PASS "$r ($label): settings CLIENT=x86 (auto), PLATFORM=pi4, CPU_LSE=0, GPU_FAMILY=broadcom-v3d42"
+    else res FAIL "$r ($label): settings for Pi 4 wrong: ${d:-none}"; fi
+    if grep -q 'FEX build for this CPU (ARMv8.0 features): fex-emu-armv8.0' "$L/install.log" && grep -q '^MESA_HOST=.*rpt' "$R/etc/steam-arm/steam-arm.conf"; then
+      res PASS "$r ($label): FEX package fex-emu-armv8.0 picked, MESA_HOST from Pi archive ($(sed -n 's/^MESA_HOST=//p' "$R/etc/steam-arm/steam-arm.conf"))"
+    else res FAIL "$r ($label): FEX build line or MESA_HOST missing: $(grep -o 'FEX build for this CPU[^$]*' "$L/install.log" | head -n 1) $(grep '^MESA_HOST=' "$R/etc/steam-arm/steam-arm.conf")"; fi
+    # game account's files belong to a subordinate id: read through the namespace; FEX stand-in carries thunk folders
+    d=$(ns sh -c 'test -f "$1" && echo client; tr -d " \n" < "$2" 2>/dev/null | grep -o "\"ThunksDB\":{\"GL\":[01],\"Vulkan\":[01]}"' _ \
+        "$R/home/$GAMEUSER/.local/share/steam-arm/.local/share/Steam/ubuntu12_32/steam" "$R/home/$GAMEUSER/.fex-emu/Config.json" 2>/dev/null | paste -sd' ' -)
+    if [ "$d" = 'client "ThunksDB":{"GL":1,"Vulkan":1}' ]; then res PASS "$r ($label): x86 client files in place; thunks on in Config.json (FEX stand-in has thunk folders)"
+    else res FAIL "$r ($label): x86 client files or Config.json thunk state wrong: ${d:-nothing readable}"; fi
+    # the arm64 FEX package of the PPA lists the five thunk files setup searches for
+    d=$(in_root "$R" sh -c 'cd /tmp && rm -f fex-emu-armv8.0_*.deb && apt-get download fex-emu-armv8.0 >/dev/null 2>&1 && dpkg-deb -c fex-emu-armv8.0_*.deb' 2>/dev/null \
+        | awk '{print $6}' | grep -E '^\./usr/(lib/aarch64-linux-gnu/fex-emu/HostThunks/lib(GL|vulkan)-host\.so|share/fex-emu/GuestThunks/lib(GL|vulkan)-guest\.so|share/fex-emu/ThunksDB\.json)$' | sort | paste -sd' ' -)
+    if [ "$(wc -w <<<"$d")" = 5 ]; then res PASS "$r ($label): PPA package fex-emu-armv8.0 lists the five thunk files at the searched paths"
+    else res FAIL "$r ($label): PPA package thunk files not confirmed (${d:-download or listing failed})"; fi
+  fi
   run_inst "$R" "$L/remove.log" DELETE --remove --purge; rc=$?
   if [ $rc = 0 ] && grep -q 'done: Steam ARM removed' "$L/remove.log"; then res PASS "$r ($label): --remove --purge completed"
   else res FAIL "$r ($label): --remove --purge rc $rc: $(grep -m1 '\[fail\]' "$L/remove.log" | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-200)"; fi
@@ -486,8 +554,14 @@ row_install(){
     in_root "$R" dpkg-query -W -f='${Package}\n' 2>/dev/null | sort | comm -13 "$L/pkgs-before.txt" - > "$L/pkgs-new.txt"
     [ -s "$L/pkgs-new.txt" ] && in_root "$R" xargs -r dpkg -L < "$L/pkgs-new.txt" 2>/dev/null \
       | awk '/^\//{print $0 "\tdistribution package installed by setup, stays (removal names it)"}' > "$L/pkgfiles.tsv"
+    # packages present before whose version changed (dependency upgrades of apt-get install): their files stay too
+    in_root "$R" dpkg-query -W -f='${Package} ${Version}\n' 2>/dev/null | sort | comm -13 "$L/pkgver-before.txt" - | cut -d' ' -f1 | sort \
+      | comm -12 - "$L/pkgs-before.txt" > "$L/pkgs-upgraded.txt"
+    [ -s "$L/pkgs-upgraded.txt" ] && in_root "$R" xargs -r dpkg -L < "$L/pkgs-upgraded.txt" 2>/dev/null \
+      | awk '/^\//{print $0 "\tdistribution package upgraded by setup'"'"'s apt-get install, stays"}' >> "$L/pkgfiles.tsv"
     keeps+=(--keep-list "$L/pkgfiles.tsv"
-      --keep '__pycache__/|^/etc/alternatives/|^/var/lib/|^/etc/(passwd|group|shadow|gshadow|subuid|subgid)-?$|^/etc/ssl/certs/|^/usr/share/mime/|^/usr/.*\.cache$|gschemas\.compiled$|^/etc/systemd/(?!.*steam-arm)|^/etc/dbus-1/=written by maintainer scripts of installed packages')
+      --keep '__pycache__(/|$)|^/etc/alternatives/|^/var/lib/|^/etc/(passwd|group|shadow|gshadow|subuid|subgid)-?$|^/etc/ssl/certs/|^/usr/share/mime/|^/usr/.*\.cache$|gschemas\.compiled$|^/etc/systemd/(?!.*steam-arm)|^/etc/dbus-1/|^/etc/rc[0-6S]\.d/|^/etc/fonts/conf\.d/|^/var/cache/fontconfig(/|$)|^/usr/local/share/fonts$|^/usr/share/icons/default/index\.theme$|^/etc/(nsswitch\.conf|pam\.d/common-)|^/usr/lib/udev/hwdb\.bin$|^/usr/bin/pinentry$=written by maintainer scripts and triggers of installed packages (init links, fontconfig, pam-auth-update, nss, hwdb, alternatives)'
+      --keep '^/root/\.launchpadlib(/|$)=add-apt-repository cache; removal names it')
   fi
   d=$(python3 -I "$TREE" diff "$L/before.tsv" "$L/after.tsv" --purge --removal "$REMOVAL" --home "/home/$GAMEUSER" "${keeps[@]}" --count -v 2>&1); rc=$?
   printf '%s\n' "$d" > "$L/diff.txt"

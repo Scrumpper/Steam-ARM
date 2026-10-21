@@ -103,8 +103,14 @@ for fam in PI:
     check("H1 %s, x86 Proton, no setting: PROTON_USE_WINED3D=1, logged" % fam,
           r["env"].get("PROTON_USE_WINED3D") == "1" and "d3d: WineD3D (OpenGL): Raspberry Pi GPU" in r["log"], r)
     r = run(fam, "d3d=dxvk", proton=True, env=LDEF)
-    check("H2 %s, d3d=dxvk over launcher default: PROTON_USE_WINED3D=0, logged" % fam,
-          r["env"].get("PROTON_USE_WINED3D") == "0" and "d3d: DXVK (title setting d3d=dxvk)" in r["log"], r)
+    check("H2 %s, d3d=dxvk: refused, WineD3D kept, five missing features named (3.1)" % fam,
+          r["env"].get("PROTON_USE_WINED3D") == "1"
+          and "d3d: WineD3D kept (title setting d3d=dxvk not applied): DXVK needs shaderInt64, robustBufferAccess2, textureCompressionBC, multiViewport, tessellationShader; V3DV reports none" in r["log"], r)
+r = run("broadcom-v3d42", "d3d=dxvk", proton=True, env={"PROTON_USE_WINED3D": "0"})
+check("H2b d3d=dxvk with own launch option PROTON_USE_WINED3D=0: refusal logged, launch option kept",
+      r["env"].get("PROTON_USE_WINED3D") == "0" and "launch option kept: PROTON_USE_WINED3D=0 (title setting d3d=dxvk)" in r["log"] and "not applied" in r["log"], r)
+r = run("mali-csf-v10", "d3d=dxvk", proton=True)
+check("H2c Mali: d3d key not applied there, no DXVK refusal text", "DXVK needs" not in r["log"] and "PROTON_USE_WINED3D" not in r["env"], r)
 for fam in ("mali-csf-v10", "other"):
     r = run(fam, proton=True, env={"PROTON_DXVK_D3D8": "1"})
     check("H3 %s, x86 Proton: no WineD3D, PROTON_DXVK_D3D8 kept, no d3d line" % fam,

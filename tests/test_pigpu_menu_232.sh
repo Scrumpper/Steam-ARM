@@ -44,10 +44,10 @@ done
 
 # ---------- Direct3D ----------
 fresh GPU_FAMILY=broadcom-v3d71; ui graphics_game 400 d3d dxvk
-check "P3 Direct3D screen: WineD3D, DXVK stops at start, default; reason named" "grep -q '^MENU Direct3D: Portal|Windows games on Raspberry Pi GPU run Direct3D 8 to 11 through WineD3D' <<<\"\$OUT\" && grep -q 'wined3d WineD3D (OpenGL) dxvk DXVK (Vulkan), stops at start on this GPU default Default: WineD3D (remove this setting)\$' <<<\"\$OUT\""
-check "P3 DXVK chosen: d3d=dxvk in titles.conf, message names apply times" "row400 | grep -q ' d3d=dxvk' && grep -q '^MSG Graphics|Portal: Direct3D through DXVK (stops at start).' <<<\"\$OUT\" && grep -q 'next start of Steam ARM (Steam launch option' <<<\"\$OUT\""
+check "P3 Direct3D screen: WineD3D, DXVK stops at start, default; reason named" "grep -q '^MENU Direct3D: Portal|Windows games on Raspberry Pi GPU run Direct3D 8 to 11 through WineD3D' <<<\"\$OUT\" && grep -q 'wined3d WineD3D (OpenGL) dxvk DXVK (Vulkan), not applied: V3DV lacks shaderInt64, robustBufferAccess2, textureCompressionBC, multiViewport, tessellationShader default Default: WineD3D (remove this setting)\$' <<<\"\$OUT\""
+check "P3 DXVK chosen: d3d=dxvk in titles.conf, message names apply times" "row400 | grep -q ' d3d=dxvk' && grep -q '^MSG Graphics|Portal: Direct3D through DXVK (not applied on this GPU).' <<<\"\$OUT\" && grep -q 'next start of Steam ARM (Steam launch option' <<<\"\$OUT\""
 ui graphics_game 400 BACK
-check "P3 row shows DXVK afterwards" "grep -q 'd3d Direct3D, Windows build: DXVK (stops at start)' <<<\"\$OUT\""
+check "P3 row shows DXVK afterwards" "grep -q 'd3d Direct3D, Windows build: DXVK (not applied on this GPU)' <<<\"\$OUT\""
 ui graphics_game 400 d3d default
 check "P4 Direct3D default: d3d removed" "! grep -q 'd3d=' '$TC'"
 
