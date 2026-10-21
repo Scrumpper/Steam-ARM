@@ -72,6 +72,10 @@ OUT=$(wrun vulkan "gpu_compositing: disabled|${ev}-")
 check "W3 compositing disabled, still so after 60 s: failed:compositing-disabled (not before 60 s)" "grep -qx 'cef-gpu=failed:compositing-disabled' <<<\"\$OUT\""
 OUT=$(wrun vulkan "-|gone")
 check "W4 client gone: failed:client-exited" "grep -qx 'cef-gpu=failed:client-exited' <<<\"\$OUT\""
+OUT=$( rm -rf "$T/w"; mkdir -p "$T/w/S/logs" "$T/w/.config/steam-arm"; echo gone > "$T/w/gone"; rm -f "$T/w.log"
+  ( LAB=vulkan ARMHOME=$T/w S=$T/w/S LABST=$T/w/.config/steam-arm/state LOG=$T/w.log; n=0; sleep(){ n=$((n + 1)); }; date(){ echo 1000; }
+    client_running(){ [ ! -f "$T/w/gone" ]; }; llog(){ echo "$*" >> "$LOG"; }; lnote(){ echo "NOTE $1" >> "$LOG"; }; . "$WB"; lab_watch; echo "rc=$? sleeps=$n" ) 2>&1; cat "$T/w/.config/steam-arm/state" "$T/w.log" 2>/dev/null )
+check "W4b client never appears (watcher forked before steam.sh): 90 s wait, log line, no result, no notice" "grep -qx 'rc=0 sleeps=18' <<<\"\$OUT\" && grep -qx 'lab: client process not seen within 90 s; no result recorded' <<<\"\$OUT\" && ! grep -q 'cef-gpu=\|NOTE' <<<\"\$OUT\""
 ev=""; for i in $(seq 1 40); do ev="$ev-|"; done
 OUT=$(wrun vulkan "${ev}-")
 check "W5 nothing in 180 s: failed:no-result" "grep -qx 'cef-gpu=failed:no-result' <<<\"\$OUT\""

@@ -51,7 +51,7 @@ mesa_host(){ dpkg-query -W -f='${Version}\n' libgl1-mesa-dri 2>/dev/null | head 
 # of family $1; empty elsewhere or without Mesa. Fact for reports and docs; no rule reads it.
 vk_host(){
   local v maj min
-  case "$1" in broadcom-*) ;; *) return 0;; esac
+  case "$1" in broadcom-vc4) return 0;; broadcom-*) ;; *) return 0;; esac
   v=$(mesa_host | sed 's/^[0-9]*://; s/[-+~].*//'); [ -n "$v" ] || return 0
   maj=${v%%.*}; min=${v#*.}; min=${min%%.*}
   case "$maj$min" in *[!0-9]*|"") return 0;; esac
@@ -5574,6 +5574,13 @@ rb_pick(){
   [ -n "${1:-}" ] && echo "$dm"
   return 0
 }
+# Client FEX keys of client-tso relaxed and x87-client on out of the client files: the version coming back knows no such keys.
+rb_strip_client(){
+  local sd x; sd=$(steam_dir)
+  [ -d "$sd" ] && [ -f /usr/local/lib/steam-arm-x86client.py ] || return 0
+  x=$(runuser -u "$(game_user)" -- python3 /usr/local/lib/steam-arm-x86client.py strip-optin "$sd" "$(arm_home)" 2>/dev/null) && [ -n "$x" ] && ulog "$x"
+  return 0
+}
 # rb_run NAME YES: snapshot of current version (not for unfinished change), restore NAME, run its setup with --keep.
 rb_run(){
   local n=$1 yes=$2 tv cur pend=0 csnap="" rc a inst
@@ -5599,6 +5606,7 @@ rb_run(){
   else
     ulog "$(state_text) Restoring $tv."
   fi
+  rb_strip_client
   snap_restore "$n" || { exec 9>&-; ulog "Restore of $tv failed ($SNAP_ERR)."; return 2; }
   exec 9>&-
   ulog "Files of $tv restored from $n; running its setup."
@@ -6923,7 +6931,7 @@ x86 client on CPU without Armv8.1 atomics. On: client opens its desktop window (
 # Client window memory model (x86 client on CPU without LSE): FEX TSOEnabled 0 for the three client programs, strict by default.
 maint_client_tso(){
   local st c r; st=$(client_tso); r=$(game_read sed -n 's/^client-tso=//p' "$(arm_home)/.config/steam-arm/state" 2>/dev/null | tail -1)
-  c=$(ui_menu "Client window: memory model" "x86 client on CPU without Armv8.1 atomics. strict (default): x86 memory ordering kept for the client window programs. relaxed: TSO emulation off for steamwebhelper, steam and exe only (games untouched); less emulated CPU work, at a correctness cost FEX documents as likely to break multithreaded programs. Guard: three client window restarts within 120 s, or no start line within 300 s, go back to strict from the next start (result client-tso=failed:reason in client home .config/steam-arm/state; retry removes it). Applies from next start of Steam ARM.
+  c=$(ui_menu "Client window: memory model" "x86 client on CPU without Armv8.1 atomics. strict (default): x86 memory ordering kept for the client window programs. relaxed: TSO emulation off for steamwebhelper, steam and exe (FEX keys by program name; exe also matches emulated programs that start themselves again through /proc/self/exe, Chromium and Electron based titles among them); less emulated CPU work, at a correctness cost FEX documents as likely to break multithreaded programs. Guard: three client window restarts within 120 s, or no start line within 300 s, go back to strict from the next start (result client-tso=failed:reason in client home .config/steam-arm/state; retry removes it). Applies from next start of Steam ARM.
 Now: $st${r:+; last guard result: $r}." --default "$st" strict "strict (default)" relaxed "relaxed (TSOEnabled 0 for client window programs)" retry "Remove earlier guard result (allows another trial)") || return
   self_root client-tso "$c" && ui_msg "Maintenance" "Client window: memory model: $(client_tso). Applies from next start of Steam ARM."
 }
@@ -7197,9 +7205,10 @@ Pi 4 (Cortex-A72, no Armv8.1 atomics)
   steam-arm --bigpicture opens Deck interface for one
   start). Hung view kills and restarts: Maintenance,
   off only after the report names a restart loop.
-- Vulkan class (V3DV): 1.2 on Raspberry Pi OS bookworm
-  (Mesa 24.2), 1.3 on trixie (Mesa 25 and 26); setup
-  stores it as VK_HOST (--detect: vulkan host).
+- Vulkan class (V3DV): 1.3 on Raspberry Pi OS trixie
+  (Mesa 25 and 26); setup stores it as VK_HOST
+  (--detect: vulkan host). Bookworm cannot run setup
+  (Debian 12 host package check).
 - Faster client start: Maintenance > Faster client
   start (reduced x87 precision for client program;
   rendering errors possible; games unaffected).
@@ -10086,7 +10095,7 @@ APPCFG_WANT = {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0", 
 STEAM_JSON = "steam.json"
 STEAM_BASE = {"Config": {"SilentLog": "1"}}
 X87_WANT = {"Config": {"X87ReducedPrecision": "1"}}
-# client window memory model relaxed (STEAM_ARM_CLIENT_TSO=relaxed): the three client program names only, never a game
+# client window memory model relaxed (STEAM_ARM_CLIENT_TSO=relaxed): three client program names (exe also matches titles re-executing through /proc/self/exe)
 TSO_WANT = {"Config": {"TSOEnabled": "0"}}
 BETA_SAVE = "package/beta.steam-arm-arm64"
 X11_SRC = "/usr/lib/aarch64-linux-gnu/libX11.so.6"
@@ -10301,6 +10310,18 @@ def appcfg_strip(f, want):
     else:
         os.unlink(f)
     return True
+
+
+def strip_optin(s, armhome):
+    """Keys older versions do not know (TSOEnabled 0, X87ReducedPrecision 1) out of the three client files (rollback)."""
+    done = []
+    for n in APPCFG + (STEAM_JSON,):
+        f = os.path.join(armhome, ".fex-emu/AppConfig", n)
+        if appcfg_strip(f, {"Config": dict(TSO_WANT["Config"], **X87_WANT["Config"])}):
+            done.append(n)
+    if done:
+        print("x86 client: memory model and x87 keys removed from %s" % ", ".join(done))
+    return 0
 
 
 def multiblock_off(s, armhome):
@@ -10651,11 +10672,13 @@ def main(a):
         return reset(a[1], a[2], a[3])
     if len(a) == 3 and a[0] == "multiblock-off":
         return multiblock_off(a[1], a[2])
+    if len(a) == 3 and a[0] == "strip-optin":
+        return strip_optin(a[1], a[2])
     if len(a) in (2, 3) and a[0] == "probe" and (len(a) == 2 or a[2] == "--run"):
         print(probe(a[1], len(a) == 3))
         return 0
     sys.stderr.write("usage: steam-arm-x86client.py bootstrap ZIP S | runtime ZIP S | prepare S ARMHOME | restore S ARMHOME"
-                     " | reset S ARMHOME arm64|x86 | multiblock-off S ARMHOME | probe ZIP [--run]\n")
+                     " | reset S ARMHOME arm64|x86 | multiblock-off S ARMHOME | strip-optin S ARMHOME | probe ZIP [--run]\n")
     return 2
 
 
@@ -10961,6 +10984,12 @@ def private_log():
 
 
 private_log()
+
+# Experiment lab-cef-gpu gl exports an OpenGL 4.5 report for the client window; games keep their own rules
+if os.environ.get("STEAM_ARM_LAB_CEF_GPU") == "gl" and os.environ.get("MESA_GL_VERSION_OVERRIDE") == "4.5":
+    for _k in ("MESA_GL_VERSION_OVERRIDE", "MESA_GLSL_VERSION_OVERRIDE"):
+        os.environ.pop(_k, None)
+    log("lab gl: OpenGL 4.5 report of client window not passed to game")
 
 
 def keep_env(k, want):
@@ -15143,7 +15172,8 @@ fi
 # game draws on CPU. Raspberry Pi platforms get one notice that stays, at every start (other boards may run without them).
 case "$PLATFORM" in pi*)
   if { tr -d ' \n' < "$FEXCFG"; } 2>/dev/null | grep -Eq '"(GL|Vulkan)":0'; then
-    THMSG="GPU forwarding libraries not found: every game draws on CPU. Fix: install FEX again (package fex-emu-armv8.0 from FEX's package source), then sudo steam-arm-config, Maintenance, Update / Repair."
+    case "$PLATFORM" in pi5) FXP=fex-emu-armv8.2;; pi4) FXP=fex-emu-armv8.0;; *) FXP="fex-emu-armv8.0, or fex-emu-armv8.2 on Cortex-A76";; esac
+    THMSG="GPU forwarding libraries not found: every game draws on CPU. Fix: install FEX again (package $FXP from FEX's package source), then sudo steam-arm-config, Maintenance, Update / Repair."
     lwarn "$THMSG (ThunksDB in $FEXCFG)"
     [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && ( notice 0 "Steam ARM: GPU forwarding off" "$THMSG" 0 ) </dev/null >/dev/null 2>&1 &
   fi;;
@@ -15429,9 +15459,12 @@ if [ "$CLIENT" = x86 ]; then
       *) lnote "lab: client window through GPU (ANGLE $LAB) failed (${1#failed:}); next start draws on CPU again; $([ "${CLIENT_GPU:-off}" = on ] && printf 'steam-arm-config client-gpu on' || printf 'steam-arm-config lab-cef-gpu retry') allows another trial" "Steam ARM: experiment";;
     esac
   }
+  # Watchers fork before the client process exists (steam.sh under FEX on a slow CPU): up to 90 s for its first appearance.
+  client_wait(){ local w=0; until client_running; do [ "$w" -lt 18 ] || return 1; sleep 5; w=$((w + 1)); done; }
   lab_watch(){
     [ -n "$LAB" ] || return 0
     mkdir -p "${LABOFF%/*}"; for f in "$S"/logs/webhelper*.txt; do [ -f "$f" ] && echo "$f $(stat -c %s "$f")"; done > "$LABOFF"
+    client_wait || { llog "lab: client process not seen within 90 s; no result recorded"; return 0; }
     t0=$(date +%s)
     while sleep 5; do
       now=$(( $(date +%s) - t0 ))
@@ -15462,6 +15495,7 @@ if [ "$CLIENT" = x86 ]; then
   MBSTATE="$ARMHOME/.config/steam-arm/multiblock-client"
   wh_restart_watch(){
     [ "$SLOW" = 1 ] && [ ! -f "$MBSTATE" ] || return 0
+    client_wait || return 0
     t0=$(date +%s); last=; n=0
     while sleep 10; do
       client_running || return 0
@@ -15480,7 +15514,9 @@ if [ "$CLIENT" = x86 ]; then
   # "Startup -" line in the client's webhelper log within 300 s, records client-tso=failed:<reason> (next start strict).
   tso_watch(){
     [ "$STEAM_ARM_CLIENT_TSO" = relaxed ] || return 0
-    t0=$(date +%s); last=; c1=; c2=; so=$(stat -c %s "$S/logs/webhelper.txt" 2>/dev/null || echo 0); why=
+    so=$(stat -c %s "$S/logs/webhelper.txt" 2>/dev/null || echo 0)
+    client_wait || return 0
+    t0=$(date +%s); last=; c1=; c2=; why=
     while sleep 10; do
       client_running || return 0
       now=$(date +%s)
@@ -16167,7 +16203,7 @@ section_verdict(){
   echo "client window: $cw"
   st=$(cw_starts "$L"); n=${st% *}; loop=${st#* }
   if [ "$loop" = 1 ]; then echo "restart loop: yes ($n client window starts in 10 min, three within 120 s)"; else echo "restart loop: no ($n client window starts in 10 min)"; fi
-  ex=$(grep -ac 'GPU process exited unexpectedly' "$L/cef_log.txt" 2>/dev/null || echo 0)
+  ex=$(grep -ac 'GPU process exited unexpectedly' "$L/cef_log.txt" 2>/dev/null)
   echo "gpu process exits: ${ex:-0} (cef_log.txt, whole file)"
   if [ -n "$PH_AVG" ]; then
     read -r top n <<<"$(printf '%s\n' "$PH_AVG" | tr ' ' '\n' | paste - - | sort -k2,2 -rn | head -n 1)"
@@ -16181,8 +16217,10 @@ section_verdict(){
   vkh=$(sed -n 's/^VK_HOST=//p' /etc/steam-arm/steam-arm.conf 2>/dev/null | tail -n 1)
   api=$(have vulkaninfo && timeout 30 vulkaninfo --summary 2>/dev/null | grep -m1 -oE 'apiVersion *= *[0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+$')
   echo "vulkan host: ${vkh:-n/a} (settings file VK_HOST); vulkaninfo ${api:-n/a}$([ -n "$vkh" ] && [ -n "$api" ] && [ "$vkh" != "$api" ] && printf '; differ: run setup again')"
-  # throttle bits decide (idle clocks sit low under ondemand, so the floor alone proves nothing)
-  fl=0; case "$thr" in *under-voltage*|*arm-freq-capped*|*" throttled"*|*soft-temp-limit*) fl=1;; esac
+  # current throttle bits (0-3) decide; since-boot bits (16-19) stay set after one dip at boot, so they only get a line
+  hx=${thr%% *}; cur=0; sb=0; case $hx in 0x*) cur=$(( hx & 0xF )); sb=$(( (hx >> 16) & 0xF ));; esac
+  [ "$sb" != 0 ] && [ "$cur" = 0 ] && echo "throttle since boot: $(printf '%s\n' $thr | grep -- '-since-boot$' | paste -sd' ') (bits clear now; not decisive, power supply worth a look)"
+  fl=0; [ "$cur" = 0 ] || fl=1
   if [ "$fl" = 1 ]; then nx="CPU clock capped or throttled: power supply and cooling first; numbers above do not show the board's capacity"
   elif [ "$loop" = 1 ]; then nx="client window restarts in a loop: GPU work changes nothing until it stops; check fex client line (silentlog=1 expected), steam-arm-config cef-hang-kills off stops Chromium's restarts of hung views"
   elif [ "$CLIENT" = x86 ]; then case $cw in

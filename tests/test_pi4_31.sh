@@ -63,6 +63,7 @@ OUT=$(vkh broadcom-v3d71 "2:24.3.0-1"); check "VK3 epoch stripped, 24.3 -> 1.3" 
 OUT=$(vkh mali-csf-v10 "26.2.2-1"); check "VK4 other family: empty" "[ \"\$OUT\" = '[]' ]"
 OUT=$(vkh broadcom-v3d42 ""); check "VK5 no Mesa package: empty" "[ \"\$OUT\" = '[]' ]"
 OUT=$(vkh broadcom-v3d42 "garbage"); check "VK6 unparsable version: empty" "[ \"\$OUT\" = '[]' ]"
+OUT=$(vkh broadcom-vc4 "25.0.7-2"); check "VK6b vc4 (no Vulkan driver): empty" "[ \"\$OUT\" = '[]' ]"
 check "VK7 handler start record carries vkhost from the settings file; report verdict cross-checks VK_HOST against vulkaninfo" "grep -q '(\"vkhost\", conf_value(\"VK_HOST\") or \"-\")' '$INST' && grep -q '^  echo \"vulkan host: \${vkh:-n/a} (settings file VK_HOST); vulkaninfo' '$INST'"
 # setup block for the x86 client: levels, measure command, Pi line only on Pi platforms
 XW=$(sed -n '/^x86_warn(){/,/^}/p' "$INST")
@@ -160,7 +161,7 @@ OUT=$(x87 off reduced); check "X4 environment reduced wins over setting off" "[ 
 OUT=$(x87 on bogus); check "X5 unknown environment value falls back to setting" "[ \"\$OUT\" = reduced ]"
 
 # launcher: client window restart counter (slow emulation class only)
-RW=$T/rw.sh; awk '/^  wh_restart_watch\(\)\{/{f=1} f{print} f && /^  }$/{exit}' "$L" > "$RW"
+RW=$T/rw.sh; { grep '^  client_wait(){' "$L"; awk '/^  wh_restart_watch\(\)\{/{f=1} f{print} f && /^  }$/{exit}' "$L"; } > "$RW"
 check "R0 restart watcher extracted, started in background before the normal x86 start loop" \
   "[ -s $RW ] && grep -q '^  wh_restart_watch </dev/null >/dev/null 2>&1 &$' $L && [ \$(grep -n '^  wh_restart_watch </dev/null' $L | cut -d: -f1) -lt \$(grep -n 'client_x86 \$XFLAGS \${GPUI:+\"\$GPUI\"} -noverifyfiles' $L | cut -d: -f1) ]"
 rw(){ # SLOW XOK(1/0) STATE(1/0) pid-sequence...
@@ -238,6 +239,8 @@ check "T1 pi4, thunks off: warning logged with config path, notice that stays (t
   "grep -q 'GPU forwarding libraries not found.*(ThunksDB in $T/tn.json)' <<<\"\$OUT\" && grep -q '^NOTICE Steam ARM: GPU forwarding off | GPU forwarding libraries not found: every game draws on CPU. Fix: install FEX again (package fex-emu-armv8.0 from FEX.s package source), then sudo steam-arm-config, Maintenance, Update / Repair. | 0$' <<<\"\$OUT\""
 OUT=$(tn pi4 '{ "Config": { "RootFS":"/opt/x", "ThunkHostLibs":"/usr/lib/aarch64-linux-gnu/fex-emu/HostThunks/" }, "ThunksDB":{"GL":1,"Vulkan":1} }')
 check "T2 pi4, thunks on: nothing" "[ -z \"\$OUT\" ]"
+OUT=$(tn pi5 '{ "ThunksDB":{"GL":0,"Vulkan":1} }'); check "T1b pi5: package fex-emu-armv8.2 named" "grep -q 'package fex-emu-armv8.2 from' <<<\"\$OUT\" && ! grep -q 'armv8.0' <<<\"\$OUT\""
+OUT=$(tn pi-other '{ "ThunksDB":{"GL":0,"Vulkan":1} }'); check "T1c pi-other: both packages named" "grep -q 'package fex-emu-armv8.0, or fex-emu-armv8.2 on Cortex-A76 from' <<<\"\$OUT\""
 OUT=$(tn "" '{ "ThunksDB":{"GL":0,"Vulkan":0} }'); check "T3 other board, thunks off: nothing (forwarding may be off on purpose)" "[ -z \"\$OUT\" ]"
 OUT=$(tn mali '{ "ThunksDB":{"GL":0,"Vulkan":0} }'); check "T3b non-pi platform value: nothing" "[ -z \"\$OUT\" ]"
 OUT=$(tn pi5 '{ "ThunksDB":{"GL":1,"Vulkan":0} }'); check "T4 pi5, Vulkan thunk off alone: notice" "grep -q '^NOTICE Steam ARM: GPU forwarding off' <<<\"\$OUT\""
@@ -307,7 +310,7 @@ cli --help; check "L5 --help lists client-light and CLIENT_LIGHT" "grep -q '^  c
 cp "$T/pi4/cpuinfo" "$SARM_UI_FAKE/proc/cpuinfo"; AHT=$SARM_UI_FAKE/home/tester/.local/share/steam-arm; mkdir -p "$AHT/.config/steam-arm"
 ui menu_maintenance 24 relaxed
 check "TS1 Armv8.0 CPU: item 24 Client window: memory model (now: strict); screen names the three programs, FEX's warning, the guard; relaxed written" \
-  "grep -q ' 24 Client window: memory model (now: strict)' <<<\"\$OUT\" && grep -q '^MENU Client window: memory model|' <<<\"\$OUT\" && grep -q 'steamwebhelper, steam and exe only' <<<\"\$OUT\" && grep -q 'multithreaded' <<<\"\$OUT\" && grep -q 'three client window restarts within 120 s' <<<\"\$OUT\" && grep -qx 'CLIENT_TSO=relaxed' '$CONF' && grep -q '^MSG Maintenance|Client window: memory model: relaxed. Applies from next start of Steam ARM.' <<<\"\$OUT\""
+  "grep -q ' 24 Client window: memory model (now: strict)' <<<\"\$OUT\" && grep -q '^MENU Client window: memory model|' <<<\"\$OUT\" && grep -q 'steamwebhelper, steam and exe (FEX keys by program name; exe also matches' <<<\"\$OUT\" && grep -q 'multithreaded' <<<\"\$OUT\" && grep -q 'three client window restarts within 120 s' <<<\"\$OUT\" && grep -qx 'CLIENT_TSO=relaxed' '$CONF' && grep -q '^MSG Maintenance|Client window: memory model: relaxed. Applies from next start of Steam ARM.' <<<\"\$OUT\""
 printf 'client-tso=failed:restart-loop\n' > "$AHT/.config/steam-arm/state"
 ui menu_maintenance 24 retry
 check "TS2 screen shows the last guard result; retry removes it" "grep -q 'last guard result: failed:restart-loop' <<<\"\$OUT\" && ! grep -q client-tso $AHT/.config/steam-arm/state"
@@ -334,7 +337,7 @@ OUT=$(tso strict relaxed -); check "TE4 environment relaxed wins over setting st
 OUT=$(tso relaxed - failed:restart-loop); check "TE5 earlier guard result: strict with warning naming reason and retry" "grep -qx 'env=\[strict\]' <<<\"\$OUT\" && grep -q '^W client window memory model: strict (relaxed failed earlier: restart-loop; steam-arm-config client-tso retry allows another trial)' <<<\"\$OUT\""
 OUT=$(tso relaxed - ok); check "TE6 other state line: relaxed stays" "grep -qx 'env=\[relaxed\]' <<<\"\$OUT\""
 # launcher: guard watcher on synthetic pids and client log
-TW=$T/tw.sh; awk '/^  tso_watch\(\)\{/{f=1} f{print} f && /^  }$/{exit}' "$L" > "$TW"
+TW=$T/tw.sh; { grep '^  client_wait(){' "$L"; awk '/^  tso_watch\(\)\{/{f=1} f{print} f && /^  }$/{exit}' "$L"; } > "$TW"
 check "TW0 guard extracted, started beside the lab watcher" "[ -s $TW ] && grep -q '^  tso_watch </dev/null >/dev/null 2>&1 &$' $L"
 tw(){ # mode(relaxed|strict) startup-after-n-ticks(-|N) pid-sequence...
   local mode=$1 su=$2; shift 2; rm -rf "$T/tw"; mkdir -p "$T/tw/.config/steam-arm" "$T/tw/S/logs"; printf 'old Startup - webhelper launched\n' > "$T/tw/S/logs/webhelper.txt"
@@ -355,6 +358,9 @@ check "TG3 no new Startup line within 300 s (old line not counted): failed:no-st
 OUT=$(tw relaxed 2 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100)
 check "TG4 Startup line within 300 s, stable pid: nothing" "! grep -q 'client-tso\|NOTE' <<<\"\$OUT\""
 OUT=$(tw strict 1 100 200 300 400); check "TG5 strict: watcher returns at once" "grep -qx rc=0 <<<\"\$OUT\" && [ -s $T/tw/q ]"
+OUT=$( ( STEAM_ARM_CLIENT_TSO=relaxed ARMHOME=$T/tw S=$T/tw/S TSOST=$T/tw/.config/steam-arm/state; n=0; sleep(){ n=$((n + 1)); }; date(){ echo 1000; }; client_running(){ return 1; }
+  pgrep(){ echo 100; }; lnote(){ echo NOTE; }; . "$TW"; tso_watch; echo "rc=$? sleeps=$n" ) 2>&1; cat "$T/tw/.config/steam-arm/state" 2>/dev/null )
+check "TG5b client never appears: 18 waits of 5 s, then return without result or notice" "grep -qx 'rc=0 sleeps=18' <<<\"\$OUT\" && ! grep -q 'client-tso\|NOTE' <<<\"\$OUT\" && grep -q '^  client_wait(){' $L && [ \$(grep -c 'client_wait || ' $L) = 3 ]"
 printf 'cef-gpu=ok:vulkan\n' > "$T/tw/.config/steam-arm/state"
 OUT=$( ( STEAM_ARM_CLIENT_TSO=relaxed ARMHOME=$T/tw S=$T/tw/S TSOST=$T/tw/.config/steam-arm/state; n=0; sleep(){ n=$((n + 1)); [ $n -le 5 ]; }; date(){ echo $((1000 + n * 10)); }; client_running(){ :; }
   pgrep(){ echo $((100 * (n + 1))); }; lnote(){ :; }; . "$TW"; tso_watch ) 2>&1; cat "$T/tw/.config/steam-arm/state" )

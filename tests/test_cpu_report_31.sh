@@ -86,7 +86,7 @@ vfix(){ # name: writes $T/v/<name>/logs fixture
   esac
 }
 vrun(){ # fixture client phase-avg min-mhz
-  vfix "$1"; ( HOME=$T/v UHOME=$T/v CLIENT=$2 PH_AVG=$3 MIN_MHZ=$4; hdr(){ :; }; throttled(){ echo "0x50005 under-voltage throttled under-voltage-since-boot throttled-since-boot"; }; [ "$5" = hot ] || throttled(){ echo 0x0; }; . "$VF"; section_verdict ) 2>&1; }
+  vfix "$1"; ( HOME=$T/v UHOME=$T/v CLIENT=$2 PH_AVG=$3 MIN_MHZ=$4; hdr(){ :; }; case $5 in hot) throttled(){ echo "0x50005 under-voltage throttled under-voltage-since-boot throttled-since-boot"; };; boot) throttled(){ echo "0x50000 under-voltage-since-boot throttled-since-boot"; };; *) throttled(){ echo 0x0; };; esac; . "$VF"; section_verdict ) 2>&1; }
 OUT=$(vrun laptop x86 "steam 12 steamwebhelper 180 fex 3 game 0 runtime 0" 1500 cool)
 check "V1 flag-disabled window (both laptop line formats): software, reason named, top group steamwebhelper, next step names lab-cef-gpu vulkan, client-gpu on, client-tso relaxed" \
   "grep -qx 'client window: software (flag -cef-disable-gpu, window drawn on CPU by default)' <<<\"\$OUT\" && grep -q '^top group: steamwebhelper 180 ' <<<\"\$OUT\" && grep -q '^next step: client window drawn on CPU .*lab-cef-gpu vulkan.*client-gpu on.*client-tso relaxed' <<<\"\$OUT\" && grep -qx 'restart loop: no (0 client window starts in 10 min)' <<<\"\$OUT\""
@@ -103,6 +103,9 @@ OUT=$(vrun laptop x86 "steam 5 steamwebhelper 50 fex 0 game 0 runtime 0" 600 hot
 check "V6 throttle bits set: clock floor line carries them, next step names power and cooling first" "grep -q '^clock floor: 600 MHz (max [0-9n/a]*) throttled=0x50005 under-voltage' <<<\"\$OUT\" && grep -q '^next step: CPU clock capped or throttled: power supply and cooling first' <<<\"\$OUT\""
 OUT=$(vrun laptop x86 "steam 5 steamwebhelper 50 fex 0 game 0 runtime 0" 600 cool)
 check "V6b low idle clock without throttle bits: no power verdict (ondemand idles low)" "! grep -q 'power supply' <<<\"\$OUT\""
+OUT=$(vrun laptop x86 "steam 12 steamwebhelper 180 fex 3 game 0 runtime 0" 600 boot)
+check "V6c since-boot bits only: own line, bits named, next step unchanged (not power)" "grep -qx 'throttle since boot: under-voltage-since-boot throttled-since-boot (bits clear now; not decisive, power supply worth a look)' <<<\"\$OUT\" && ! grep -q '^next step: CPU clock capped' <<<\"\$OUT\" && grep -q '^next step: client window drawn on CPU' <<<\"\$OUT\""
+OUT=$(vrun laptop x86 "" "" hot); check "V6d current bits: no since-boot line, power verdict" "! grep -q '^throttle since boot' <<<\"\$OUT\" && grep -q '^next step: CPU clock capped' <<<\"\$OUT\""
 OUT=$(vrun laptop arm64 "steam 40 steamwebhelper 20 fex 0 game 0 runtime 0" 1500 cool)
 check "V7 native client: no x86 next step" "grep -qx 'next step: none from this report' <<<\"\$OUT\""
 rm -rf "$T/v"; mkdir -p "$T/v/.fex-emu/AppConfig"
@@ -114,6 +117,8 @@ check "V8 fex client line: app file wins over Config.json (tso 0, GL 0), Config.
   "grep -qx 'fex client: tso=0 x87=1 silentlog=1 multiblock=1 thunks=GL0/VK1 (steamwebhelper; x87 from steam.json)' <<<\"\$OUT\""
 OUT=$(rm -rf "$T/v"; mkdir -p "$T/v"; ( HOME=$T/v UHOME=$T/v CLIENT=x86 PH_AVG= MIN_MHZ=; hdr(){ :; }; throttled(){ echo 0x0; }; . "$VF"; section_verdict ) 2>&1)
 check "V9 no client logs, no FEX files: unknown state, defaults named, status lines still printed" "grep -qx 'client window: unknown (no client log folder)' <<<\"\$OUT\" && grep -q '^fex client: tso=default x87=default silentlog=default multiblock=default thunks=GLdefault/VKdefault' <<<\"\$OUT\" && grep -qx 'gpu process exits: 0 (cef_log.txt, whole file)' <<<\"\$OUT\""
+OUT=$(vfix laptop; : > "$T/v/logs/cef_log.txt"; ( HOME=$T/v UHOME=$T/v CLIENT=x86 PH_AVG= MIN_MHZ=; hdr(){ :; }; throttled(){ echo 0x0; }; . "$VF"; section_verdict ) 2>&1)
+check "V9b cef_log.txt without GPU exits: one line with 0, no bare 0 line (grep -c status 1)" "grep -qx 'gpu process exits: 0 (cef_log.txt, whole file)' <<<\"\$OUT\" && ! grep -qx '0' <<<\"\$OUT\" && [ \$(grep -c '^gpu process exits' <<<\"\$OUT\") = 1 ]"
 OUT=$(cd "$T" && HOME=$T/home timeout 60 bash "$S" --sections verdict --client x86 2>&1); RC=$?
 check "V10 --sections verdict alone: status 0, verdict header, no profile" "[ $RC = 0 ] && grep -q '^==== verdict ====' <<<\"\$OUT\" && ! grep -q 'profile:' <<<\"\$OUT\""
 check "V11 settings file keys line lists the 3.1 client keys" "grep -q 'X87_CLIENT|CLIENT_LIGHT|CLIENT_GPU|CLIENT_TSO|CEF_HANG_KILLS' $S && grep -q 'VK_HOST' $S"

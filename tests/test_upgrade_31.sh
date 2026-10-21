@@ -183,6 +183,8 @@ ok=1; while read -r k m h p; do [ "$k" = present ] || continue
 done < "$D30/paths.txt"
 check "U8 every present file byte-equal to 3.0 snapshot (sha256, mode)" "[ $ok = 1 ]"
 check "U8 3.1-only file deleted, 3.0-only file back, absent path absent" "[ ! -e $R/sys/new31 ] && [ -f $R/sys/old30 ] && [ ! -e $R/sys/absent.rules ]"
+check "U8b rollback strips client window keys older versions do not know (strip-optin as game account, before snapshot restore)" \
+  "grep -q '^  rb_strip_client$' '$INST' && [ \$(grep -n '^  rb_strip_client$' '$INST' | cut -d: -f1) -lt \$(grep -n '^  snap_restore \"\$n\" || ' '$INST' | cut -d: -f1) ] && grep -q 'runuser -u \"\$(game_user)\" -- python3 /usr/local/lib/steam-arm-x86client.py strip-optin \"\$sd\" \"\$(arm_home)\"' '$INST'"
 check "U8 /etc/steam-arm equals snapshot (3.0 VERSION, titles)" "mkdir -p $T/e && tar -xzf $D30/etc.tar.gz -C $T/e && diff -r $T/e${R}/etc/steam-arm $R/etc/steam-arm >/dev/null"
 check "U8 snapshot of 3.1 made first (reason rollback 3.0)" "[ \$(snaps) = 2 ] && grep -qx 'REASON=rollback 3.0' $R/lib/snapshots/3.1-*/MANIFEST"
 check "U8 restored 3.0 setup got --keep, no --allow-older" "[ \"\$(tail -1 $R/setup.log)\" = 'setup 3.0 --keep' ]"

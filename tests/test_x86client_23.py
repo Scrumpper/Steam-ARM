@@ -312,6 +312,23 @@ quiet(x.prepare, s3, a3)
 quiet(x.restore, s3, a3)
 del os.environ["STEAM_ARM_CLIENT_TSO"]
 check("T4 restore after a relaxed start: all three files gone (own keys only)", not os.path.exists(cfg3) or not os.listdir(cfg3))
+# rollback: keys older versions do not know (TSOEnabled 0, X87ReducedPrecision 1) out, base keys kept
+os.environ["STEAM_ARM_CLIENT_TSO"] = "relaxed"
+os.environ["STEAM_ARM_X87"] = "reduced"
+quiet(x.prepare, s3, a3)
+del os.environ["STEAM_ARM_CLIENT_TSO"]
+del os.environ["STEAM_ARM_X87"]
+put(os.path.join(cfg3, "game.json"), '{"Config": {"TSOEnabled": "0"}}\n')
+rc, outs = quiet(x.strip_optin, s3, a3)
+check("T5 strip-optin: TSOEnabled and X87ReducedPrecision out of the three client files, base keys and other files kept, one line",
+      rc == 0 and all(json.load(open(os.path.join(cfg3, n))) == {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0", "SilentLog": "1"}} for n in ("steamwebhelper.json", "exe.json"))
+      and json.load(open(os.path.join(cfg3, "steam.json"))) == {"Config": {"SilentLog": "1"}}
+      and json.load(open(os.path.join(cfg3, "game.json"))) == {"Config": {"TSOEnabled": "0"}}
+      and outs == "x86 client: memory model and x87 keys removed from steamwebhelper.json, exe.json, steam.json\n", outs)
+rc, outs2 = quiet(x.strip_optin, s3, a3)
+check("T5b strip-optin again: nothing, no output", rc == 0 and outs2 == "", outs2)
+os.unlink(os.path.join(cfg3, "game.json"))
+quiet(x.restore, s3, a3)
 # lab: client window through GPU for one start (STEAM_ARM_LAB_CEF_GPU), base put back without it
 s2, a2 = client_folder(arm_beta=False)
 os.environ["STEAM_ARM_LAB_CEF_GPU"] = "vulkan"
