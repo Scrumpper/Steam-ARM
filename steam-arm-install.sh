@@ -80,7 +80,20 @@ if [ -t 2 ]; then CURL_SHOW=(--progress-bar)
 elif [ "${STEAM_ARM_PROGRESS:-0}" = 1 ]; then CURL_SHOW=(--progress-bar); CURL_ENV=(COLUMNS=60); fi
 # Temporary files and folders of this run, removed on any exit; UCLEANUP ones (in the game user's home) by that user.
 CLEANUP=(); UCLEANUP=()
-trap 'rm -rf "${CLEANUP[@]}"; [ ${#UCLEANUP[@]} -gt 0 ] && as_user rm -rf "${UCLEANUP[@]}"' EXIT
+# Recovery of unfinished change: menus before 3.1 have no restore, so this setup run again finishes it.
+resume_hint(){
+  local s c
+  if grep -q '^cli_upgrade()' /usr/local/bin/steam-arm-config 2>/dev/null; then echo "restore: sudo steam-arm-config upgrade --rollback"; return; fi
+  s=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null)
+  case "$s" in /usr/share/steam-arm-setup/install.sh) c="steam-arm-setup --keep";; ?*) c="bash \"$s\" --keep";; *) c="bash steam-arm-install.sh --keep";; esac
+  echo "settings menu of installed version has no restore; finish $SA_VERSION with: sudo $c (Maintenance > Go back to previous version afterwards returns to saved version)"
+}
+# Setup stopped after its change began: recovery named.
+exit_hint(){
+  [ "$1" != 0 ] && [ "${SA_BEGUN:-0}" = 1 ] && [ -f "$SA_STATE" ] && [ "$(sed -n 's/^TO=//p' "$SA_STATE" | head -1)" = "$SA_VERSION" ] || return 0
+  warn "setup of $SA_VERSION stopped (status $1) before it finished; $(resume_hint)"
+}
+trap 'exit_hint $?; rm -rf "${CLEANUP[@]}"; [ ${#UCLEANUP[@]} -gt 0 ] && as_user rm -rf "${UCLEANUP[@]}"' EXIT
 trap 'exit 130' INT; trap 'exit 143' TERM
 # As root: private temp folder and root's own home (sudo -E and su keep the caller's folders, which that account can change).
 if [ "$(id -u)" = 0 ]; then
@@ -4957,6 +4970,7 @@ state_pending(){ [ -f "$(state_file)" ] && lock_free; }
 state_text(){
   local k; k=$(state_get KIND)
   if [ "$k" = rollback ]; then printf 'Going back from %s to %s did not finish (started %s).' "$(state_get FROM)" "$(state_get TO)" "$(state_get STARTED)"
+  elif [ "$k" = restore ]; then printf 'Restore of %s did not finish (started %s).' "$(state_get TO)" "$(state_get STARTED)"
   else printf 'Upgrade from %s to %s did not finish (started %s).' "$(state_get FROM)" "$(state_get TO)" "$(state_get STARTED)"; fi
 }
 hist_add(){ mkdir -p "$SA_LIB" 2>/dev/null && printf '%s %s %s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$4" "${5:--}" >> "$SA_LIB/history.log" && chmod 644 "$SA_LIB/history.log"; }
@@ -5485,6 +5499,9 @@ rb_run(){
     state_write "FROM=$cur" "TO=$tv" KIND=rollback "SNAPSHOT=$csnap" "STARTED=$(date '+%Y-%m-%d %H:%M')" "PID=$$"
   else
     ulog "$(state_text) Restoring $tv."
+    # restored setup 3.1+ closes state through --setup-end: it records restore, not upgrade
+    state_write "FROM=$(state_get FROM)" "TO=$tv" KIND=restore "SNAPSHOT=$n" "STARTED=$(date '+%Y-%m-%d %H:%M')" "PID=$$" \
+      || { exec 9>&-; ulog "$(state_file) could not be written; nothing changed."; return 2; }
   fi
   snap_restore "$n" || { exec 9>&-; ulog "Restore of $tv failed ($SNAP_ERR)."; return 2; }
   exec 9>&-
@@ -5671,7 +5688,7 @@ up_resolve(){
   from=$(state_get FROM); to=$(state_get TO); kind=$(state_get KIND)
   [ "$kind" = upgrade ] && [ -f "$SA_UPCACHE/upgrade/$to/x/Steam ARM $to/steam-arm-install.sh" ] && stage="$SA_UPCACHE/upgrade/$to/x/Steam ARM $to/steam-arm-install.sh"
   [ "$kind" = upgrade ] && [ -z "$stage" ] && [ "$(installed_from)" = package ] && [ "$(inst_ver "$SA_PKG_INST")" = "$to" ] && stage=$SA_PKG_INST
-  [ "$kind" = rollback ] && stage=$SA_SHARE_INSTALLER
+  case "$kind" in rollback|restore) stage=$SA_SHARE_INSTALLER;; esac
   local -a it=()
   [ -n "$(state_get SNAPSHOT)" ] && it+=(restore "Restore $from")
   [ -n "$stage" ] && it+=(again "Run $to setup again")
@@ -7903,7 +7920,9 @@ if [ "$(id -u)" = 0 ]; then
 fi
 # Change of another version that did not finish (setup lock was free): named, restore offered by the settings menu.
 if [ "$MODE" != remove ] && [ -f "$SA_STATE" ] && [ "$(sed -n 's/^TO=//p' "$SA_STATE" | head -1)" != "$SA_VERSION" ]; then
-  warn "change from $(sed -n 's/^FROM=//p' "$SA_STATE" | head -1) to $(sed -n 's/^TO=//p' "$SA_STATE" | head -1) did not finish; restore: sudo steam-arm-config upgrade --rollback"
+  if grep -q '^cli_upgrade()' /usr/local/bin/steam-arm-config 2>/dev/null; then SA_RHINT="restore: sudo steam-arm-config upgrade --rollback"
+  else SA_RHINT="settings menu of installed version has no restore; this run installs $SA_VERSION over it"; fi
+  warn "change from $(sed -n 's/^FROM=//p' "$SA_STATE" | head -1) to $(sed -n 's/^TO=//p' "$SA_STATE" | head -1) did not finish; $SA_RHINT"
 fi
 known(){ for c in $COMPONENTS_ALL; do [ "$c" = "$1" ] && return 0; done; return 1; }
 # Component whose files are in place (install from before selection was saved in $CONF).
@@ -8525,6 +8544,7 @@ steam_up && steam_up_die
 if [ -n "$(conf_get VERSION)" ] && [ "$(conf_get VERSION)" != "$SA_VERSION" ] || [ -f "$SA_STATE" ]; then
   sa_menu_call upgrade --setup-begin "$SA_VERSION" $([ "$NO_SNAPSHOT" = 1 ] && echo --no-snapshot) \
     || die "installed version not saved; nothing changed. Free space in /var/lib/steam-arm, or run again with --no-snapshot."
+  SA_BEGUN=1
 fi
 if [ "$PS_DROP" = 1 ]; then
   ps_remove || die "could not edit $FWCFG"
@@ -13952,7 +13972,7 @@ LOG="$ARMHOME/steam-arm.log"
 lwarn(){ echo "steam-arm: $*" >&2; printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG" 2>/dev/null; }
 llog(){ printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG" 2>/dev/null; }
 # Unfinished version change: one log line per start, no dialog (settings menu offers restore).
-[ -f /var/lib/steam-arm/upgrade.state ] && llog "warning: Steam ARM change from $(sed -n 's/^FROM=//p' /var/lib/steam-arm/upgrade.state | head -1) to $(sed -n 's/^TO=//p' /var/lib/steam-arm/upgrade.state | head -1) did not finish; steam-arm-config offers restore"
+[ -f /var/lib/steam-arm/upgrade.state ] && llog "warning: Steam ARM change from $(sed -n 's/^FROM=//p' /var/lib/steam-arm/upgrade.state | head -1) to $(sed -n 's/^TO=//p' /var/lib/steam-arm/upgrade.state | head -1) did not finish; $(grep -q '^cli_upgrade()' /usr/local/bin/steam-arm-config 2>/dev/null && echo 'steam-arm-config offers restore' || echo 'run Steam ARM setup again with --keep to finish')"
 # notice ID SUMMARY BODY TIMEOUT_MS: send (ID 0) or replace a desktop notification; prints its id.
 notice(){
   if command -v gdbus >/dev/null 2>&1; then

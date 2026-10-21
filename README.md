@@ -1205,6 +1205,12 @@ Upgrade to 3.1 once by hand:
 Client, games, sign-in, component choices and settings are kept. Setup saves copy of
 previous version first (Maintenance, Go back to previous version).
 
+Setup stopped before it finished (closed terminal, power loss, error): settings menu of
+2.3.1, 2.3.2 and 3.0 has no restore command. Run `sudo bash steam-arm-install.sh --keep`
+from same folder again (package install: `sudo steam-arm-setup --keep`); it continues same
+change and keeps saved copy. Afterwards, Maintenance, Go back to previous version returns
+to earlier version if wanted. Stopped setup and next setup run print this command.
+
 ### From 3.1 on
 
 Maintenance, Upgrade to newest release (or `sudo steam-arm-config upgrade`) downloads newest
