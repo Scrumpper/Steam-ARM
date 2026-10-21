@@ -14,7 +14,7 @@ S=$T/steam-arm-cpu-report.sh
 awk '/^cat > \/usr\/local\/lib\/steam-arm-cpu-report.sh <<.CPUREP.$/{f=1;next} /^CPUREP$/{f=0} f' "$INST" > "$S"
 check "C1 installer writes steam-arm-cpu-report.sh (bash, parses)" "[ -s $S ] && head -1 $S | grep -q '^#!/bin/bash' && bash -n $S"
 check "C1b installer chmods it, removal list and owned paths name it, menu constant SA_CPUREPORT" \
-  "grep -q '^chmod 755 /usr/local/lib/steam-arm-cpu-report.sh$' '$INST' && grep -q '/usr/local/lib/steam-arm-autotune.py /usr/local/lib/steam-arm-cpu-report.sh' '$INST' && grep -q '^    /usr/local/lib/steam-arm-cpu-report.sh /usr/local/lib/steam-arm-glx-lax-patch.py' '$INST' && grep -q '^SA_CPUREPORT=/usr/local/lib/steam-arm-cpu-report.sh$' '$CFG'"
+  "grep -q '^chmod 755 /usr/local/lib/steam-arm-cpu-report.sh$' '$INST' && grep -q '^        /usr/local/lib/steam-arm-cpu-report.sh \\\\$' '$INST' && grep -q '^    /usr/local/lib/steam-arm-cpu-report.sh /usr/local/lib/steam-arm-glx-lax-patch.py' '$INST' && grep -q '^SA_CPUREPORT=/usr/local/lib/steam-arm-cpu-report.sh$' '$CFG'"
 # stand-in processes with the real command names (comm): busy steamwebhelper, idle FEXInterpreter
 mkdir -p "$T/bin" "$T/home/.local/share/Steam/logs"
 printf '#!/bin/bash\nwhile :; do :; done\n' > "$T/bin/steamwebhelper"; printf '#!/bin/bash\nsleep 300 & wait\n' > "$T/bin/FEXInterpreter"

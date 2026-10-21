@@ -3973,6 +3973,29 @@ Separate items with ; (no spaces). Empty removes it." "$cur") || return
   done
   game_set "$id" "$key" "$v"
 }
+# Emulation settings per game: memory model (tso) and x87 precision; correctness trades, off by default.
+tso_label(){ case "$1" in off) echo relaxed;; *) echo strict;; esac; }
+x87_label(){ case "$1" in reduced) echo reduced;; *) echo full;; esac; }
+emu_summary(){ local t x; t=$(tc_get "$1" tso); x=$(tc_get "$1" x87); echo "$([ "$t" = off ] && echo relaxed || echo strict), x87 $(x87_label "$x")"; }
+game_emulation(){
+  local id=$1 name=$2 c="" cur
+  while :; do
+    c=$(ui_menu "Emulation: ${name:0:40}" "FEX settings for this game only. Both trade correctness for speed; never set by rules or automatic tuning. Run report and run record name them." --default "$c" \
+        tso "Memory model: $(tso_label "$(tc_get "$id" tso)")" x87 "x87 precision: $(x87_label "$(tc_get "$id" x87)")") || return
+    case "$c" in
+      tso) cur=$(tc_get "$id" tso)
+           c=$(ui_menu "Memory model: ${name:0:40}" "strict (default): x86 memory ordering kept (TSO emulation). relaxed: faster on CPUs without LSE atomics; games with several threads can crash, hang or corrupt saves.
+Now: $(tso_label "$cur")." --default "${cur:-default}" off "relaxed (TSOEnabled 0)" default "strict (default, remove this setting)") || continue
+           [ "$c" = default ] && c=""
+           game_set "$id" tso "$c" && ui_msg "Emulation" "${name}: memory model $(tso_label "$c"). Applies from the next start of the game."; c=tso;;
+      x87) cur=$(tc_get "$id" x87)
+           c=$(ui_menu "x87 precision: ${name:0:40}" "full (default): x87 floating point as on x86. reduced: faster for 32-bit and older games; geometry or physics errors possible.
+Now: $(x87_label "$cur")." --default "${cur:-default}" reduced "reduced (X87ReducedPrecision 1)" default "full (default, remove this setting)") || continue
+           [ "$c" = default ] && c=""
+           game_set "$id" x87 "$c" && ui_msg "Emulation" "${name}: x87 precision $(x87_label "$c"). Applies from the next start of the game."; c=x87;;
+    esac
+  done
+}
 game_diskcache(){
   local id=$1 cur v note c
   cur=$(tc_get "$id" diskcache); v=$(fex_tool_ver)
@@ -4030,6 +4053,7 @@ game_menu(){
           env "Extra environment    [$(tc_show "$id" env none)]" \
           args "Extra arguments      [$(tc_show "$id" args none)]" \
           diskcache "FEX code cache       [$(tc_show "$id" diskcache off)]" \
+          emu "Emulation            [$(emu_summary "$id")]" \
           mesa "Mesa, route B        [$(tc_show "$id" mesa default)]" \
           autotune "Automatic tuning     [$(at_mode "$id")]" \
           rules "Rules used at last start" \
@@ -4041,6 +4065,7 @@ game_menu(){
       env)      game_text "$id" env "Extra environment" "Variables, for example: DXVK_HUD=fps;MESA_NO_ERROR=1";;
       args)     game_text "$id" args "Extra arguments" "Arguments, for example: -windowed;-nosound";;
       diskcache) game_diskcache "$id";;
+      emu)      game_emulation "$id" "$name";;
       mesa)     game_mesa "$id";;
       autotune) game_autotune "$id" "$name";;
       rules)    ui_textstr "Rules: ${name:0:40}" "$(game_rules "$id")";;
@@ -7102,7 +7127,8 @@ Commands
   profile <appid> key=value ...
                             game profile keys (overlay, mangohud, env,
                             args, gl32, vk32, godot, unity, gfx,
-                            multiblock, diskcache, autotune=fix|off,
+                            multiblock, diskcache, tso=off, x87=reduced,
+                            autotune=fix|off,
                             mesa=<version>: route B game on an extra
                             Mesa version);
                             Raspberry Pi GPU keys d3d=dxvk|wined3d,
@@ -7275,7 +7301,7 @@ profile_ok(){ case "$1=$2" in
   overlay=|overlay=x86|overlay=vulkan|overlay=off|mangohud=|mangohud=on|mangohud=off|gfx=|gfx=a|gfx=b) return 0;;
   gl32=|gl32=off|vk32=|vk32=keep|godot=|godot=gl|godot=vulkan|unity=|unity=vulkan|unity=gl) return 0;;
   multiblock=|multiblock=on|multiblock=off|diskcache=|diskcache=on|diskcache=off) return 0;;
-  autotune=|autotune=off|autotune=fix|mesa=) return 0;;
+  autotune=|autotune=off|autotune=fix|mesa=|tso=|tso=off|x87=|x87=reduced) return 0;;
   mesa=*) [[ "$2" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]];;
   d3d=|d3d=dxvk|d3d=wined3d|gl=|gl=zink|glver=) return 0;;
   glver=*) case " $SA_GL_VERSIONS " in *" $2 "*) return 0;; esac; return 1;;
@@ -7287,7 +7313,7 @@ cli_profile(){
   valid_appid "$id" || { echo "usage: steam-arm-config profile <appid> key=value ..." >&2; return 2; }
   shift
   if [ "${1:-}" = --clear ]; then
-    for k in overlay mangohud env args gl32 vk32 godot unity gfx mesa multiblock diskcache autotune d3d glver gl; do tc_set "$SA_TITLES_ETC" "$id" "$k" "" || return 1; done
+    for k in overlay mangohud env args gl32 vk32 godot unity gfx mesa multiblock diskcache autotune tso x87 d3d glver gl; do tc_set "$SA_TITLES_ETC" "$id" "$k" "" || return 1; done
     echo "app $id: profile removed"; return 0
   fi
   for kv in "$@"; do
@@ -8406,7 +8432,8 @@ remove_all(){
         /usr/local/lib/steam-arm-autobuild.py /usr/local/lib/steam-arm-appinfo.py /usr/local/lib/steam-arm-geproton.py \
         /usr/local/lib/steam-arm-x86client.py /usr/local/lib/steam-arm-run.py /usr/local/lib/steam-arm-pv-bwrap \
         /usr/local/lib/steam-arm-python3 /usr/local/lib/steam-arm-entry.py \
-        /usr/local/lib/steam-arm-autotune.py /usr/local/lib/steam-arm-cpu-report.sh \
+        /usr/local/lib/steam-arm-autotune.py \
+        /usr/local/lib/steam-arm-cpu-report.sh \
         /usr/local/lib/steam-arm-glx-lax-patch.py /usr/local/lib/steam-arm-glx-lax.src /usr/local/lib/steam-arm-glx-lax.stat \
         /usr/local/lib/steam-arm-glx-lax.state \
         /usr/local/lib/steam-arm-vk-spoof.c \
@@ -10574,6 +10601,9 @@ Line: <appid> key=value ...   keys: overlay=x86|vulkan|off  mangohud=on|off
       gfx=a (forwarding)  gfx=b (Mali drivers inside the emulation)
       mesa=<version> (route B only: extra Mesa tree /opt/fex-rootfs/Ubuntu_24_04-mali-<version>)
       multiblock=on|off (FEX Multiblock; launch-option FEX_APP_CONFIG and Steam's FEX setting win)
+      tso=off (FEX TSOEnabled 0: relaxed memory model, faster on CPUs without LSE atomics; games with several
+              threads can crash, hang or corrupt saves)  x87=reduced (FEX X87ReducedPrecision 1: faster 32-bit
+              and older games; geometry or physics errors possible); same precedence as multiblock; never global
       diskcache=on|off (FEX code cache, FEX tool 2609.1+; launch-option FEX_DISKCACHE / FEX_APP_CONFIG win)
       autotune=fix|off (automatic tuning, off when unset)
       d3d=dxvk|wined3d  glver=3.2|3.3|4.0..4.6  gl=zink (Raspberry Pi GPU only)
@@ -11504,10 +11534,12 @@ def notify_cpu():
         log("notice: not shown (GoldSrc title: Software renderer is a video option)")
         return False
     pi = pi_hint()
+    slow = ("CPU without Armv8.1 atomics: title setting Memory model: relaxed (steam-arm-config, Games, Emulation) "
+            "speeds up emulation at a stability cost." if slow_class() else "")
     return desktop_notice("Game draws on CPU",
                           "GPU forwarding is not active for this game (llvmpipe); frame rate stays low. "
                           "Cause: game log line \"renderer:\". Help: steam-arm-config, Help > Fixing a game."
-                          + (" " + pi if pi else ""), urgency=2, timeout=0)
+                          + (" " + pi if pi else "") + (" " + slow if slow else ""), urgency=2, timeout=0)
 
 
 def pi_hint():
@@ -12178,6 +12210,30 @@ if mbp in ("on", "off"):
         except (OSError, ValueError) as e:
             log("fex: could not write FEX app config:", e)
 
+# tso=off, x87=reduced: FEX memory model and x87 precision for this title; launch options and Steam's FEX setting win.
+# Correctness trades, never set by rules or automatic tuning; run record and report name them.
+EMU_KEYS = (("tso", "off", "TSOEnabled", "0", "memory model relaxed (TSO emulation off)"),
+            ("x87", "reduced", "X87ReducedPrecision", "1", "x87 precision reduced"))
+for _k, _v, _fk, _fv, _what in EMU_KEYS:
+    _p = prof.get(_k)
+    if _p is None:
+        continue
+    if _p != _v:
+        log("fex: title setting %s=%s unknown (value: %s); not applied" % (_k, _p, _v))
+        prof.pop(_k, None)
+        continue
+    lc = LAUNCH_FEX.get("Config") if isinstance(LAUNCH_FEX.get("Config"), dict) else {}
+    if _fk in lc:
+        log("launch option kept: %s=%s (title setting %s=%s)" % (_fk, lc[_fk], _k, _v))
+    elif os.environ.get("STEAM_COMPAT_FEX_CONFIG"):
+        log("Steam setting kept: STEAM_COMPAT_FEX_CONFIG=%s (title setting %s=%s)" % (os.environ["STEAM_COMPAT_FEX_CONFIG"], _k, _v))
+    else:
+        try:
+            fex_app_config(config={_fk: _fv})
+            log("fex: %s (title setting %s=%s; correctness trade, per title)" % (_what, _k, _v))
+        except (OSError, ValueError) as e:
+            log("fex: could not write FEX app config:", e)
+
 # diskcache=on|off: FEX code cache (FEX 2609.1+); launch options win; own-JIT titles cache file-backed code only.
 # Steam's FEX setting (STEAM_COMPAT_FEX_CONFIG) holds no cache key, so it does not block this one.
 dcp = prof.get("diskcache")
@@ -12266,7 +12322,8 @@ if _why:
                     ("gfx", gfx), ("overlay", globals().get("mode") or "keep"), ("engine", engine or "-"), ("bits", bits or "-"),
                     ("fex", fex_ver_str(_fv) if _fv else "unknown"), ("tool", tool_kind(tool_dir()) if tool_dir() else "-"),
                     ("mesa", mesa_version(mroot if gfx == "b" else "")), ("proton", (tool or "x86") if x86_proton else "-"),
-                    ("multiblock", mbp or "-"), ("diskcache", dcp or "-"), ("profile", ",".join(sorted(prof)) or "-")])
+                    ("multiblock", mbp or "-"), ("diskcache", dcp or "-"), ("tso", prof.get("tso") or "-"),
+                    ("x87", prof.get("x87") or "-"), ("profile", ",".join(sorted(prof)) or "-")])
         log("run record: on (%s)" % _why)
     except OSError as e:
         RUN["on"] = False

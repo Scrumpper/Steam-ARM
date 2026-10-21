@@ -276,5 +276,26 @@ cli client-light; check "L4 CLI state" "[ $RC = 0 ] && grep -q '^client window l
 cli client-light on; check "L4b CLI on" "[ $RC = 0 ] && grep -qx 'CLIENT_LIGHT=on' '$CONF'"
 cli --help; check "L5 --help lists client-light and CLIENT_LIGHT" "grep -q '^  client-light \[on|off\]' <<<\"\$OUT\" && grep -q 'CLIENT_LIGHT=on|off' <<<\"\$OUT\""
 
+# menu: Games > game > Emulation rows on a non-Pi settings file; CLI profile keys
+sed -i 's/^GPU_FAMILY=.*/GPU_FAMILY=mali-csf-v10/' "$CONF"; grep -q '^GPU_FAMILY=' "$CONF" || echo GPU_FAMILY=mali-csf-v10 >> "$CONF"
+TC=$SARM_UI_FAKE/etc/steam-arm/titles.conf
+ui "game_menu 400" emu BACK
+check "E1 game screen row Emulation [strict, x87 full]; submenu rows Memory model: strict, x87 precision: full" \
+  "grep -q 'emu Emulation            \[strict, x87 full\]' <<<\"\$OUT\" && grep -q '^MENU Emulation: Portal|FEX settings for this game only. Both trade correctness for speed' <<<\"\$OUT\" && grep -q 'tso Memory model: strict x87 x87 precision: full' <<<\"\$OUT\""
+ui "game_menu 400" emu tso off BACK BACK
+check "E2 Memory model relaxed: tso=off written, screen names crash, hang, corrupt saves and LSE" \
+  "grep -q '^400 .*tso=off' '$TC' && grep -q '^MENU Memory model: Portal|strict (default): x86 memory ordering kept (TSO emulation). relaxed: faster on CPUs without LSE atomics; games with several threads can crash, hang or corrupt saves.' <<<\"\$OUT\" && grep -q '^MSG Emulation|Portal: memory model relaxed. Applies from the next start of the game.' <<<\"\$OUT\""
+ui "game_menu 400" emu x87 reduced BACK BACK
+check "E3 x87 reduced: x87=reduced written, screen names geometry or physics errors" "grep -q '^400 .*x87=reduced' '$TC' && grep -q 'geometry or physics errors possible' <<<\"\$OUT\" && grep -q '^MSG Emulation|Portal: x87 precision reduced.' <<<\"\$OUT\""
+ui "game_menu 400" emu BACK
+check "E4 row shows relaxed, x87 reduced" "grep -q 'emu Emulation            \[relaxed, x87 reduced\]' <<<\"\$OUT\" && grep -q 'tso Memory model: relaxed x87 x87 precision: reduced' <<<\"\$OUT\""
+ui "game_menu 400" emu tso default BACK BACK; ui "game_menu 400" emu x87 default BACK BACK
+check "E5 defaults remove both keys" "! grep -q 'tso=\|x87=' '$TC'"
+cli profile 400 tso=off x87=reduced; check "E6 CLI profile accepts tso=off x87=reduced" "[ $RC = 0 ] && grep -q '^400 .*tso=off' '$TC' && grep -q '^400 .*x87=reduced' '$TC'"
+cli profile 400 tso=relaxed; check "E7 CLI refuses tso=relaxed" "[ $RC = 2 ] && grep -q 'bad setting: tso=relaxed' <<<\"\$OUT\""
+cli profile 400 x87=fast; check "E7b CLI refuses x87=fast" "[ $RC = 2 ]"
+cli profile 400 --clear; check "E8 --clear removes them" "[ $RC = 0 ] && ! grep -q '^400 ' '$TC'"
+cli --help; check "E9 --help names tso=off, x87=reduced" "grep -q 'multiblock, diskcache, tso=off, x87=reduced,' <<<\"\$OUT\""
+
 echo "pi4 detection 3.1: $pass pass, $fail fail"
 [ "$fail" = 0 ]

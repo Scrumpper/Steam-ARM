@@ -323,6 +323,13 @@ EOF
 # matrix stand-in: arm64 machine name
 /usr/bin/uname "$@" | sed 's/x86_64/aarch64/g'
 EOF
+  # sim on a non-arm64 rootfs: host programs read as arm64 builds; bubblewrap of the simulated install (x86 client path)
+  [ "$simapt" = 1 ] && { stub "$R" file <<'EOF'
+#!/bin/bash
+# matrix stand-in: file reports host programs as arm64 builds
+/usr/bin/file "$@" | sed 's/x86-64/aarch64/g; s/x86_64/aarch64/g'
+EOF
+    cp /bin/true "$R/sim/bin/bwrap"; }
   # FEX package stand-ins, made when the (simulated) install names a fex-emu build
   stub "$R" sim-fex <<'EOF'
 #!/bin/sh
@@ -518,9 +525,11 @@ row_install(){
     if grep -q 'FEX build for this CPU (ARMv8.0 features): fex-emu-armv8.0' "$L/install.log" && grep -q '^MESA_HOST=.*rpt' "$R/etc/steam-arm/steam-arm.conf"; then
       res PASS "$r ($label): FEX package fex-emu-armv8.0 picked, MESA_HOST from Pi archive ($(sed -n 's/^MESA_HOST=//p' "$R/etc/steam-arm/steam-arm.conf"))"
     else res FAIL "$r ($label): FEX build line or MESA_HOST missing: $(grep -o 'FEX build for this CPU[^$]*' "$L/install.log" | head -n 1) $(grep '^MESA_HOST=' "$R/etc/steam-arm/steam-arm.conf")"; fi
-    if [ -f "$R/home/$GAMEUSER/.local/share/steam-arm/.local/share/Steam/ubuntu12_32/steam" ] && grep -q '"ThunksDB":{"GL":0,"Vulkan":0}' "$R/home/$GAMEUSER/.fex-emu/Config.json" 2>/dev/null; then
-      res PASS "$r ($label): x86 client files in place; thunks off in Config.json (stand-in FEX has no thunk libraries) with setup warning: $(grep -c 'FEX thunk libraries not found' "$L/warnings.txt" 2>/dev/null || echo 0) line"
-    else res FAIL "$r ($label): x86 client files or Config.json thunk state missing"; fi
+    # game account's files belong to a subordinate id: read through the namespace; FEX stand-in carries thunk folders
+    d=$(ns sh -c 'test -f "$1" && echo client; tr -d " \n" < "$2" 2>/dev/null | grep -o "\"ThunksDB\":{\"GL\":[01],\"Vulkan\":[01]}"' _ \
+        "$R/home/$GAMEUSER/.local/share/steam-arm/.local/share/Steam/ubuntu12_32/steam" "$R/home/$GAMEUSER/.fex-emu/Config.json" 2>/dev/null | paste -sd' ' -)
+    if [ "$d" = 'client "ThunksDB":{"GL":1,"Vulkan":1}' ]; then res PASS "$r ($label): x86 client files in place; thunks on in Config.json (FEX stand-in has thunk folders)"
+    else res FAIL "$r ($label): x86 client files or Config.json thunk state wrong: ${d:-nothing readable}"; fi
     # the arm64 FEX package of the PPA lists the five thunk files setup searches for
     d=$(in_root "$R" sh -c 'cd /tmp && rm -f fex-emu-armv8.0_*.deb && apt-get download fex-emu-armv8.0 >/dev/null 2>&1 && dpkg-deb -c fex-emu-armv8.0_*.deb' 2>/dev/null \
         | awk '{print $6}' | grep -E '^\./usr/(lib/aarch64-linux-gnu/fex-emu/HostThunks/lib(GL|vulkan)-host\.so|share/fex-emu/GuestThunks/lib(GL|vulkan)-guest\.so|share/fex-emu/ThunksDB\.json)$' | sort | paste -sd' ' -)
