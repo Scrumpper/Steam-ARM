@@ -6144,7 +6144,7 @@ SA_BK_FILES=400
 SA_BK_PARTS="setup system-profiles personal-profiles compat-tools fex mangohud personal-tuning"
 SA_BK_PERSONAL="personal-profiles compat-tools fex mangohud personal-tuning"
 # tuned.conf lines: comments, blank, or appid with tuning keys only
-SA_TUNED_RE='^([0-9]{1,10}( +(gfx=(a|b)|multiblock=(on|off)|gl32=off))*)? *(#.*)?$'
+SA_TUNED_RE='^([0-9]{1,10}( +(gfx=(a|b)|multiblock=(on|off)|gl32=off|glver=3\.3|gl=zink))*)? *(#.*)?$'
 # steam-arm.conf keys restored; every other key is machine state (GPU_FAMILY only when GPU_FAMILY_SET=user).
 SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN X87_CLIENT CLIENT_LIGHT"
 SA_BK_NAME='[A-Za-z0-9_+-][A-Za-z0-9._+-]*'
@@ -10586,7 +10586,7 @@ decides per title:
   Automatic tuning  autotune=fix (launch wrapper entries): a start that crashed before graphics within 60 s,
                   showed no CPU use for 90 s before GPU memory, drew on CPU or showed no graphics in 300 s
                   makes the next start try one changed setting (steam-arm-autotune.py): gfx, multiblock or
-                  gl32=off; at most 4 trials per stamp; results in ~/.config/steam-arm/tuned.conf. Exit status
+                  gl32=off (Raspberry Pi GPU: glver=3.3, gl=zink, multiblock; no gl32); at most 4 trials per stamp; results in ~/.config/steam-arm/tuned.conf. Exit status
                   of the chain is 0 even after a crash, so verdicts use time, CPU and renderer. Never a signal
                   to the game; a hang gets one notice to use Steam's Stop.
 
@@ -12277,7 +12277,9 @@ if AT:
     RUN["at_ctx"] = {"eff": {"gfx": gfx, "multiblock": "off" if str(_mb).lower() in ("0", "false") else "on",
                              "gl32": "off" if gfx == "a" and prof.get("gl32") == "off" and bits != 64 else "on"},
                      "route_b": (fam in MALI_FAMILIES or custom) and mali_ready() and not CLIENT_X86,
-                     "bits": bits, "user_keys": AT_USER}
+                     "bits": bits, "user_keys": AT_USER, "pi": fam in PI_FAMILIES}
+    if fam in PI_FAMILIES:
+        RUN["at_ctx"]["eff"].update(glver=prof.get("glver") or "off", gl=prof.get("gl") or "v3d")
     threading.Thread(target=hang_thread, args=(os.getpid(), AT["HANG_S"], AT["HANG_CPU"], AT["NOGFX_S"]), daemon=True).start()
 if os.environ.get("STEAM_ARM_RENDERER_CHECK", "1") != "0" or AT:
     threading.Thread(target=renderer_thread, args=(os.getpid(), AT["NOGFX_S"] if AT else 180), daemon=True).start()
@@ -12955,8 +12957,10 @@ cat > /usr/local/lib/steam-arm-autotune.py <<'AUTOTUNEPY'
 Runs through the launch handler for x86 Linux titles that start through FEX. A bad start (crash before graphics
 within 60 s, hang before graphics, rendering on CPU, no graphics within 300 s) makes the next start try one
 changed setting from the best-known one: graphics route (gfx), FEX Multiblock (multiblock), 32-bit GL thunk off
-(gl32=off). At most 4 trials per stamp (FEX tool, game build, Mesa, GPU family, client type). Never TSO, X87 or SMC
-settings: their failures are wrong output, not measurable. Never sends a signal to a game.
+(gl32=off); Raspberry Pi GPU families: OpenGL version report (glver=3.3), then Zink (gl=zink), then Multiblock, and
+no gl32 (x86 Mesa inside the emulation draws on CPU there). At most 4 trials per stamp (FEX tool, game build, Mesa,
+GPU family, client type). Never TSO, X87 or SMC settings: their failures are wrong output, not measurable. Never
+sends a signal to a game.
 Settings found: HOME/.config/steam-arm/tuned.conf (titles.conf syntax, evidence in a comment), loaded below
 /etc/steam-arm/titles.conf and personal titles.conf, so keys set there always win. State:
 HOME/.config/steam-arm/autotune/state.json. HOME = client home (HOME of the launcher).
@@ -12981,7 +12985,7 @@ HANG_S = 90
 HANG_CPU = 0.02
 NOGFX_S = 300
 # knobs a trial may change; TSO, X87, SMC and other correctness settings are never touched
-KNOBS = {"gfx": ("a", "b"), "multiblock": ("on", "off"), "gl32": ("off",)}
+KNOBS = {"gfx": ("a", "b"), "multiblock": ("on", "off"), "gl32": ("off",), "glver": ("3.3",), "gl": ("zink",)}
 BAD = ("crash", "hang", "cpu", "nographics")
 HEAD = ("# Written by Steam ARM automatic tuning (titles with autotune=fix). One line per title, evidence after #.\n"
         "# Keys in /etc/steam-arm/titles.conf and personal titles.conf win. steam-arm-config tune <appid> reset removes a line.\n")
@@ -13138,8 +13142,16 @@ def candidates(t, ctx):
     out = []
     if ctx.get("route_b"):
         out.append(("gfx", "a" if base.get("gfx") == "b" else "b"))
+    if ctx.get("pi"):
+        # Raspberry Pi GPU (OpenGL 3.1): newer GL version report first, then Zink; a title that stops before its first
+        # frame or draws on CPU there most often asked for GL 3.2 or newer
+        if base.get("glver") in (None, "", "off"):
+            out.append(("glver", "3.3"))
+        if base.get("gl") in (None, "", "v3d"):
+            out.append(("gl", "zink"))
     out.append(("multiblock", "on" if base.get("multiblock") == "off" else "off"))
-    if ctx.get("bits") == 32 and base.get("gfx", "a") == "a" and base.get("gl32") != "off":
+    # gl32 lands on llvmpipe on Pi families (x86 Mesa has no v3d driver); only with an x86 Broadcom driver tree
+    if ctx.get("bits") == 32 and base.get("gfx", "a") == "a" and base.get("gl32") != "off" and (not ctx.get("pi") or ctx.get("pi_archive")):
         out.append(("gl32", "off"))
     user = set(ctx.get("user_keys", ()))
     return [(k, v) for k, v in out if k not in user and k not in t["undone"] and "%s=%s" % (k, v) not in t["tried"]

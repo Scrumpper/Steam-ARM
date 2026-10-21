@@ -73,8 +73,8 @@ check("V1b hang flag, then GPU memory in same start (own launcher window waited 
       V(100, "gpu", 200) == "ok" and V(100, "gpu", 50) == "short" and V(100, "none", 300) == "hang")
 check("V2 windows: crash 60 s, hang 90 s at 0.02 s/s, no graphics 300 s, 4 trials",
       (M["CRASH_S"], M["HANG_S"], M["HANG_CPU"], M["NOGFX_S"], M["MAX_TRIALS"]) == (60, 90, 0.02, 300, 4))
-check("V3 knobs: gfx, multiblock, gl32 only; never TSO, X87, SMC or other correctness settings",
-      sorted(M["KNOBS"]) == ["gfx", "gl32", "multiblock"]
+check("V3 knobs: gfx, multiblock, gl32, glver (Pi), gl (Pi) only; never TSO, X87, SMC or other correctness settings",
+      sorted(M["KNOBS"]) == ["gfx", "gl", "gl32", "glver", "multiblock"] and M["KNOBS"]["glver"] == ("3.3",) and M["KNOBS"]["gl"] == ("zink",)
       and not re.search(r"TSO|X87|SMC|VectorTSO|MemcpySetTSO", A.split("KNOBS =")[1].split("\n")[0]))
 
 # ---------------- module flow ----------------
@@ -136,6 +136,33 @@ ctx32 = dict(CTX, bits=32, route_b=False)
 step(h, "crash", ctx=ctx32)
 step(h, "crash", ctx=ctx32)
 check("F9 32-bit, no route B: multiblock first, then GL thunk off (gl32=off)", re.search(r"^100 gl32=off +#", tuned(h), re.M), tuned(h))
+
+# Raspberry Pi GPU families (3.1): glver 3.3 first, then Zink, then Multiblock; gl32 never (llvmpipe there)
+h = home()
+ctxpi = dict(CTX, eff={"gfx": "a", "multiblock": "on", "gl32": "on", "glver": "off", "gl": "v3d"}, route_b=False, bits=32, pi=True)
+l, n, f = step(h, "crash", ctx=ctxpi)
+check("P1 Pi, crash: next start tries glver=3.3", f[-1] == "next start tries glver=3.3", f)
+l, n, f = step(h, "crash", ctx=ctxpi)
+check("P1b trial written to tuned.conf and undone after a second crash", re.search(r"glver=3\.3", "".join(l)) and "glver=3.3 undone" in "".join(f) and f[-1] == "next start tries gl=zink", (l, f))
+l, n, f = step(h, "nographics", ctx=ctxpi)
+check("P2 Zink undone: Multiblock next", f[-1] == "next start tries multiblock=off", f)
+l, n, f = step(h, "cpu", ctx=ctxpi)
+check("P3 Multiblock undone: no gl32 on Pi, nothing left", "no setting left to try" in f[-1] and state(h)["tried"] == ["glver=3.3", "gl=zink", "multiblock=off"], (f, state(h)))
+h = home()
+step(h, "crash", ctx=ctxpi)
+l, n, f = step(h, "ok", ctx=ctxpi)
+check("P4 Pi, glver trial good: kept in tuned.conf", re.search(r"^100 glver=3\.3 +#", tuned(h), re.M) and "kept glver=3.3" in f[-1], (tuned(h), f))
+check("P4b valid_line accepts glver=3.3 and gl=zink lines", M["valid_line"]("100 glver=3.3") and M["valid_line"]("100 gl=zink multiblock=off") and not M["valid_line"]("100 glver=4.5"))
+h = home()
+step(h, "crash", ctx=dict(ctxpi, eff=dict(ctxpi["eff"], glver="3.3")))
+check("P5 Pi with glver set already: Zink first", state(h)["trial"] == {"gl": "zink"}, state(h))
+h = home()
+step(h, "crash", ctx=dict(ctxpi, pi_archive=True))
+step(h, "crash", ctx=dict(ctxpi, pi_archive=True)); step(h, "crash", ctx=dict(ctxpi, pi_archive=True)); step(h, "crash", ctx=dict(ctxpi, pi_archive=True))
+check("P6 Pi with an x86 Broadcom driver tree (pi_archive): gl32 reachable after the Pi knobs", state(h)["trial"] == {"gl32": "off"}, state(h))
+h = home()
+step(h, "crash", ctx=dict(CTX, bits=32, route_b=False))
+check("P7 other boards unchanged: multiblock first", state(h)["trial"] == {"multiblock": "off"}, state(h))
 
 h = home()
 for i in range(6):
