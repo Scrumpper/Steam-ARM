@@ -1617,6 +1617,21 @@ fwd_state(){
   if tr -d ' \n' < "$f" | grep -q '"GL":1' && tr -d ' \n' < "$f" | grep -q '"Vulkan":1'; then echo "on (GL, Vulkan)"
   else echo "off (FEX thunk libraries not found at setup; games draw on CPU)"; fi
 }
+# Client window drawing state (x86 client): compositor and renderer lines of the client's own GPU log.
+cw_row(){
+  local L g r w
+  [ "$(client_type)" = x86 ] || { echo "native client (GPU)"; return; }
+  L=$(steam_dir)/logs
+  g=$(game_read grep -ahoE 'gpu_compositing[] ]*: *[a-z_]+' "$L/webhelper_gpu.txt" 2>/dev/null | tail -n 1 | sed 's/.*: *//')
+  r=$(game_read grep -ahoE 'GL_RENDERER[] ]*: *.*' "$L/webhelper_gpu.txt" 2>/dev/null | tail -n 1 | sed 's/^[^:]*: *//' | cut -c1-80)
+  w=$(game_read grep -ahoE 'Disabling GPU acceleration( due to .*|: *Disabled/[A-Za-z]+)' "$L/webhelper_gpu.txt" "$L/webhelper.txt" 2>/dev/null | tail -n 1)
+  case $w in *CommandLine*|*"due to --disable-gpu"*) w="drawn on CPU, default";; *RuntimeDetect*) w="no usable GPU found";; *) w=${w#*acceleration};; esac
+  case $g in
+    enabled) echo "GPU (${r:-renderer not logged})";;
+    disabled*) echo "software (${w:-$g})";;
+    *) echo "unknown (no client GPU log yet)";;
+  esac
+}
 client_label(){
   if [ "$(client_type)" = x86 ]; then
     if [ "$(conf_get CLIENT_SET)" = user ]; then echo "x86 through emulation (chosen by hand)"
@@ -3198,6 +3213,7 @@ Game account   $(game_user)
 Client home    $(arm_home | tilde)
 Client channel $(client_channel_label)
 GPU forwarding $(fwd_state | wrap_row -h)
+Client window  $(cw_row | wrap_row -h)
 FEX tool       $(fex_tool_row)
 Graphics       $(gfx_default_label "$(gfx_default)")
 Mali tree      $(mali_tree)
@@ -15595,8 +15611,8 @@ cat > /usr/local/lib/steam-arm-cpu-report.sh <<'CPUREP'
 # steam-arm-cpu-report: CPU and GPU profile of the Steam client window and running games, one text file for a report.
 # Run through the launcher: steam-arm --cpu-report [--quick] [--no-wait] [--out FILE]. Options --home DIR (file
 # folder), --user NAME (account whose processes count), --client x86|arm64, --sections a,b (static sections only:
-# system, firmware, session, graphics, fex, processes; no profile phases). Home folders replaced by ~; host name,
-# account name and board serial never read.
+# system, firmware, session, graphics, fex, processes, verdict; no profile phases). Home folders replaced by ~; host
+# name, account name and board serial never read.
 set -u
 IDLE_S=60; BROWSE_S=60; STEP=5; WAIT=1; OUT=""; RHOME=""; ME=$(id -un); CLIENT=""; SECTIONS=""
 while [ $# -gt 0 ]; do
@@ -15695,8 +15711,10 @@ proc_gfx(){
     [ -n "$nodes$libs" ] && echo "$g $p ${c:-?} fd:${nodes:-none} libs:${libs:-none}$(grep -qa -- '--type=zygote' "/proc/$p/cmdline" 2>/dev/null && echo ' (zygote)')"
   done
 }
+# last phase averages (share of one core per group) and lowest ARM clock seen, for the verdict
+PH_AVG=""; MIN_MHZ=""
 phase(){ # name seconds
-  local name=$1 secs=$2 s0 s1 g0 g1 gp0 gp1 n i tot st swh fx gm rt
+  local name=$1 secs=$2 s0 s1 g0 g1 gp0 gp1 n i tot st swh fx gm rt mhz a_st=0 a_swh=0 a_fx=0 a_gm=0 a_rt=0
   n=$(( secs / STEP )); [ $n -lt 1 ] && n=1
   hdr "profile: $name ($secs s, ${STEP} s samples)"
   printf '%-8s %-6s %-6s %-6s %-6s %-6s %-8s %-5s %-8s %-7s %-6s %-8s %s\n' time total% steam% swh% fex% game% runtime% pids swh_cnt temp arm_mhz v3d_mhz throttled
@@ -15705,10 +15723,14 @@ phase(){ # name seconds
     sleep "$STEP"
     s1=$(cpu_snapshot)
     read -r tot st swh fx gm rt <<<"$(printf '%s\n%s\n' "$s0" "$s1" | cpu_delta "$(nproc)")"
+    mhz=$(arm_mhz)
     printf '%-8s %-6s %-6s %-6s %-6s %-6s %-8s %-5s %-8s %-7s %-6s %-8s %s\n' "$(date +%H:%M:%S)" "$tot" "$st" "$swh" "$fx" "$gm" "$rt" \
-      "$(steam_pids | wc -l)" "$(pgrep -u "$ME" -c steamwebhelper)" "$(temp_c)" "$(arm_mhz)" "$(v3d_mhz)" "$(throttled)"
+      "$(steam_pids | wc -l)" "$(pgrep -u "$ME" -c steamwebhelper)" "$(temp_c)" "$mhz" "$(v3d_mhz)" "$(throttled)"
+    a_st=$((a_st + st)); a_swh=$((a_swh + swh)); a_fx=$((a_fx + fx)); a_gm=$((a_gm + gm)); a_rt=$((a_rt + rt))
+    [ -n "$mhz" ] && { [ -z "$MIN_MHZ" ] || [ "$mhz" -lt "$MIN_MHZ" ]; } && MIN_MHZ=$mhz
     s0=$s1
   done
+  PH_AVG="steam $((a_st / n)) steamwebhelper $((a_swh / n)) fex $((a_fx / n)) game $((a_gm / n)) runtime $((a_rt / n))"
   g1=$(gpu_snapshot); gp1=$(gpu_proc_snapshot)
   echo "(total% = whole system, all cores; steam%, swh%, fex%, game%, runtime% = share of one core, 400 = four cores; swh = steamwebhelper (client window); game = processes of the Steam tree with other names; runtime = container and Wine helpers)"
   if [ -n "$GPU_STATS" ]; then
@@ -15738,7 +15760,7 @@ section_system(){
   echo "--- kernel command line (serial and address values removed)"
   sed -E 's/[A-Za-z0-9_.]*(serial|macaddr|mac)[A-Za-z0-9_.]*=[^ ]*/&REMOVED/g; s/=[^ ]*REMOVED/=removed/g' /proc/cmdline 2>/dev/null
   echo "--- settings file keys"
-  grep -E '^(VERSION|CLIENT|CLIENT_SET|GPU_FAMILY|PLATFORM|CPU_LSE|CPU_CORES|MESA_HOST|COMPONENTS_ON|GFX_DEFAULT|CPU_NOTICE|RUN_HISTORY)=' /etc/steam-arm/steam-arm.conf 2>/dev/null
+  grep -E '^(VERSION|CLIENT|CLIENT_SET|GPU_FAMILY|PLATFORM|CPU_LSE|CPU_CORES|MESA_HOST|VK_HOST|COMPONENTS_ON|GFX_DEFAULT|CPU_NOTICE|RUN_HISTORY|X87_CLIENT|CLIENT_LIGHT|CLIENT_GPU|CLIENT_TSO|CEF_HANG_KILLS)=' /etc/steam-arm/steam-arm.conf 2>/dev/null
 }
 section_firmware(){
   hdr "firmware (vcgencmd)"
@@ -15821,6 +15843,81 @@ section_end(){
   grep -E '^(MemAvailable|CmaFree|SwapFree)' /proc/meminfo | tr '\n' ' '; echo
   echo "kernel log (GPU, memory and throttle lines; empty when restricted):"; dmesg 2>/dev/null | grep -iE 'v3d|vc4|drm|oom|throttl|under-?voltage|gpu|panthor|panfrost' | tail -n 20
 }
+# client log folder: first present of client home, Steam ARM home, account home
+client_logs(){ local L; for L in "$HOME/.local/share/Steam/logs" "$UHOME/.local/share/steam-arm/.local/share/Steam/logs" "$UHOME/.local/share/Steam/logs"; do [ -d "$L" ] && { echo "$L"; return; }; done; }
+# client window drawing state from the client logs: "GPU (<renderer>)", "software (<reason>)" or "unknown (<why>)"
+cw_state(){
+  local L=$1 g r w
+  [ -n "$L" ] && [ -d "$L" ] || { echo "unknown (no client log folder)"; return; }
+  g=$(grep -ahoE 'gpu_compositing[] ]*: *[a-z_]+' "$L"/webhelper_gpu.txt 2>/dev/null | tail -n 1 | sed 's/.*: *//')
+  r=$(grep -ahoE 'GL_RENDERER[] ]*: *.*' "$L"/webhelper_gpu.txt 2>/dev/null | tail -n 1 | sed 's/^[^:]*: *//' | cut -c1-120)
+  w=$(grep -ahoE 'Disabling GPU acceleration( due to .*|: *Disabled/[A-Za-z]+)' "$L"/webhelper_gpu.txt "$L"/webhelper.txt 2>/dev/null | tail -n 1)
+  case $w in
+    *CommandLine*|*"due to --disable-gpu"*) w="flag -cef-disable-gpu, window drawn on CPU by default";;
+    *RuntimeDetect*) w="Chromium found no usable GPU (RuntimeDetect)";;
+    *Blocklist*) w="GPU on Chromium's blocklist";;
+    *CrashCount*) w="GPU process crashed repeatedly (CrashCount)";;
+    *) w=$(printf '%s' "$w" | sed 's/^Disabling GPU acceleration[: ]*//; s/^due to //');;
+  esac
+  case $g in
+    enabled) echo "GPU (${r:-renderer not logged})";;
+    disabled*) echo "software (${w:-$g})";;
+    *) if [ -n "$w" ]; then echo "software ($w)"; else echo "unknown (no compositor lines in webhelper_gpu.txt)"; fi;;
+  esac
+}
+# client window starts (Startup lines of webhelper.txt) in the last 10 min: "<n> <loop 0|1>"; loop = three within 120 s
+cw_starts(){
+  local L=$1 now n=0 loop=0 t a b c
+  now=$(date +%s)
+  [ -f "$L/webhelper.txt" ] || { echo "0 0"; return; }
+  while read -r t; do
+    t=$(date -d "$t" +%s 2>/dev/null) || continue
+    [ $((now - t)) -le 600 ] || continue
+    n=$((n + 1)); a=$b; b=$c; c=$t
+    [ -n "$a" ] && [ $((c - a)) -le 120 ] && loop=1
+  done < <(grep -a 'Startup - webhelper launched' "$L/webhelper.txt" | tail -n 50 | sed -n 's/^\[\([0-9-]* [0-9:]*\)\].*/\1/p')
+  echo "$n $loop"
+}
+# FEX setting KEY for program NAME ($2): app file in home, FEX's app file, home config, global config; "default" when unset
+fexval(){
+  local f v
+  for f in "$HOME/.fex-emu/AppConfig/$2.json" "$UHOME/.fex-emu/AppConfig/$2.json" "/usr/share/fex-emu/AppConfig/$2.json" "$HOME/.fex-emu/Config.json" "$UHOME/.fex-emu/Config.json" /usr/share/fex-emu/Config.json; do
+    [ -r "$f" ] || continue
+    v=$(tr -d ' \n\t' < "$f" | grep -oE "\"$1\":\"?(true|false|[0-9]+)" | head -n 1 | sed 's/.*://; s/"//; s/true/1/; s/false/0/')
+    [ -n "$v" ] && { echo "$v"; return; }
+  done
+  echo default
+}
+section_verdict(){
+  local L cw st n loop ex top tso x87 sl mb gl vk fl mx thr nx=""
+  hdr "verdict"
+  L=$(client_logs)
+  cw=$(cw_state "$L")
+  echo "client window: $cw"
+  st=$(cw_starts "$L"); n=${st% *}; loop=${st#* }
+  if [ "$loop" = 1 ]; then echo "restart loop: yes ($n client window starts in 10 min, three within 120 s)"; else echo "restart loop: no ($n client window starts in 10 min)"; fi
+  ex=$(grep -ac 'GPU process exited unexpectedly' "$L/cef_log.txt" 2>/dev/null || echo 0)
+  echo "gpu process exits: ${ex:-0} (cef_log.txt, whole file)"
+  if [ -n "$PH_AVG" ]; then
+    read -r top n <<<"$(printf '%s\n' "$PH_AVG" | tr ' ' '\n' | paste - - | sort -k2,2 -rn | head -n 1)"
+    echo "top group: $top $n (share of one core, last phase; $PH_AVG)"
+  else echo "top group: no profile phase in this run"; fi
+  tso=$(fexval TSOEnabled steamwebhelper); x87=$(fexval X87ReducedPrecision steam); sl=$(fexval SilentLog steamwebhelper); mb=$(fexval Multiblock steamwebhelper)
+  gl=$(fexval GL steamwebhelper); vk=$(fexval Vulkan steamwebhelper)
+  echo "fex client: tso=$tso x87=$x87 silentlog=$sl multiblock=$mb thunks=GL$gl/VK$vk (steamwebhelper; x87 from steam.json)"
+  thr=$(throttled); mx=$(cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq 2>/dev/null); mx=${mx:+$((mx / 1000))}
+  echo "clock floor: ${MIN_MHZ:-n/a} MHz (max ${mx:-n/a}) throttled=$thr"
+  # throttle bits decide (idle clocks sit low under ondemand, so the floor alone proves nothing)
+  fl=0; case "$thr" in *under-voltage*|*arm-freq-capped*|*" throttled"*|*soft-temp-limit*) fl=1;; esac
+  if [ "$fl" = 1 ]; then nx="CPU clock capped or throttled: power supply and cooling first; numbers above do not show the board's capacity"
+  elif [ "$loop" = 1 ]; then nx="client window restarts in a loop: GPU work changes nothing until it stops; check fex client line (silentlog=1 expected), steam-arm-config cef-hang-kills off stops Chromium's restarts of hung views"
+  elif [ "$CLIENT" = x86 ]; then case $cw in
+      software*) nx="client window drawn on CPU (x86 client default): steam-arm-config lab-cef-gpu vulkan tries ANGLE on Vulkan for one start; steam-arm-config client-gpu on keeps it after cef-gpu=ok; then steam-arm-config client-tso relaxed (correctness trade, slow class)";;
+      GPU*) nx="client window on GPU; steamwebhelper CPU share left is emulation, layout and script: steam-arm-config client-tso relaxed (correctness trade), x87-client on";;
+    esac
+  fi
+  echo "next step: ${nx:-none from this report}"
+}
 
 if [ -n "$SECTIONS" ]; then
   want system && section_system
@@ -15829,12 +15926,13 @@ if [ -n "$SECTIONS" ]; then
   want graphics && section_graphics
   want fex && section_fex
   want processes && section_processes
+  want verdict && section_verdict
   exit 0
 fi
 say "Writing $OUT"
 {
 echo "Steam ARM CPU report  $(date -Is)"
-echo "report format 1; client ${CLIENT:-unknown}; sections: system, firmware, session, graphics, emulator, Steam processes, two profiles (idle, browsing), end state"
+echo "report format 2; client ${CLIENT:-unknown}; sections: system, firmware, session, graphics, emulator, Steam processes, two profiles (idle, browsing), end state, verdict"
 section_system; section_firmware; section_session; section_graphics; section_fex; section_processes
 say ""; say "Phase 1: leave Steam open on its Library page and do not touch it for ${IDLE_S} s."
 [ "$WAIT" = 1 ] && { say "Press Enter to start (starts by itself in 20 s)."; read -r -t 20 _ </dev/tty 2>/dev/null; }
@@ -15843,6 +15941,7 @@ say ""; say "Phase 2: for ${BROWSE_S} s scroll the Library, open a game page, op
 [ "$WAIT" = 1 ] && { say "Press Enter when ready (starts by itself in 20 s)."; read -r -t 20 _ </dev/tty 2>/dev/null; }
 phase "browsing Library and Store" "$BROWSE_S"
 section_end
+section_verdict
 } >"$OUT" 2>&1
 chmod 600 "$OUT" 2>/dev/null
 say "Report written: $OUT ($(wc -l <"$OUT") lines). Read it before posting; home folders are replaced by ~."
