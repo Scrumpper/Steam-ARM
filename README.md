@@ -499,7 +499,8 @@ Notes installer prints per family:
   through WineD3D by default, since DXVK cannot run on V3D; OpenGL version report and Zink
   per title (Raspberry Pi GPU settings). Raspberry Pi 4: x86 client through emulation
   (Armv8.0 CPU, see x86 client); setup writes `PLATFORM=pi4` and `VK_HOST` (V3DV Vulkan
-  1.2 on Raspberry Pi OS bookworm, 1.3 on trixie). On `pi4`, `pi5` and `pi-other`, GL or
+  1.3 on Raspberry Pi OS trixie; bookworm cannot run setup, see Requirements). On `pi4`,
+  `pi5` and `pi-other`, GL or
   Vulkan forwarding off in FEX config (setup found no thunk libraries) raises notice at
   every start: every game then draws on CPU; FEX packages include those libraries. Title
   setting `d3d=dxvk` is kept but not applied there (V3DV lacks five features DXVK needs).
@@ -863,7 +864,9 @@ What runs:
   hung (only after CPU report names restart loop); `client-tso relaxed` runs client window
   programs without TSO emulation (correctness trade; guard goes back to strict after
   three restarts within 120 s or no start line within 300 s, `client-tso retry` allows
-  another trial). Setup and first start name three levels: always on CPU (client window),
+  another trial; FEX keys settings by program name, and `exe` also matches emulated
+  programs that start themselves again through `/proc/self/exe`, Chromium and Electron
+  based titles among them). Setup and first start name three levels: always on CPU (client window),
   per title (Emulation keys), experiments.
 - Measuring: `steam-arm --cpu-report` (see CPU report) names which process uses CPU and
   whether GPU is in use, and ends with verdict (client window state, restart loop, top
@@ -881,7 +884,7 @@ What runs:
 
 Costs: first start downloads client files and takes several minutes; later starts take longer
 than with native client; client window drawn on CPU. Needs 2 GB of memory or more (setup halts
-on 1 GB boards; warns below 4 GB). Untested on Armv8.0 hardware until report arrives.
+on 1 GB boards; warns below 3.5 GB). Untested on Armv8.0 hardware until report arrives.
 
 Way back: every setup run (Update / Repair included) on x86 client chosen by CPU rule
 reads Valve's native client manifest; for build not checked yet it downloads native
@@ -1388,7 +1391,9 @@ lists snapshots, newest first, with date, reason, size and check result; damaged
 shown, cannot be chosen and can be deleted there (refused while setup runs and for snapshot
 of unfinished change). Going back saves current version first,
 restores chosen snapshot, then runs its setup with `--keep`. Settings changed since then stay in
-snapshot of current version. `upgrade --list` prints snapshots and version changes
+snapshot of current version. Client window settings `client-tso relaxed` and `x87-client on`
+have their FEX keys removed from client files before older version comes back (it knows no
+such keys); set them again after going forward. `upgrade --list` prints snapshots and version changes
 (`/var/lib/steam-arm/history.log`); `upgrade --snapshot` saves installed version by hand.
 
 Unfinished change: setup writes `/var/lib/steam-arm/upgrade.state` before first change and

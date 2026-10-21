@@ -429,8 +429,9 @@ Raspberry Pi 5.
 ### Raspberry Pi 4
 
 Cortex-A72 (Armv8.0, no LSE atomics), VideoCore VI (`broadcom-v3d42`), Mesa v3d (OpenGL
-3.1) and V3DV (Vulkan 1.2 on Raspberry Pi OS bookworm Mesa 24.2, Vulkan 1.3 on trixie
-Mesa 25 and 26). Setup writes `PLATFORM=pi4`, `CPU_LSE=0` and `MESA_HOST`, picks FEX
+3.1) and V3DV (Vulkan 1.3 on Raspberry Pi OS trixie, Mesa 25 and 26). Raspberry Pi OS
+bookworm (Mesa 24.2, Vulkan 1.2) cannot run setup: host package check halts on Debian 12
+(see Debian systems); trixie is required. Setup writes `PLATFORM=pi4`, `CPU_LSE=0` and `MESA_HOST`, picks FEX
 package `fex-emu-armv8.0` and Valve's x86 client (native client stops with SIGILL on this
 CPU; setup checks each new native build and moves back by itself).
 
@@ -442,14 +443,14 @@ What runs where:
   code cache and logging off for client processes, optional reduced x87 precision for
   client program, Multiblock off after repeated client window restarts. Magnitude is
   unmeasured; `steam-arm --cpu-report` names processes and threads and ends with verdict.
-  Window size follows desktop resolution: 1920x1080 output halves layout work against
+  Window size follows desktop resolution: 1920x1080 output draws one quarter of pixels of
   3840x2160.
 - Three levels: always on CPU (client window, emulator's translated code); per title
   (`tso=off`, `x87=reduced`, `glver`, Zink; correctness trades named on each screen);
   experiments (`lab-cef-gpu vulkan`, kept with `client-gpu on`; `client-tso relaxed`;
   `x87-client on`), each off by default and each with guard or watcher. Vulkan class:
-  V3DV 1.2 on Raspberry Pi OS bookworm (Mesa 24.2), 1.3 on trixie (Mesa 25 and 26);
-  setup stores it as `VK_HOST`.
+  V3DV 1.3 on Raspberry Pi OS trixie (Mesa 25 and 26); setup stores it as `VK_HOST`
+  (1.2 below Mesa 24.3; no release setup accepts carries that Mesa).
 - Client window through GPU: only ANGLE on Vulkan thunk can reach host GPU (GL thunk
   breaks on Chromium's GLX pattern, EGL thunk lacks entry Chromium's loader uses);
   unverified on V3DV, black window possible, so opt-in.
@@ -496,7 +497,7 @@ Untested on Raspberry Pi 4 hardware; report with two `steam-arm --cpu-report` fi
 | Site isolation off: process count and CPU change   | untested, report with `steam-arm --cpu-report` |
 | `client-tso relaxed`: 30 min browse without guard  | untested, report with `steam-arm --cpu-report` |
 | Verdict `restart loop` ever fires                  | untested, report with `steam-arm --cpu-report` |
-| `VK_HOST` matches `vulkaninfo` per release          | untested, verdict line `vulkan host`     |
+| `VK_HOST` matches `vulkaninfo` per release          | untested, verdict line `vulkan host` (needs `vulkan-tools`: `sudo apt install vulkan-tools`) |
 | `pi-governor`: frame rate and throttle bits        | untested, report with `steam-arm --cpu-report` |
 | Thermal capping under load                         | untested, report with `steam-arm --cpu-report` |
 

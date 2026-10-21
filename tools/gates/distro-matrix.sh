@@ -436,6 +436,8 @@ row(){
   if [ "$FAST" = 1 ] && case $kind in install|pagesize) true;; *) false;; esac; then res SKIP "$r ($label): full install row (left out by --fast)"; return; fi
   # x86 row belongs to the sim backend only
   [ "$kind" = x86 ] && [ "$BACKEND" = qemu ] && return
+  # Pi 4 row: qemu-user shows the host CPU's features (LSE present), so the Cortex-A72 path exists in the sim backend only
+  [ "$r" = raspios-pi4 ] && [ "$BACKEND" = qemu ] && { res SKIP "$r ($label): qemu-user presents host CPU features (LSE), Cortex-A72 path runs in sim backend only"; return; }
   can_exec "$a" || { res SKIP "$r ($label): $(exec_why "$a")"; return; }
   case $kind in install|pagesize) [ "$MAPAUTO" = 0 ];; *) false;; esac && { res SKIP "$r ($label): no subordinate id range for the game account (unshare --map-auto)"; return; }
   [ -n "$(lock_digest "$i" "$a")" ] || { res SKIP "$r ($label): no $a image of $i in distro-matrix.lock"; return; }
