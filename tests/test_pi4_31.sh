@@ -303,6 +303,62 @@ check "L3 x86 client on an LSE CPU: no item 20" "! grep -q ' 20 Client window' <
 cli client-light; check "L4 CLI state" "[ $RC = 0 ] && grep -q '^client window lighter: off$' <<<\"\$OUT\""
 cli client-light on; check "L4b CLI on" "[ $RC = 0 ] && grep -qx 'CLIENT_LIGHT=on' '$CONF'"
 cli --help; check "L5 --help lists client-light and CLIENT_LIGHT" "grep -q '^  client-light \[on|off\]' <<<\"\$OUT\" && grep -q 'CLIENT_LIGHT=on|off' <<<\"\$OUT\""
+# menu: item 24 client window memory model (x86 client without LSE), CLI client-tso, key
+cp "$T/pi4/cpuinfo" "$SARM_UI_FAKE/proc/cpuinfo"; AHT=$SARM_UI_FAKE/home/tester/.local/share/steam-arm; mkdir -p "$AHT/.config/steam-arm"
+ui menu_maintenance 24 relaxed
+check "TS1 Armv8.0 CPU: item 24 Client window: memory model (now: strict); screen names the three programs, FEX's warning, the guard; relaxed written" \
+  "grep -q ' 24 Client window: memory model (now: strict)' <<<\"\$OUT\" && grep -q '^MENU Client window: memory model|' <<<\"\$OUT\" && grep -q 'steamwebhelper, steam and exe only' <<<\"\$OUT\" && grep -q 'multithreaded' <<<\"\$OUT\" && grep -q 'three client window restarts within 120 s' <<<\"\$OUT\" && grep -qx 'CLIENT_TSO=relaxed' '$CONF' && grep -q '^MSG Maintenance|Client window: memory model: relaxed. Applies from next start of Steam ARM.' <<<\"\$OUT\""
+printf 'client-tso=failed:restart-loop\n' > "$AHT/.config/steam-arm/state"
+ui menu_maintenance 24 retry
+check "TS2 screen shows the last guard result; retry removes it" "grep -q 'last guard result: failed:restart-loop' <<<\"\$OUT\" && ! grep -q client-tso $AHT/.config/steam-arm/state"
+ui menu_maintenance 24 strict; check "TS3 strict written" "grep -qx 'CLIENT_TSO=strict' '$CONF'"
+cp "$T/pi5/cpuinfo" "$SARM_UI_FAKE/proc/cpuinfo"; ui menu_maintenance BACK
+check "TS4 LSE CPU: no item 24" "! grep -q ' 24 Client window' <<<\"\$OUT\""
+cli client-tso; check "TS5 CLI state and last guard result" "[ $RC = 0 ] && grep -q '^client window memory model: strict; last guard result: none$' <<<\"\$OUT\""
+cli client-tso relaxed; check "TS5b CLI relaxed writes key" "[ $RC = 0 ] && grep -qx 'CLIENT_TSO=relaxed' '$CONF'"
+printf 'client-tso=failed:no-startup\n' > "$AHT/.config/steam-arm/state"
+cli client-tso retry; check "TS5c CLI retry removes the guard result" "[ $RC = 0 ] && ! grep -q client-tso $AHT/.config/steam-arm/state && grep -q 'earlier guard result removed' <<<\"\$OUT\""
+cli client-tso maybe; check "TS5d bad value: usage" "[ $RC = 2 ]"
+cli --help; check "TS6 --help lists client-tso and CLIENT_TSO" "grep -q '^  client-tso \[strict|relaxed|retry\]' <<<\"\$OUT\" && grep -q 'CLIENT_TSO=strict|relaxed' <<<\"\$OUT\""
+check "TS7 CLIENT_TSO in backup key list with its own value rule (strict, relaxed, empty)" "grep -q '^SA_BK_KEYS=.* CEF_HANG_KILLS CLIENT_TSO\"' '$CFG' && grep -q '^  CLIENT_TSO) case \"\$2\" in strict|relaxed|\"\") return 0;; esac; return 1;;' '$CFG'"
+# launcher: client window memory model environment and failed guard result
+TB=$T/tso.sh; awk '/^# Client window memory model \(client helper writes TSOEnabled 0/{f=1} f{print} f && /^\[ "\$STEAM_ARM_CLIENT_TSO" = relaxed \] && llog/{exit}' "$L" > "$TB"
+tso(){ # CLIENT_TSO(-) env(-) state(-)
+  rm -rf "$T/ts"; mkdir -p "$T/ts/.config/steam-arm"; [ "$3" = - ] || echo "client-tso=$3" > "$T/ts/.config/steam-arm/state"
+  ( ARMHOME=$T/ts LOG=$T/ts.log; unset STEAM_ARM_CLIENT_TSO CLIENT_TSO; [ "$1" = - ] || CLIENT_TSO=$1; [ "$2" = - ] || export STEAM_ARM_CLIENT_TSO=$2
+    lwarn(){ echo "W $*"; }; llog(){ echo "L $*"; }; . "$TB"; echo "env=[$STEAM_ARM_CLIENT_TSO]" ) 2>&1; }
+OUT=$(tso - - -); check "TE1 no setting: strict" "grep -qx 'env=\[strict\]' <<<\"\$OUT\" && ! grep -q '^L' <<<\"\$OUT\""
+OUT=$(tso relaxed - -); check "TE2 CLIENT_TSO=relaxed: relaxed, logged as correctness trade" "grep -qx 'env=\[relaxed\]' <<<\"\$OUT\" && grep -q '^L client window memory model: relaxed (TSO emulation off for client window programs; correctness trade)' <<<\"\$OUT\""
+OUT=$(tso relaxed strict -); check "TE3 environment strict wins over setting relaxed" "grep -qx 'env=\[strict\]' <<<\"\$OUT\""
+OUT=$(tso strict relaxed -); check "TE4 environment relaxed wins over setting strict" "grep -qx 'env=\[relaxed\]' <<<\"\$OUT\""
+OUT=$(tso relaxed - failed:restart-loop); check "TE5 earlier guard result: strict with warning naming reason and retry" "grep -qx 'env=\[strict\]' <<<\"\$OUT\" && grep -q '^W client window memory model: strict (relaxed failed earlier: restart-loop; steam-arm-config client-tso retry allows another trial)' <<<\"\$OUT\""
+OUT=$(tso relaxed - ok); check "TE6 other state line: relaxed stays" "grep -qx 'env=\[relaxed\]' <<<\"\$OUT\""
+# launcher: guard watcher on synthetic pids and client log
+TW=$T/tw.sh; awk '/^  tso_watch\(\)\{/{f=1} f{print} f && /^  }$/{exit}' "$L" > "$TW"
+check "TW0 guard extracted, started beside the lab watcher" "[ -s $TW ] && grep -q '^  tso_watch </dev/null >/dev/null 2>&1 &$' $L"
+tw(){ # mode(relaxed|strict) startup-after-n-ticks(-|N) pid-sequence...
+  local mode=$1 su=$2; shift 2; rm -rf "$T/tw"; mkdir -p "$T/tw/.config/steam-arm" "$T/tw/S/logs"; printf 'old Startup - webhelper launched\n' > "$T/tw/S/logs/webhelper.txt"
+  printf '%s\n' "$@" > "$T/tw/q"; : > "$T/tw/n"
+  ( STEAM_ARM_CLIENT_TSO=$mode ARMHOME=$T/tw S=$T/tw/S TSOST=$T/tw/.config/steam-arm/state
+    sleep(){ echo . >> "$T/tw/n"; [ "$su" != - ] && [ "$(grep -c . "$T/tw/n")" = "$su" ] && echo 'Startup - webhelper launched pid 1' >> "$T/tw/S/logs/webhelper.txt"; :; }
+    date(){ echo $((1000 + $(grep -c . "$T/tw/n") * 10)); }
+    client_running(){ [ -s "$T/tw/q" ] || [ "$(grep -c . "$T/tw/n")" -le 40 ]; }
+    pgrep(){ head -n 1 "$T/tw/q"; sed -i 1d "$T/tw/q"; }
+    lnote(){ echo "NOTE $1 | $2" >> "$T/tw/calls"; }
+    . "$TW"; tso_watch; echo "rc=$?" ) 2>&1; cat "$T/tw/calls" "$T/tw/.config/steam-arm/state" 2>/dev/null; }
+OUT=$(tw relaxed 1 100 100 200 300 400 400 400)
+check "TG1 three pid changes within 120 s (10 s ticks): failed:restart-loop, one notice naming retry" "grep -qx 'client-tso=failed:restart-loop' <<<\"\$OUT\" && [ \$(grep -c '^NOTE' <<<\"\$OUT\") = 1 ] && grep -q 'relaxed failed (restart-loop); next start runs strict; steam-arm-config client-tso retry' <<<\"\$OUT\""
+OUT=$(tw relaxed 1 100 100 100 100 100 100 100 100 100 100 100 100 100 100 200 200 200 200 200 200 200 200 200 200 200 200 200 300 300 300 300 300 300 300 300 300 300 300 300 300 400 400)
+check "TG2 changes spread over more than 120 s, start line present: nothing recorded" "! grep -q 'client-tso\|NOTE' <<<\"\$OUT\""
+OUT=$(tw relaxed - 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100)
+check "TG3 no new Startup line within 300 s (old line not counted): failed:no-startup" "grep -qx 'client-tso=failed:no-startup' <<<\"\$OUT\""
+OUT=$(tw relaxed 2 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100 100)
+check "TG4 Startup line within 300 s, stable pid: nothing" "! grep -q 'client-tso\|NOTE' <<<\"\$OUT\""
+OUT=$(tw strict 1 100 200 300 400); check "TG5 strict: watcher returns at once" "grep -qx rc=0 <<<\"\$OUT\" && [ -s $T/tw/q ]"
+printf 'cef-gpu=ok:vulkan\n' > "$T/tw/.config/steam-arm/state"
+OUT=$( ( STEAM_ARM_CLIENT_TSO=relaxed ARMHOME=$T/tw S=$T/tw/S TSOST=$T/tw/.config/steam-arm/state; n=0; sleep(){ n=$((n + 1)); [ $n -le 5 ]; }; date(){ echo $((1000 + n * 10)); }; client_running(){ :; }
+  pgrep(){ echo $((100 * (n + 1))); }; lnote(){ :; }; . "$TW"; tso_watch ) 2>&1; cat "$T/tw/.config/steam-arm/state" )
+check "TG6 state file: other lines kept, guard line added" "[ \"\$OUT\" = \$'cef-gpu=ok:vulkan\nclient-tso=failed:restart-loop' ]"
 
 # menu: Games > game > Emulation rows on a non-Pi settings file; CLI profile keys
 sed -i 's/^GPU_FAMILY=.*/GPU_FAMILY=mali-csf-v10/' "$CONF"; grep -q '^GPU_FAMILY=' "$CONF" || echo GPU_FAMILY=mali-csf-v10 >> "$CONF"

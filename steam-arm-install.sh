@@ -1858,6 +1858,7 @@ x87_client(){ case "$(conf_get X87_CLIENT)" in on) echo on;; *) echo off;; esac;
 client_light(){ case "$(conf_get CLIENT_LIGHT)" in off) echo off;; *) echo on;; esac; }
 client_gpu(){ case "$(conf_get CLIENT_GPU)" in on) echo on;; *) echo off;; esac; }
 cef_hang_kills(){ case "$(conf_get CEF_HANG_KILLS)" in off) echo off;; *) echo on;; esac; }
+client_tso(){ case "$(conf_get CLIENT_TSO)" in relaxed) echo relaxed;; *) echo strict;; esac; }
 # Appids whose newest game log says CPU drawing (renderer warning line).
 cpu_apps(){
   local f id l seen=" "
@@ -6201,7 +6202,7 @@ SA_BK_PERSONAL="personal-profiles compat-tools fex mangohud personal-tuning"
 # tuned.conf lines: comments, blank, or appid with tuning keys only
 SA_TUNED_RE='^([0-9]{1,10}( +(gfx=(a|b)|multiblock=(on|off)|gl32=off|glver=3\.3|gl=zink))*)? *(#.*)?$'
 # steam-arm.conf keys restored; every other key is machine state (GPU_FAMILY only when GPU_FAMILY_SET=user).
-SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN X87_CLIENT CLIENT_LIGHT CLIENT_GPU CEF_HANG_KILLS"
+SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN X87_CLIENT CLIENT_LIGHT CLIENT_GPU CEF_HANG_KILLS CLIENT_TSO"
 SA_BK_NAME='[A-Za-z0-9_+-][A-Za-z0-9._+-]*'
 part_label(){ case "$1" in
   setup) echo "Setup choices";; system-profiles) echo "System game profiles";;
@@ -6400,6 +6401,7 @@ rs_norm(){ tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -; }
 rs_valid(){ case "$1" in
   GFX_DEFAULT) case "$2" in auto|a|b|forward) return 0;; esac; return 1;;
   AUTO_BUILD|CPU_NOTICE|RUN_HISTORY|UPDATE_CHECK_ON_OPEN|X87_CLIENT|CLIENT_LIGHT|CLIENT_GPU|CEF_HANG_KILLS) case "$2" in on|off|"") return 0;; esac; return 1;;
+  CLIENT_TSO) case "$2" in strict|relaxed|"") return 0;; esac; return 1;;
   SNAPSHOT_KEEP) case "$2" in [1-5]|"") return 0;; esac; return 1;;
   GPU_FAMILY) [[ "$2" =~ ^[a-z0-9-]+$ ]];;
   *) [[ "$2" =~ ^[a-z0-9,-]*$ ]];;
@@ -6839,6 +6841,7 @@ menu_maintenance(){
     [ "$(client_type)" = x86 ] && up+=(21 "Experiment: client window through GPU at next start")
     gov_applies && up+=(22 "CPU governor while Steam runs (now: $(gov_state))")
     [ "$(client_type)" = x86 ] && up+=(23 "Client window: hung view kills and restarts (now: $(cef_hang_kills))")
+    [ "$(client_type)" = x86 ] && ! cpu_has_lse && up+=(24 "Client window: memory model (now: $(client_tso))")
     c=$(ui_menu "Maintenance" "Keep Steam ARM working." --default "$c" \
       1 "Update / Repair (run setup again, same parts)" 2 "View logs" \
       3 "Hardware report (for a compatibility report)" 4 "Free /dev/shm now" \
@@ -6875,6 +6878,7 @@ Setup reinstalls packages, launcher, helpers and rules for those parts. Games, s
       21) maint_lab;;
       22) maint_governor;;
       23) maint_hangkills;;
+      24) maint_client_tso;;
     esac
   done
 }
@@ -6915,6 +6919,13 @@ x86 client on CPU without Armv8.1 atomics. On: client opens its desktop window (
     ui_yesno "Client window: lighter" "$t" "Turn on" Back || return
     self_root client-light on && ui_msg "Maintenance" "Client window: lighter: on. Applies from next start of Steam ARM."
   fi
+}
+# Client window memory model (x86 client on CPU without LSE): FEX TSOEnabled 0 for the three client programs, strict by default.
+maint_client_tso(){
+  local st c r; st=$(client_tso); r=$(game_read sed -n 's/^client-tso=//p' "$(arm_home)/.config/steam-arm/state" 2>/dev/null | tail -1)
+  c=$(ui_menu "Client window: memory model" "x86 client on CPU without Armv8.1 atomics. strict (default): x86 memory ordering kept for the client window programs. relaxed: TSO emulation off for steamwebhelper, steam and exe only (games untouched); less emulated CPU work, at a correctness cost FEX documents as likely to break multithreaded programs. Guard: three client window restarts within 120 s, or no start line within 300 s, go back to strict from the next start (result client-tso=failed:reason in client home .config/steam-arm/state; retry removes it). Applies from next start of Steam ARM.
+Now: $st${r:+; last guard result: $r}." --default "$st" strict "strict (default)" relaxed "relaxed (TSOEnabled 0 for client window programs)" retry "Remove earlier guard result (allows another trial)") || return
+  self_root client-tso "$c" && ui_msg "Maintenance" "Client window: memory model: $(client_tso). Applies from next start of Steam ARM."
 }
 # Chromium's hang timeouts and renderer restarts for the client window (x86 client), on by default (Chromium behaviour).
 maint_hangkills(){
@@ -7376,6 +7387,12 @@ Commands
                             views it holds for hung (on by default); off
                             after --cpu-report names a restart loop;
                             no value: state
+  client-tso [strict|relaxed|retry]
+                            x86 client on CPU without Armv8.1 atomics: FEX
+                            memory model of the client window programs
+                            (strict by default; relaxed = TSOEnabled 0,
+                            correctness trade, guarded); retry removes an
+                            earlier guard result; no value: state
   run-history [on|off]      record start and end of each x86 game start
                             through emulation in client folder
                             (.local/state/steam-arm/runs.log, newest 200
@@ -7480,7 +7497,7 @@ Files
                             SNAPSHOT_KEEP=1..5; UPDATE_CHECK_ON_OPEN=on|off;
                             X87_CLIENT=on|off; CLIENT_LIGHT=on|off;
                             CLIENT_GPU=on|off; CEF_HANG_KILLS=on|off;
-                            CLIENT=arm64|x86 set by
+                            CLIENT_TSO=strict|relaxed; CLIENT=arm64|x86 set by
                             setup, Maintenance > Client type)
   $SA_LIB/snapshots  earlier versions (Go back)
   $SA_LIB/history.log  version changes
@@ -7643,6 +7660,14 @@ cli_client_light(){
     on|off) conf_set CLIENT_LIGHT "$1" && echo "client window lighter: $1";;
     '') echo "client window lighter: $(client_light)";;
     *) echo "usage: steam-arm-config client-light [on|off]" >&2; return 2;;
+  esac
+}
+cli_client_tso(){
+  case "${1:-}" in
+    strict|relaxed) conf_set CLIENT_TSO "$1" && echo "client window memory model: $1";;
+    retry) acct_run "$(game_user)" sed -i '/^client-tso=failed:/d' "$(arm_home)/.config/steam-arm/state" 2>/dev/null; echo "earlier guard result removed; client-tso relaxed applies at the next start";;
+    '') echo "client window memory model: $(client_tso); last guard result: $(game_read sed -n 's/^client-tso=//p' "$(arm_home)/.config/steam-arm/state" 2>/dev/null | tail -1 | grep . || echo none)";;
+    *) echo "usage: steam-arm-config client-tso [strict|relaxed|retry]" >&2; return 2;;
   esac
 }
 cli_cef_hang_kills(){
@@ -7843,6 +7868,7 @@ main(){
     client-light) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_client_light "$@";;
     client-gpu)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_client_gpu "$@";;
     cef-hang-kills) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_cef_hang_kills "$@";;
+    client-tso)  case "${2:-}" in strict|relaxed|retry) cli_root "$@";; esac; shift; cli_client_tso "$@";;
     lab-cef-gpu) case "${2:-}" in vulkan|gl|off|retry) cli_root "$@";; esac; shift; cli_lab_cef "$@";;
     run-history) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_run_history "$@";;
     components)  cli_root "$@"; shift; cli_components "$@";;
@@ -10060,6 +10086,8 @@ APPCFG_WANT = {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0", 
 STEAM_JSON = "steam.json"
 STEAM_BASE = {"Config": {"SilentLog": "1"}}
 X87_WANT = {"Config": {"X87ReducedPrecision": "1"}}
+# client window memory model relaxed (STEAM_ARM_CLIENT_TSO=relaxed): the three client program names only, never a game
+TSO_WANT = {"Config": {"TSOEnabled": "0"}}
 BETA_SAVE = "package/beta.steam-arm-arm64"
 X11_SRC = "/usr/lib/aarch64-linux-gnu/libX11.so.6"
 HOSTLIB = ".fex-emu/hostlib"
@@ -10336,19 +10364,30 @@ def prepare(s, armhome):
     if lab:
         # GL thunk stays off on the Vulkan variant (ANGLE on GL thunk breaks on Chromium's xcb GLX pattern, FEX's own default)
         cw["ThunksDB"] = {"GL": 0, "Vulkan": 1} if lab == "vulkan" else {"GL": 1, "Vulkan": 1}
+    relaxed = os.environ.get("STEAM_ARM_CLIENT_TSO") == "relaxed"
+    if relaxed:
+        cw["Config"].update(TSO_WANT["Config"])
     for n in APPCFG:
         f = os.path.join(d, n)
         try:
             st = appcfg_merge(f, cw)
+            if not relaxed and appcfg_strip(f, TSO_WANT):
+                st = st or "changed"
         except ValueError:
             warn.append("FEX app setting %s is not valid JSON; left as it is (client window may fail)" % n)
             continue
         if st:
-            print("x86 client: FEX app setting %s: thunks %s, code cache off, logging off%s" % (n, ("Vulkan on, GL off (lab, this start)" if lab == "vulkan" else "on (lab, this start)") if lab else "off", " (other keys kept)" if st == "changed" else ""))
+            print("x86 client: FEX app setting %s: thunks %s, code cache off, logging off%s%s" % (n, ("Vulkan on, GL off (lab, this start)" if lab == "vulkan" else "on (lab, this start)") if lab else "off",
+                                                                                                 ", memory model relaxed (TSOEnabled 0)" if relaxed else "", " (other keys kept)" if st == "changed" else ""))
     f = os.path.join(d, STEAM_JSON)
     try:
         if appcfg_merge(f, STEAM_BASE):
             print("x86 client: FEX app setting %s: logging off" % STEAM_JSON)
+        if relaxed:
+            if appcfg_merge(f, TSO_WANT):
+                print("x86 client: FEX app setting %s: memory model relaxed (TSOEnabled 0)" % STEAM_JSON)
+        elif appcfg_strip(f, TSO_WANT):
+            print("x86 client: FEX app setting %s: memory model strict again" % STEAM_JSON)
         if os.environ.get("STEAM_ARM_X87") == "reduced":
             if appcfg_merge(f, X87_WANT):
                 print("x86 client: FEX app setting %s: reduced x87 precision (faster client start; rendering errors possible)" % STEAM_JSON)
@@ -10409,6 +10448,7 @@ def restore(s, armhome):
             w.setdefault("Config", {})["Multiblock"] = "0"
         if n == STEAM_JSON:
             w["Config"].update(STEAM_BASE["Config"])
+        w["Config"].update(TSO_WANT["Config"])
         if appcfg_strip(f, w):
             done.append("FEX app setting %s %s" % (n, "removed" if not os.path.exists(f) else "own keys removed"))
     if mb:
@@ -14709,6 +14749,17 @@ export STEAM_ARM_SLOW="$SLOW" STEAM_ARM_PLATFORM="$PLATFORM"
 # over setting X87_CLIENT=on (steam-arm-config x87-client on); off by default.
 case "${STEAM_ARM_X87:-}" in reduced|exact) ;; *) if [ "${X87_CLIENT:-off}" = on ]; then STEAM_ARM_X87=reduced; else STEAM_ARM_X87=exact; fi;; esac
 export STEAM_ARM_X87
+# Client window memory model (client helper writes TSOEnabled 0 for the three client programs): STEAM_ARM_CLIENT_TSO=
+# strict|relaxed wins over setting CLIENT_TSO (steam-arm-config client-tso); strict by default. A guard result
+# (client-tso=failed:... in the state file) keeps strict until steam-arm-config client-tso retry.
+TSOST="$ARMHOME/.config/steam-arm/state"
+case "${STEAM_ARM_CLIENT_TSO:-}" in strict|relaxed) ;; *) if [ "${CLIENT_TSO:-strict}" = relaxed ]; then STEAM_ARM_CLIENT_TSO=relaxed; else STEAM_ARM_CLIENT_TSO=strict; fi;; esac
+if [ "$STEAM_ARM_CLIENT_TSO" = relaxed ] && grep -qs '^client-tso=failed:' "$TSOST"; then
+  lwarn "client window memory model: strict (relaxed failed earlier: $(sed -n 's/^client-tso=failed://p' "$TSOST" | head -n 1); steam-arm-config client-tso retry allows another trial)"
+  STEAM_ARM_CLIENT_TSO=strict
+fi
+export STEAM_ARM_CLIENT_TSO
+[ "$STEAM_ARM_CLIENT_TSO" = relaxed ] && llog "client window memory model: relaxed (TSO emulation off for client window programs; correctness trade)"
 llog "session: ${XDG_SESSION_TYPE:-unknown}, desktop ${XDG_CURRENT_DESKTOP:-unknown}$(pgrep -x labwc >/dev/null 2>&1 && printf ', labwc')$(pgrep -x Xwayland >/dev/null 2>&1 && printf ', Xwayland'), platform ${PLATFORM:-none}, slow emulation class $SLOW"
 # Slow class, first start in this client home: one notice that the client window on CPU is expected (marker slow-notice=shown
 # in the state file; STEAM_ARM_NOTICE=0 skips it).
@@ -15418,6 +15469,27 @@ if [ "$CLIENT" = x86 ]; then
       return 0
     done
   }
+  # Client window memory model relaxed: guard. Three changes of the oldest steamwebhelper pid within 120 s, or no new
+  # "Startup -" line in the client's webhelper log within 300 s, records client-tso=failed:<reason> (next start strict).
+  tso_watch(){
+    [ "$STEAM_ARM_CLIENT_TSO" = relaxed ] || return 0
+    t0=$(date +%s); last=; c1=; c2=; so=$(stat -c %s "$S/logs/webhelper.txt" 2>/dev/null || echo 0); why=
+    while sleep 10; do
+      client_running || return 0
+      now=$(date +%s)
+      p=$(pgrep -o -u "$(id -u)" -x steamwebhelper 2>/dev/null)
+      if [ -n "$p" ] && [ -n "$last" ] && [ "$p" != "$last" ]; then
+        c1=$c2; c2=$now
+        [ -n "$c1" ] && [ $((now - c1)) -le 120 ] && why=restart-loop
+      fi
+      [ -n "$p" ] && last=$p
+      [ -z "$why" ] && [ $((now - t0)) -ge 300 ] && ! tail -c +"$((so + 1))" "$S/logs/webhelper.txt" 2>/dev/null | grep -aq 'Startup -' && why=no-startup
+      [ -n "$why" ] || continue
+      mkdir -p "${TSOST%/*}"; { grep -v '^client-tso=' "$TSOST" 2>/dev/null; echo "client-tso=failed:$why"; } > "$TSOST.new" && mv -f "$TSOST.new" "$TSOST"
+      lnote "client window memory model relaxed failed ($why); next start runs strict; steam-arm-config client-tso retry allows another trial" "Steam ARM: client window"
+      return 0
+    done
+  }
   if [ ! -f "$READY" ] || [ ! -f "$XOK" ]; then
     first_start_notice </dev/null >/dev/null 2>&1 &
     NOTEWATCH=$!
@@ -15467,6 +15539,7 @@ if [ "$CLIENT" = x86 ]; then
   start_state start
   wh_restart_watch </dev/null >/dev/null 2>&1 &
   lab_watch </dev/null >/dev/null 2>&1 &
+  tso_watch </dev/null >/dev/null 2>&1 &
   tries=0
   while :; do
     off=$(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)

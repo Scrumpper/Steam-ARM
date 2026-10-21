@@ -279,6 +279,39 @@ rc, out9d = quiet(x.prepare, s, a)
 check("P12e prepare again: idempotent", rc == 0 and out9d == "", out9d)
 quiet(x.restore, s, a)
 check("P12f restore removes steam.json (logging key was the only one)", not os.path.exists(sj))
+# client window memory model relaxed (STEAM_ARM_CLIENT_TSO=relaxed): TSOEnabled 0 for the three client programs only
+s3, a3 = client_folder(arm_beta=False)
+cfg3 = os.path.join(a3, ".fex-emu/AppConfig")
+os.environ["STEAM_ARM_CLIENT_TSO"] = "relaxed"
+rc, outt = quiet(x.prepare, s3, a3)
+check("T1 relaxed: TSOEnabled 0 in steamwebhelper.json, exe.json and steam.json beside the base keys; lines name it",
+      all(json.load(open(os.path.join(cfg3, n))) == {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0", "SilentLog": "1", "TSOEnabled": "0"}} for n in ("steamwebhelper.json", "exe.json"))
+      and json.load(open(os.path.join(cfg3, "steam.json"))) == {"Config": {"SilentLog": "1", "TSOEnabled": "0"}}
+      and outt.count("memory model relaxed (TSOEnabled 0)") == 3 and rc == 0, outt)
+check("T1b only the three client files exist (no game file touched)", sorted(os.listdir(cfg3)) == ["exe.json", "steam.json", "steamwebhelper.json"])
+rc, outt2 = quiet(x.prepare, s3, a3)
+check("T1c prepare again: idempotent", rc == 0 and outt2 == "", outt2)
+os.environ["STEAM_ARM_X87"] = "reduced"
+quiet(x.prepare, s3, a3)
+check("T2 relaxed with x87 reduced: steam.json carries both", json.load(open(os.path.join(cfg3, "steam.json"))) == {"Config": {"SilentLog": "1", "TSOEnabled": "0", "X87ReducedPrecision": "1"}})
+os.environ["STEAM_ARM_CLIENT_TSO"] = "strict"
+rc, outt3 = quiet(x.prepare, s3, a3)
+check("T3 strict again: TSOEnabled removed from all three, x87 and base keys kept, logged",
+      all("TSOEnabled" not in json.load(open(os.path.join(cfg3, n)))["Config"] for n in ("steamwebhelper.json", "exe.json", "steam.json"))
+      and json.load(open(os.path.join(cfg3, "steam.json"))) == {"Config": {"SilentLog": "1", "X87ReducedPrecision": "1"}}
+      and "steam.json: memory model strict again" in outt3 and outt3.count("code cache off, logging off (other keys kept)") == 2, outt3)
+del os.environ["STEAM_ARM_X87"]
+del os.environ["STEAM_ARM_CLIENT_TSO"]
+rc, outt4 = quiet(x.prepare, s3, a3)
+check("T3b unset: strict, x87 key removed", json.load(open(os.path.join(cfg3, "steam.json"))) == {"Config": {"SilentLog": "1"}} and rc == 0, outt4)
+put(os.path.join(cfg3, "steam.json"), '{"Config": {"SilentLog": "1", "TSOEnabled": "1"}}\n')
+quiet(x.prepare, s3, a3)
+check("T3c a TSOEnabled value that is not ours (1) stays", json.load(open(os.path.join(cfg3, "steam.json")))["Config"].get("TSOEnabled") == "1")
+os.environ["STEAM_ARM_CLIENT_TSO"] = "relaxed"
+quiet(x.prepare, s3, a3)
+quiet(x.restore, s3, a3)
+del os.environ["STEAM_ARM_CLIENT_TSO"]
+check("T4 restore after a relaxed start: all three files gone (own keys only)", not os.path.exists(cfg3) or not os.listdir(cfg3))
 # lab: client window through GPU for one start (STEAM_ARM_LAB_CEF_GPU), base put back without it
 s2, a2 = client_folder(arm_beta=False)
 os.environ["STEAM_ARM_LAB_CEF_GPU"] = "vulkan"

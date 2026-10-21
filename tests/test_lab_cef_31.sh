@@ -132,7 +132,7 @@ cli cef-hang-kills; check "H3 CLI state" "[ $RC = 0 ] && grep -q '^client window
 cli cef-hang-kills off; check "H3b CLI off writes key" "[ $RC = 0 ] && grep -qx 'CEF_HANG_KILLS=off' '$CONF'"
 cli cef-hang-kills maybe; check "H3c bad value: usage" "[ $RC = 2 ]"
 cli --help; check "H4 --help lists cef-hang-kills and CEF_HANG_KILLS" "grep -q '^  cef-hang-kills \[on|off\]' <<<\"\$OUT\" && grep -q 'CEF_HANG_KILLS=on|off' <<<\"\$OUT\""
-check "H5 CEF_HANG_KILLS in backup key list and value rule" "grep -q '^SA_BK_KEYS=.* CLIENT_GPU CEF_HANG_KILLS\"' '$CFG' && grep -q 'CLIENT_GPU|CEF_HANG_KILLS) case \"\$2\" in on|off|\"\") return 0;; esac; return 1;;' '$CFG'"
+check "H5 CEF_HANG_KILLS in backup key list and value rule" "grep -q '^SA_BK_KEYS=.* CLIENT_GPU CEF_HANG_KILLS' '$CFG' && grep -q 'CLIENT_GPU|CEF_HANG_KILLS) case \"\$2\" in on|off|\"\") return 0;; esac; return 1;;' '$CFG'"
 sed -i 's/^CLIENT=x86$/CLIENT=arm64/' "$CONF"; ui menu_maintenance BACK
 check "H6 native client: no item 23" "! grep -q ' 23 Client window' <<<\"\$OUT\""
 sed -i 's/^CLIENT=x86$/CLIENT=arm64/' "$CONF"; ui menu_maintenance BACK
