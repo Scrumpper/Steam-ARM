@@ -558,7 +558,7 @@ CPUF=$R/proc/cpuinfo; mkdir -p "$R/proc"
 v80(){ printf 'processor\t: 0\nFeatures\t: fp asimd evtstrm crc32 cpuid\nCPU part\t: 0xd08\n' > "$CPUF"; }
 v82(){ printf 'processor\t: 0\nFeatures\t: fp asimd evtstrm crc32 atomics cpuid\nCPU part\t: 0xd0b\n' > "$CPUF"; }
 XS="need_root(){ :; }; close_steam(){ :; }"
-v80; fresh CLIENT=x86 CLIENT_SET=auto CLIENT_PROBE=1788652215:lse; ui "info_status | sed -n '1,6p' >> \$LOG"
+v80; fresh CLIENT=x86 CLIENT_SET=auto CLIENT_PROBE=1788652215:lse; ui "info_status | sed -n '1,8p' >> \$LOG"
 check "XM1 status: Client type row after Installed (x86 by CPU rule); FEX tool row says system FEX" "sed -n 2p <<<\"\$OUT\" | grep -qx 'Client type    x86 through emulation (CPU without Armv8.1 atomics)' && grep -qx 'FEX tool       not used (x86 client runs on system FEX)' <<<\"\$OUT\""
 fresh CLIENT=x86 CLIENT_SET=user; ui "info_status >> \$LOG"
 check "XM2 status: x86 chosen by hand" "grep -qx 'Client type    x86 through emulation (chosen by hand)' <<<\"\$OUT\""
