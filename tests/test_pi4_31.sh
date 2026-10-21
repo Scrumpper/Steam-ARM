@@ -199,5 +199,46 @@ cli x87-client maybe; check "M5c CLI bad value: usage, status 2" "[ $RC = 2 ]"
 cli --help; check "M6 --help lists x87-client and X87_CLIENT" "grep -q '^  x87-client \\[on|off\\]' <<<\"\$OUT\" && grep -q 'X87_CLIENT=on|off' <<<\"\$OUT\""
 check "M7 X87_CLIENT in backup key list and value rule" "grep -q '^SA_BK_KEYS=.* X87_CLIENT\"' '$CFG' && grep -q 'UPDATE_CHECK_ON_OPEN|X87_CLIENT) case \"\$2\" in on|off|\"\") return 0;; esac; return 1;;' '$CFG'"
 
+# launcher: GPU forwarding notice on Pi platforms when the copied FEX config has thunks off
+TN=$T/tn.sh; awk '/^# GPU forwarding libraries: ThunksDB GL or Vulkan 0 in the copied FEX config/{f=1} f{print} f && /^esac$/{exit}' "$L" > "$TN"
+check "T0 notice block present after the FEX config copy" "grep -q 'GPU forwarding libraries not found: every game draws on CPU' $TN && [ \$(grep -n '^# GPU forwarding libraries: ThunksDB' $L | cut -d: -f1) -gt \$(grep -n '^FEXCFG=' $L | cut -d: -f1) ]"
+tn(){ # PLATFORM config-json
+  rm -f "$T/tn.log" "$T/tn.notes"; printf '%s\n' "$2" > "$T/tn.json"
+  ( PLATFORM=$1 FEXCFG=$T/tn.json DISPLAY=:9; lwarn(){ echo "$*" >> "$T/tn.log"; }; notice(){ echo "NOTICE $2 | $3 | $4" >> "$T/tn.notes"; }; . "$TN"; wait ) 2>&1; cat "$T/tn.log" "$T/tn.notes" 2>/dev/null; }
+OUT=$(tn pi4 '{ "Config": { "RootFS":"/opt/x" }, "ThunksDB":{"GL":0,"Vulkan":0} }')
+check "T1 pi4, thunks off: warning logged with config path, notice that stays (timeout 0) names package and Update / Repair" \
+  "grep -q 'GPU forwarding libraries not found.*(ThunksDB in $T/tn.json)' <<<\"\$OUT\" && grep -q '^NOTICE Steam ARM: GPU forwarding off | GPU forwarding libraries not found: every game draws on CPU. Fix: install FEX again (package fex-emu-armv8.0 from FEX.s package source), then sudo steam-arm-config, Maintenance, Update / Repair. | 0$' <<<\"\$OUT\""
+OUT=$(tn pi4 '{ "Config": { "RootFS":"/opt/x", "ThunkHostLibs":"/usr/lib/aarch64-linux-gnu/fex-emu/HostThunks/" }, "ThunksDB":{"GL":1,"Vulkan":1} }')
+check "T2 pi4, thunks on: nothing" "[ -z \"\$OUT\" ]"
+OUT=$(tn "" '{ "ThunksDB":{"GL":0,"Vulkan":0} }'); check "T3 other board, thunks off: nothing (forwarding may be off on purpose)" "[ -z \"\$OUT\" ]"
+OUT=$(tn mali '{ "ThunksDB":{"GL":0,"Vulkan":0} }'); check "T3b non-pi platform value: nothing" "[ -z \"\$OUT\" ]"
+OUT=$(tn pi5 '{ "ThunksDB":{"GL":1,"Vulkan":0} }'); check "T4 pi5, Vulkan thunk off alone: notice" "grep -q '^NOTICE Steam ARM: GPU forwarding off' <<<\"\$OUT\""
+rm -f "$T/tn.json"; OUT=$(tn pi4 ''); rm -f "$T/tn.json"; OUT=$( rm -f "$T/tn.log" "$T/tn.notes"; ( PLATFORM=pi4 FEXCFG=$T/none.json DISPLAY=:9; lwarn(){ echo "$*" >> "$T/tn.log"; }; notice(){ echo N >> "$T/tn.notes"; }; . "$TN"; wait ); cat "$T/tn.log" "$T/tn.notes" 2>/dev/null )
+check "T5 config file missing: nothing" "[ -z \"\$OUT\" ]"
+
+# menu: Information > Steam ARM status row GPU forwarding
+FC=$SARM_UI_FAKE/home/tester/.fex-emu/Config.json; mkdir -p "${FC%/*}"
+printf '{ "Config": { "RootFS":"/opt/x" },\n  "ThunksDB":{"GL":1,"Vulkan":1} }\n' > "$FC"
+OUT=$(bash -c ". $T/harness.sh --help >/dev/null; info_status" 2>&1)
+check "I1 Information status: GPU forwarding on (GL, Vulkan) before FEX tool row" "grep -q '^GPU forwarding on (GL, Vulkan)$' <<<\"\$OUT\" && [ \$(grep -n '^GPU forwarding' <<<\"\$OUT\" | cut -d: -f1) -lt \$(grep -n '^FEX tool' <<<\"\$OUT\" | cut -d: -f1) ]"
+printf '{ "Config": { "RootFS":"/opt/x" },\n  "ThunksDB":{"GL":0,"Vulkan":0} }\n' > "$FC"
+OUT=$(bash -c ". $T/harness.sh --help >/dev/null; info_status" 2>&1)
+check "I2 thunks off: row says off, libraries not found, games draw on CPU (folded)" "grep -q '^GPU forwarding off (FEX thunk libraries not found at setup; games draw$' <<<\"\$OUT\" && grep -q '^ *on CPU)$' <<<\"\$OUT\""
+rm -f "$FC"
+OUT=$(bash -c ". $T/harness.sh --help >/dev/null; info_status" 2>&1)
+check "I3 no FEX config: unknown" "grep -q '^GPU forwarding unknown (no FEX config for game account)' <<<\"\$OUT\""
+
+# distro matrix: Pi 4 row and its stand-ins
+DM=$SARM_GATES/distro-matrix.sh
+if [ -f "$DM" ]; then
+  check "DM1 row raspios-pi4 (install, trixie-slim) listed" "bash '$DM' --list | grep -q '^raspios-pi4 *install *Raspberry Pi OS trixie, Pi 4 model'"
+  check "DM2 Pi 4 stand-ins: Cortex-A72 part without atomics, bcm2711 compatible, 2711-v3d render node, SIGILL client stand-in" \
+    "grep -q 'feat=\"fp asimd evtstrm crc32 cpuid\"; part=0xd08; : > \"\$R/sim/nolse\"' '$DM' && grep -q \"printf 'raspberrypi,4-model-b\\\\\\\\0brcm,bcm2711\\\\\\\\0'\" '$DM' && grep -q \"printf 'brcm,2711-v3d\\\\\\\\0'\" '$DM' && grep -q 'kill -ILL' '$DM'"
+  check "DM3 x86 client stand-ins: manifest-x86, bootstrap and runtime zips served by the curl stand-in" \
+    "grep -q 'steam_client_ubuntu12) cp /sim/www/manifest-x86' '$DM' && grep -q 'steam_ubuntu12.zip.\\*) cp /sim/www/x86boot.zip' '$DM' && grep -q 'runtime_scout_ubuntu12.zip.\\*) cp /sim/www/x86rt.zip' '$DM'"
+  check "DM4 Pi 4 row checks: settings keys, FEX build 8.0 with MESA_HOST, x86 files, PPA package thunk files" \
+    "grep -q 'CLIENT=x86 CLIENT_SET=auto CPU_LSE=0 GPU_FAMILY=broadcom-v3d42 PLATFORM=pi4' '$DM' && grep -q 'apt-get download fex-emu-armv8.0' '$DM' && grep -q 'FEX build for this CPU (ARMv8.0 features): fex-emu-armv8.0' '$DM'"
+else echo "SKIP distro matrix checks: $DM not found"; fi
+
 echo "pi4 detection 3.1: $pass pass, $fail fail"
 [ "$fail" = 0 ]

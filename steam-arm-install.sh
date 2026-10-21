@@ -1604,6 +1604,13 @@ cpu_info(){
 # Valve's FEX tool version; x86 client uses system FEX instead.
 fex_tool_row(){ if [ "$(client_type)" = x86 ]; then echo "not used (x86 client runs on system FEX)"; else fex_tool_ver; fi; }
 # Client type with reason, as Information shows it.
+# GPU forwarding (GL and Vulkan thunks) as setup wrote it into the game account's FEX config.
+fwd_state(){
+  local f; f=$(game_home)/.fex-emu/Config.json
+  [ -r "$f" ] || { echo "unknown (no FEX config for game account)"; return; }
+  if tr -d ' \n' < "$f" | grep -q '"GL":1' && tr -d ' \n' < "$f" | grep -q '"Vulkan":1'; then echo "on (GL, Vulkan)"
+  else echo "off (FEX thunk libraries not found at setup; games draw on CPU)"; fi
+}
 client_label(){
   if [ "$(client_type)" = x86 ]; then
     if [ "$(conf_get CLIENT_SET)" = user ]; then echo "x86 through emulation (chosen by hand)"
@@ -3178,6 +3185,7 @@ Client type    $(client_label)
 Game account   $(game_user)
 Client home    $(arm_home | tilde)
 Client channel $(client_channel_label)
+GPU forwarding $(fwd_state | wrap_row -h)
 FEX tool       $(fex_tool_row)
 Graphics       $(gfx_default_label "$(gfx_default)")
 Mali tree      $(mali_tree)
@@ -8932,8 +8940,8 @@ if read -r TH_HOST TH_GUEST TH_DB < <(fex_thunk_paths); then
   \"ThunkGuestLibs\":\"$TH_GUEST\",
   \"ThunkConfig\":\"$TH_DB\""; FEXTH=1
 else
-  warn "FEX thunk libraries not found (HostThunks, GuestThunks, ThunksDB.json beside $(command -v FEX));"
-  warn "GL and Vulkan thunks off in $UHOME/.fex-emu/Config.json (x86 Remote Play client runs without them)."
+  warn "FEX thunk libraries not found (HostThunks, GuestThunks, ThunksDB.json beside $(command -v FEX)); FEX's packages include them."
+  warn "GL and Vulkan thunks off in $UHOME/.fex-emu/Config.json: games draw on CPU (x86 Remote Play client runs without them)."
 fi
 as_user mkdir -p "$UHOME/.fex-emu" || die "could not create $UHOME/.fex-emu as '$GAMEUSER'. Check that this account owns its home folder, then run this again."
 user_write "$UHOME/.fex-emu/Config.json" <<JSON || die "could not write $UHOME/.fex-emu/Config.json as '$GAMEUSER'. Free some space, then run this again."
@@ -14569,6 +14577,15 @@ elif [ -n "${__GLX_VENDOR_LIBRARY_NAME:-}" ] && ! grep -q steamarmlax "$FEXCFG" 
      && grep -q steamarmlax "$REALHOME/.fex-emu/Config.json" 2>/dev/null; then
   cp -f "$REALHOME/.fex-emu/Config.json" "$FEXCFG"
 fi
+# GPU forwarding libraries: ThunksDB GL or Vulkan 0 in the copied FEX config means setup found no thunk libraries, so every
+# game draws on CPU. Raspberry Pi platforms get one notice that stays, at every start (other boards may run without them).
+case "$PLATFORM" in pi*)
+  if { tr -d ' \n' < "$FEXCFG"; } 2>/dev/null | grep -Eq '"(GL|Vulkan)":0'; then
+    THMSG="GPU forwarding libraries not found: every game draws on CPU. Fix: install FEX again (package fex-emu-armv8.0 from FEX's package source), then sudo steam-arm-config, Maintenance, Update / Repair."
+    lwarn "$THMSG (ThunksDB in $FEXCFG)"
+    [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && ( notice 0 "Steam ARM: GPU forwarding off" "$THMSG" 0 ) </dev/null >/dev/null 2>&1 &
+  fi;;
+esac
 
 # --- Handler entry: launch wrapper stand-in (native client); Valve's FEX tool stays unedited. Watcher puts it back after a client update ---
 ENTRYPY=/usr/local/lib/steam-arm-entry.py
