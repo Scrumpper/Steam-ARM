@@ -35,6 +35,7 @@ DOCUMENTED = {
 }
 # Set by this project's own programs for each other (layer manifest switches, handler -> launcher), not user knobs.
 INTERNAL = {"STEAM_ARM_VK_SPOOF", "STEAM_ARM_VK_SPOOF_DISABLE", "STEAM_ARM_VK_OVERLAY", "STEAM_ARM_PRELOAD_MANGOHUD",
+            "STEAM_ARM_SLOW", "STEAM_ARM_PLATFORM",
             "STEAM_ARM_LAUNCHOPTS", "STEAM_ARM_D3D_DEFAULT"}
 # Standard variables of the system, desktop session, sudo, Steam, FEX, Mesa, Java.
 SYSTEM = {
@@ -49,7 +50,7 @@ SYSTEM = {
 # Keys of /etc/steam-arm/steam-arm.conf, which the launcher sources as shell.
 CONF = {"ARMHOME_DIR", "GAMEUSER", "COMPONENTS_ON", "COMPONENTS_OFF", "GPU_FAMILY", "GPU_FAMILY_SET", "GFX_DEFAULT",
         "VERSION", "LINGER_SET", "ACCOUNT_CREATED", "COMPONENTS_USER_SET", "COMPONENTS_FAMILY", "FSTAB_ADDED", "RFS_CREATED",
-        "PROVIDER_CUSTOM_SHA256", "PROVIDER_CUSTOM_FILE"}
+        "PROVIDER_CUSTOM_SHA256", "PROVIDER_CUSTOM_FILE", "CPU_LSE", "CPU_CORES", "PLATFORM", "MESA_HOST"}
 # Keys of /etc/os-release, which setup sources in a subshell.
 OS_RELEASE = {"ID", "ID_LIKE", "VERSION_ID", "VERSION_CODENAME"}
 ALLOW = DOCUMENTED | INTERNAL | SYSTEM | CONF | OS_RELEASE

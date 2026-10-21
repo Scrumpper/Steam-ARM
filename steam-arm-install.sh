@@ -34,6 +34,19 @@ cpu_line(){
   local l; l=$(cpu_label)
   if cpu_lse; then echo "${l:-cores not listed}, Armv8.1 or newer (LSE atomics)"; else echo "${l:-cores not listed}, Armv8.0 (no LSE atomics)"; fi
 }
+# Board platform for launcher and handler rules (PLATFORM in the settings file), from GPU family $1 and device tree:
+# pi4 (bcm2711 or Pi 4 model, VideoCore VI, no LSE), pi5 (bcm2712 or Pi 5 model, VideoCore VII), pi-other (VideoCore IV), else empty.
+platform_pick(){
+  local c; c="$({ tr '\0' ' ' < /proc/device-tree/compatible; } 2>/dev/null) $({ tr -d '\0' < /proc/device-tree/model; } 2>/dev/null)"
+  case "$1" in
+    broadcom-v3d42) case "$c" in *bcm2711*|*"Raspberry Pi 4"*) cpu_lse || echo pi4;; esac;;
+    broadcom-v3d71) case "$c" in *bcm2712*|*"Raspberry Pi 5"*) echo pi5;; esac;;
+    broadcom-vc4) echo pi-other;;
+  esac
+  return 0
+}
+# Host Mesa version (libgl1-mesa-dri); empty when not installed.
+mesa_host(){ dpkg-query -W -f='${Version}' libgl1-mesa-dri 2>/dev/null; }
 x86_warn(){ cat <<EOF
 CPU without Armv8.1 atomics (LSE): $(cpu_label | sed 's/^$/cores not listed/').
        Valve's native ARM64 client stops at start on this CPU (steam-for-linux #13288);
@@ -1185,6 +1198,10 @@ gpu_report(){
   while read -r v; do [ -n "$v" ] && echo "mesa extra: $v"; done <<<"$MESA_EXTRA_LIST"
   echo "official client: $(official_client)"
   echo "cpu: $(cpu_line)"
+  echo "cpu lse: $(cpu_lse && echo 1 || echo 0)"
+  echo "cpu cores: $(nproc 2>/dev/null || echo unknown)"
+  v=$(platform_pick "$GPU_FAMILY"); echo "platform: ${v:-none}"
+  v=$(mesa_host); echo "mesa host: ${v:-unknown}"
   client_pick
   case "$CLIENT:$CLIENT_SET" in
     x86:auto) echo "client: x86 (CPU without Armv8.1 atomics)";;
@@ -1616,7 +1633,7 @@ hw_guess(){
   c=$(tr '\0' ' ' < "/proc/device-tree/compatible" 2>/dev/null); m=$(hw_model)
   case "$c $m" in
     *rk3588*) echo rk3588;; *rk3566*|*rk3568*|*rk3576*) echo rk356x;;
-    *"Raspberry Pi 5"*) echo rpi5;; *"Raspberry Pi 4"*) echo rpi4;;
+    *bcm2712*|*"Raspberry Pi 5"*) echo rpi5;; *bcm2711*|*"Raspberry Pi 4"*) echo rpi4;;
     *mediatek*) echo mediatek;; *qcom*) echo snapdragon;; *apple,*) echo asahi;;
     *) case "$(gpu_family)" in virtio-gpu) echo vm;; amd-*|nvidia-*|intel) echo pc;; esac;;
   esac
@@ -10258,6 +10275,11 @@ conf_set COMPONENTS_FAMILY "$GPU_FAMILY"
 # GPU family for the launch handler's graphics rules; GPU_FAMILY_SET=user keeps a hand-picked family for later runs.
 conf_set GPU_FAMILY "$GPU_FAMILY"
 conf_set GPU_FAMILY_SET "$GPU_SRC"
+# Host facts for launcher and handler rules, probed again each run: LSE atomics, core count, board platform, host Mesa.
+conf_set CPU_LSE "$(cpu_lse && echo 1 || echo 0)"
+conf_set CPU_CORES "$(nproc 2>/dev/null || echo 0)"
+conf_set PLATFORM "$(platform_pick "$GPU_FAMILY")"
+conf_set MESA_HOST "$(mesa_host)"
 # Graphics for x86 titles: auto = forwarding plus the handler's rules; a (or forward) = forwarding only; b = every title on Mali drivers.
 [ -n "$(conf_get GFX_DEFAULT)" ] || conf_set GFX_DEFAULT auto
 conf_set VERSION "$SA_VERSION"
@@ -10736,6 +10758,20 @@ def gpu_family():
             v = []
         _GPU_FAMILY = v[-1] if v and v[-1] else sysfs_gpu_family()
     return _GPU_FAMILY
+
+
+def platform():
+    """Board platform: launcher environment (STEAM_ARM_PLATFORM), else PLATFORM of the settings file; pi4, pi5, pi-other or ''."""
+    if "STEAM_ARM_PLATFORM" in os.environ:
+        return os.environ["STEAM_ARM_PLATFORM"]
+    return conf_value("PLATFORM")
+
+
+def slow_class():
+    """x86 client on a CPU without LSE atomics: launcher environment (STEAM_ARM_SLOW), else settings file CPU_LSE."""
+    if "STEAM_ARM_SLOW" in os.environ:
+        return os.environ["STEAM_ARM_SLOW"] == "1"
+    return CLIENT_X86 and conf_value("CPU_LSE") == "0"
 
 
 def user_fex():
@@ -14043,6 +14079,13 @@ if [ "${CLIENT:-arm64}" != x86 ] && [ "${CLIENT_SET:-}" != user ] && [ -n "$CPUF
     lwarn "$LSE" 2>/dev/null; stop "$LSE";;
   esac
 fi
+# Slow emulation class: x86 client on a CPU without LSE atomics (CPU_LSE from setup, else this CPU). PLATFORM from setup
+# (pi4, pi5, pi-other, empty). Both reach the client helper and launch handler as environment; one session line per start.
+[ -n "${CPU_LSE:-}" ] || case " ${CPUF#*:} " in "  "|*" atomics "*) CPU_LSE=1;; *) CPU_LSE=0;; esac
+SLOW=0; [ "$CLIENT" = x86 ] && [ "$CPU_LSE" = 0 ] && SLOW=1
+PLATFORM=${PLATFORM:-}
+export STEAM_ARM_SLOW="$SLOW" STEAM_ARM_PLATFORM="$PLATFORM"
+llog "session: ${XDG_SESSION_TYPE:-unknown}, desktop ${XDG_CURRENT_DESKTOP:-unknown}$(pgrep -x labwc >/dev/null 2>&1 && printf ', labwc')$(pgrep -x Xwayland >/dev/null 2>&1 && printf ', Xwayland'), platform ${PLATFORM:-none}, slow emulation class $SLOW"
 # Emulation needs 4K pages; STEAM_ARM_IGNORE_PAGESIZE=1 skips it (x86 side in a separate 4K guest).
 PGSZ=$(getconf PAGESIZE 2>/dev/null || echo 4096)
 if [ "$PGSZ" != 4096 ] && [ "${STEAM_ARM_IGNORE_PAGESIZE:-0}" != 1 ]; then
