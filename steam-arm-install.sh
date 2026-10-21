@@ -4957,6 +4957,7 @@ state_pending(){ [ -f "$(state_file)" ] && lock_free; }
 state_text(){
   local k; k=$(state_get KIND)
   if [ "$k" = rollback ]; then printf 'Going back from %s to %s did not finish (started %s).' "$(state_get FROM)" "$(state_get TO)" "$(state_get STARTED)"
+  elif [ "$k" = restore ]; then printf 'Restore of %s did not finish (started %s).' "$(state_get TO)" "$(state_get STARTED)"
   else printf 'Upgrade from %s to %s did not finish (started %s).' "$(state_get FROM)" "$(state_get TO)" "$(state_get STARTED)"; fi
 }
 hist_add(){ mkdir -p "$SA_LIB" 2>/dev/null && printf '%s %s %s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$4" "${5:--}" >> "$SA_LIB/history.log" && chmod 644 "$SA_LIB/history.log"; }
@@ -5485,6 +5486,9 @@ rb_run(){
     state_write "FROM=$cur" "TO=$tv" KIND=rollback "SNAPSHOT=$csnap" "STARTED=$(date '+%Y-%m-%d %H:%M')" "PID=$$"
   else
     ulog "$(state_text) Restoring $tv."
+    # restored setup 3.1+ closes state through --setup-end: it records restore, not upgrade
+    state_write "FROM=$(state_get FROM)" "TO=$tv" KIND=restore "SNAPSHOT=$n" "STARTED=$(date '+%Y-%m-%d %H:%M')" "PID=$$" \
+      || { exec 9>&-; ulog "$(state_file) could not be written; nothing changed."; return 2; }
   fi
   snap_restore "$n" || { exec 9>&-; ulog "Restore of $tv failed ($SNAP_ERR)."; return 2; }
   exec 9>&-
@@ -5671,7 +5675,7 @@ up_resolve(){
   from=$(state_get FROM); to=$(state_get TO); kind=$(state_get KIND)
   [ "$kind" = upgrade ] && [ -f "$SA_UPCACHE/upgrade/$to/x/Steam ARM $to/steam-arm-install.sh" ] && stage="$SA_UPCACHE/upgrade/$to/x/Steam ARM $to/steam-arm-install.sh"
   [ "$kind" = upgrade ] && [ -z "$stage" ] && [ "$(installed_from)" = package ] && [ "$(inst_ver "$SA_PKG_INST")" = "$to" ] && stage=$SA_PKG_INST
-  [ "$kind" = rollback ] && stage=$SA_SHARE_INSTALLER
+  case "$kind" in rollback|restore) stage=$SA_SHARE_INSTALLER;; esac
   local -a it=()
   [ -n "$(state_get SNAPSHOT)" ] && it+=(restore "Restore $from")
   [ -n "$stage" ] && it+=(again "Run $to setup again")

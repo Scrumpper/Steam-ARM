@@ -256,6 +256,13 @@ check "U9 next menu start offers Restore 3.0 / Run 3.1 setup again / Later (noth
 uh upgrade --yes; check "U9 new upgrade refused while change unfinished (rc 3)" "[ $RC = 3 ] && has 'did not finish'"
 n=$(snaps); uh upgrade --rollback --yes
 check "U9 --rollback restores 3.0 without new snapshot, state cleared, history restore" "[ $RC = 0 ] && [ \"\$(cv)\" = 3.0 ] && [ \$(snaps) = $n ] && [ ! -f $R/lib/upgrade.state ] && grep -qE ' 3\\.0 3\\.0 restore ok ' $R/lib/history.log && [ -f $R/sys/old30 ]"
+# restored setup 3.1+ closes state itself (--setup-end): history names restore
+fresh 3.1 1; rel 3.2 1; FX_KILL=1 uh upgrade --yes; rm -f "$R/setup.log"
+uh upgrade --rollback --yes
+check "U9 restore of 3.1 closed by its setup: history restore, not upgrade" "[ $RC = 0 ] && [ \"\$(cv)\" = 3.1 ] && [ ! -f $R/lib/upgrade.state ] && has 'unfinished change to 3.1: continuing' && grep -q '^setup 3.1 --keep' $R/setup.log && grep -qE ' 3\\.1 3\\.1 restore ok 3\\.1-' $R/lib/history.log && ! grep -q ' upgrade ok ' $R/lib/history.log"
+ue 'state_write FROM=3.1 TO=3.1 KIND=restore SNAPSHOT=s STARTED=t; state_text'
+check "U9 unfinished restore named as restore" "has 'Restore of 3.1 did not finish (started t).'"
+fresh 3.0 0
 rel 3.1 1; FX_FAIL=1 uh upgrade --yes
 check "U10 setup fails after VERSION written: status kept, restore and rerun named" "[ $RC = 1 ] && has 'Setup of 3.1 stopped (status 1). Restore 3.0' && has 'Run 3.1 setup again' && grep -qx 'VERSION=3.1' $R/etc/steam-arm/steam-arm.conf"
 uh upgrade --rollback --yes
