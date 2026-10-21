@@ -14769,9 +14769,9 @@ export STEAM_ARM_CLIENT_TSO
 [ "$STEAM_ARM_CLIENT_TSO" = relaxed ] && llog "client window memory model: relaxed (TSO emulation off for client window programs; correctness trade)"
 llog "session: ${XDG_SESSION_TYPE:-unknown}, desktop ${XDG_CURRENT_DESKTOP:-unknown}$(pgrep -x labwc >/dev/null 2>&1 && printf ', labwc')$(pgrep -x Xwayland >/dev/null 2>&1 && printf ', Xwayland'), platform ${PLATFORM:-none}, slow emulation class $SLOW"
 # Slow class, first start in this client home: one notice that the client window on CPU is expected (marker slow-notice=shown
-# in the state file; STEAM_ARM_NOTICE=0 skips it).
+# in the state file; STEAM_ARM_SLOW_HINT=0 skips it).
 SLOWST="$ARMHOME/.config/steam-arm/state"
-if [ "$SLOW" = 1 ] && [ "${STEAM_ARM_NOTICE:-1}" != 0 ] && ! grep -qs '^slow-notice=shown' "$SLOWST"; then
+if [ "$SLOW" = 1 ] && [ "${STEAM_ARM_SLOW_HINT:-1}" != 0 ] && ! grep -qs '^slow-notice=shown' "$SLOWST"; then
   mkdir -p "${SLOWST%/*}" && echo "slow-notice=shown" >> "$SLOWST"
   SLOWMSG="Client window is drawn by CPU through emulation: high CPU use while the window is open is expected on this CPU class. Games reach GPU through forwarding (game log line renderer:). Measure: steam-arm --cpu-report (verdict section names the next step); settings: sudo steam-arm-config, Maintenance."
   llog "notice: $SLOWMSG"

@@ -114,11 +114,11 @@ check "D18 CPU_LSE=1 from setup wins over an empty Features line" "grep -qx 'slo
 NB=$T/notice.sh; awk '/^# Slow class, first start in this client home: one notice/{f=1} f{print} f && /^fi$/{exit}' "$L" > "$NB"
 nrun(){ # SLOW env(-) keep-home(0|1)
   [ "$3" = 1 ] || { rm -rf "$T/nh"; mkdir -p "$T/nh"; }
-  ( SLOW=$1 ARMHOME=$T/nh LOG=$T/nh.log DISPLAY=:0; unset STEAM_ARM_NOTICE; [ "$2" = - ] || export STEAM_ARM_NOTICE=$2; rm -f "$T/nh.log"
+  ( SLOW=$1 ARMHOME=$T/nh LOG=$T/nh.log DISPLAY=:0; unset STEAM_ARM_SLOW_HINT; [ "$2" = - ] || export STEAM_ARM_SLOW_HINT=$2; rm -f "$T/nh.log"
     notice(){ echo "NOTICE $2|$3" >> "$T/nh.log"; }; llog(){ echo "$*" >> "$T/nh.log"; }; . "$NB"; wait ) 2>&1; cat "$T/nh.log" 2>/dev/null; cat "$T/nh/.config/steam-arm/state" 2>/dev/null; }
 OUT=$(nrun 1 - 0); check "N1 slow class, first start: notice names CPU class, renderer line and --cpu-report; marker written" "grep -q '^NOTICE Steam ARM: this CPU class|Client window is drawn by CPU through emulation' <<<\"\$OUT\" && grep -q 'renderer:' <<<\"\$OUT\" && grep -q 'steam-arm --cpu-report' <<<\"\$OUT\" && grep -qx 'slow-notice=shown' <<<\"\$OUT\""
 OUT=$(nrun 1 - 1); check "N2 second start, same home: no notice, marker once" "! grep -q NOTICE <<<\"\$OUT\" && [ \$(grep -c 'slow-notice=shown' <<<\"\$OUT\") = 1 ]"
-OUT=$(nrun 1 0 0); check "N3 STEAM_ARM_NOTICE=0: no notice, no marker" "! grep -q 'NOTICE\|slow-notice' <<<\"\$OUT\""
+OUT=$(nrun 1 0 0); check "N3 STEAM_ARM_SLOW_HINT=0: no notice, no marker" "! grep -q 'NOTICE\|slow-notice' <<<\"\$OUT\""
 OUT=$(nrun 0 - 0); check "N4 not slow class: nothing" "[ -z \"\$OUT\" ]"
 rm -rf "$T/nh"; mkdir -p "$T/nh/.config/steam-arm"; printf 'cef-gpu=ok:vulkan\n' > "$T/nh/.config/steam-arm/state"
 OUT=$(nrun 1 - 1); check "N5 state file with other lines: marker appended, other line kept" "[ \"\$(tail -n 2 <<<\"\$OUT\" | paste -sd,)\" = 'cef-gpu=ok:vulkan,slow-notice=shown' ]"
