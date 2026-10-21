@@ -295,6 +295,9 @@ Command line, same settings from scripts:
 | `x87-client [on\|off]`                  | x86 client: reduced x87 precision for client program; no value: state |
 | `client-light [on\|off]`                | x86 client on Armv8.0 CPU: desktop window, no friends view; no value: state |
 | `lab-cef-gpu [vulkan\|gl\|off\|retry\|status]` | Experiment: client window through GPU at next start only |
+| `client-gpu [on\|off]`                  | x86 client: ANGLE on Vulkan at every start (off by default); no value: state and last result |
+| `cef-hang-kills [on\|off]`              | x86 client: Chromium's kills and restarts of hung views (on by default); no value: state |
+| `client-tso [strict\|relaxed\|retry]`   | x86 client on Armv8.0 CPU: FEX memory model of client window programs (strict by default, guarded); no value: state |
 | `run-history [on\|off]`                 | Run history; no value: state                            |
 | `components a,b,...`                   | Install exactly these parts (runs setup)                |
 | `driver-archive status\|download`      | Archive source, extra Mesa; `download` clears saved file |
@@ -495,10 +498,12 @@ Notes installer prints per family:
 - Raspberry Pi 4 and 5 (`broadcom-v3d42`, `broadcom-v3d71`): OpenGL 3.1; Windows titles
   through WineD3D by default, since DXVK cannot run on V3D; OpenGL version report and Zink
   per title (Raspberry Pi GPU settings). Raspberry Pi 4: x86 client through emulation
-  (Armv8.0 CPU, see x86 client); setup writes `PLATFORM=pi4`. On `pi4`, `pi5` and
-  `pi-other`, GL or Vulkan forwarding off in FEX config (setup found no thunk libraries)
-  raises notice at every start: every game then draws on CPU; FEX packages include those
-  libraries. Untested on Raspberry Pi hardware.
+  (Armv8.0 CPU, see x86 client); setup writes `PLATFORM=pi4` and `VK_HOST` (V3DV Vulkan
+  1.2 on Raspberry Pi OS bookworm, 1.3 on trixie). On `pi4`, `pi5` and `pi-other`, GL or
+  Vulkan forwarding off in FEX config (setup found no thunk libraries) raises notice at
+  every start: every game then draws on CPU; FEX packages include those libraries. Title
+  setting `d3d=dxvk` is kept but not applied there (V3DV lacks five features DXVK needs).
+  Untested on Raspberry Pi hardware.
 - `apple-agx`: not supported on 16K page kernel; setup halts and does not install `muvm`
   (4K page virtual machine). `broadcom-vc4`: not supported.
   `vivante`: no Vulkan driver, most titles do not run.
@@ -849,9 +854,21 @@ What runs:
   change of oldest `steamwebhelper` process turns FEX Multiblock off for client window
   files once (state file `.config/steam-arm/multiblock-client`, one notice); deleting
   `steamwebhelper.json` and `exe.json` in client home `.fex-emu/AppConfig` retries.
+- Site isolation off with lighter client window (`-cef-disable-site-isolation`: one
+  renderer process for store and library). FEX logging off for client window programs
+  (`SilentLog` 1 in `steamwebhelper.json`, `exe.json`, `steam.json`).
+- Opt-in settings, each off by default: `client-gpu on` keeps ANGLE on Vulkan for client
+  window at every start once experiment reports `cef-gpu=ok` (failed start turns it off
+  again); `cef-hang-kills off` stops Chromium's kills and restarts of views it holds for
+  hung (only after CPU report names restart loop); `client-tso relaxed` runs client window
+  programs without TSO emulation (correctness trade; guard goes back to strict after
+  three restarts within 120 s or no start line within 300 s, `client-tso retry` allows
+  another trial). Setup and first start name three levels: always on CPU (client window),
+  per title (Emulation keys), experiments.
 - Measuring: `steam-arm --cpu-report` (see CPU report) names which process uses CPU and
-  whether GPU is in use. Lower client CPU use on such CPUs is expected, not measured; no
-  figure is claimed until reports exist.
+  whether GPU is in use, and ends with verdict (client window state, restart loop, top
+  group, FEX client settings, clock floor, next step). Lower client CPU use on such CPUs
+  is expected, not measured; no figure is claimed until reports exist.
 - Games: x86 Linux titles reach GPU through emulator's GL and Vulkan forwarding (route A
   only; Mali drivers inside emulation not wired for x86 client); Windows titles use x86
   Proton through emulation. 32-bit Windows titles draw on CPU (llvmpipe): emulator has no

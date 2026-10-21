@@ -46,7 +46,18 @@ steam-arm-setup (3.1) UNRELEASED; urgency=low
     were not found; Information row GPU forwarding; run record reason.
   * Per-title keys tso=off and x87=reduced (Games, Emulation); automatic
     tuning on Raspberry Pi GPUs tries OpenGL version 3.3 and Zink first.
-  * Experiment: client window through GPU for one start (lab-cef-gpu).
+  * Experiment: client window through GPU for one start (lab-cef-gpu);
+    CLIENT_GPU=on keeps ANGLE on Vulkan at every start until failure.
+  * CPU report verdict section: client window state, restart loop, GPU
+    process exits, top process group, FEX client settings, clock floor,
+    Vulkan class, one next step. Information row Client window.
+  * x86 client: FEX logging off for client window programs (SilentLog);
+    site isolation off with lighter client window; CEF_HANG_KILLS off
+    and CLIENT_TSO relaxed as opt-in settings (guarded); VK_HOST fact;
+    setup block and first-start notice on CPUs without LSE atomics.
+  * Per-title tso=off goes strict for one start after two failed runs;
+    end hint on slow class; vk32-cpu reason; d3d=dxvk not applied on
+    Raspberry Pi GPUs (five Vulkan features missing), WineD3D used.
   * Component pi-governor (off by default): governor performance while
     Steam runs on Raspberry Pi boards.
 

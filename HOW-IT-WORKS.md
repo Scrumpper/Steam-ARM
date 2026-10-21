@@ -148,16 +148,25 @@ steam-arm (launcher, desktop account only, refuses root)
 |    PLATFORM pi4|pi5|pi-other with ThunksDB GL or Vulkan 0 in FEX config
 |      -> notice that stays at every start (games draw on CPU)
 |    experiment STEAM_ARM_LAB_CEF_GPU=vulkan|gl (or one-shot file from
-|      steam-arm-config lab-cef-gpu), one start: thunks on for client files,
-|      -cef-force-gpu, ANGLE flags in webhelper script; watcher records
-|      cef-gpu=ok|failed:<reason> in client home .config/steam-arm/state
+|      steam-arm-config lab-cef-gpu; CLIENT_GPU=on arms vulkan every start):
+|      Vulkan thunk on (GL thunk on for gl variant only), -cef-force-gpu
+|      -cef-disable-gpu-sandbox, ANGLE flags in webhelper script; watcher
+|      records cef-gpu=ok|failed:<reason> in client home .config/steam-arm/state
+|    client window path: software by default (-cef-disable-gpu); ANGLE on
+|      Vulkan thunk is only path to host GPU (GL thunk breaks on Chromium's
+|      GLX pattern, EGL thunk has no entry for Chromium's loader); CLIENT_TSO
+|      relaxed writes TSOEnabled 0 for client programs (guard tso_watch),
+|      SilentLog 1 always, -cef-disable-site-isolation on slow class,
+|      CEF_HANG_KILLS=off adds hang-timeout and renderer-restart flags
 |    pi-governor part on: steam-arm-governor performance through sudo at start,
 |      restore at exit
 |    launch wrapper stand-in -> steam-arm-run.py -> launch handler per title
 |    (forwarding route only) -> Valve's launch wrapper
 +- steam-arm --cpu-report: steam-arm-cpu-report.sh, system, firmware, session,
 |    graphics, emulator and Steam process sections, then two 60 s profiles
-|    (CPU per process group, v3d gpu_stats, drm fdinfo, threads, throttle bits);
+|    (CPU per process group, v3d gpu_stats, drm fdinfo, threads, throttle bits),
+|    end state and verdict (client window state, restart loop, GPU process
+|    exits, top group, fex client settings, clock floor, Vulkan class, next step);
 |    hardware report takes its static sections
 +- kde-input-prompt: sets or puts back KDE input permission in desktop session
 |

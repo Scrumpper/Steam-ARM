@@ -438,10 +438,21 @@ What runs where:
 
 - Client window: x86 client through emulation, drawn on CPU. Expected, not fault; native
   client is blocked by Valve issue 13288. 3.1 lowers its work: desktop interface by
-  default (Deck interface is one animated page), no friends view, FEX code cache off for
-  client processes, optional reduced x87 precision for client program, Multiblock off
-  after repeated client window restarts. Magnitude is unmeasured; `steam-arm
-  --cpu-report` names processes and threads.
+  default (Deck interface is one animated page), no friends view, site isolation off, FEX
+  code cache and logging off for client processes, optional reduced x87 precision for
+  client program, Multiblock off after repeated client window restarts. Magnitude is
+  unmeasured; `steam-arm --cpu-report` names processes and threads and ends with verdict.
+  Window size follows desktop resolution: 1920x1080 output halves layout work against
+  3840x2160.
+- Three levels: always on CPU (client window, emulator's translated code); per title
+  (`tso=off`, `x87=reduced`, `glver`, Zink; correctness trades named on each screen);
+  experiments (`lab-cef-gpu vulkan`, kept with `client-gpu on`; `client-tso relaxed`;
+  `x87-client on`), each off by default and each with guard or watcher. Vulkan class:
+  V3DV 1.2 on Raspberry Pi OS bookworm (Mesa 24.2), 1.3 on trixie (Mesa 25 and 26);
+  setup stores it as `VK_HOST`.
+- Client window through GPU: only ANGLE on Vulkan thunk can reach host GPU (GL thunk
+  breaks on Chromium's GLX pattern, EGL thunk lacks entry Chromium's loader uses);
+  unverified on V3DV, black window possible, so opt-in.
 - Games: x86 Linux titles reach v3d and V3DV through FEX GL and Vulkan forwarding when
   FEX's thunk libraries are present (package `fex-emu-armv8.0` includes
   `HostThunks/libGL-host.so`, `libvulkan-host.so`, `GuestThunks/libGL-guest.so`,
@@ -450,11 +461,16 @@ What runs where:
   are worst case: no 32-bit Vulkan thunk, GL thunk only.
 - Windows titles: x86 Proton through emulation, WineD3D on OpenGL 3.1 (Direct3D 9 class,
   feature level 9_3); Direct3D 10 and 11 titles need `glver=3.3` and may misrender.
+  `d3d=dxvk` is kept but not applied: DXVK needs `shaderInt64`, `robustBufferAccess2`,
+  `textureCompressionBC`, `multiViewport` and `tessellationShader`, V3DV reports none.
+- 32-bit titles with Vulkan: no 32-bit Vulkan forwarding, so `-vulkan` is removed (GL
+  path); `vk32=keep` keeps it on lavapipe (CPU) and records reason `vk32-cpu`.
 - Per-title levers (opt-in): `tso=off`, `x87=reduced` (Emulation keys), `glver`, Zink,
   automatic tuning order on Pi families (OpenGL version 3.3, Zink, Multiblock; no
   `gl32`), `pi-governor` component.
 - Session: Raspberry Pi OS desktop runs labwc (Wayland), client and titles draw through
-  XWayland; launcher logs session type once per start.
+  XWayland; launcher logs session type once per start, setup names it in Raspberry Pi
+  line of x86 client block.
 - Power and heat: under-voltage and 80 C capping lower clocks; `steam-arm --cpu-report`
   decodes `vcgencmd get_throttled` bits per sample.
 
@@ -476,6 +492,11 @@ Untested on Raspberry Pi 4 hardware; report with two `steam-arm --cpu-report` fi
 | `tso=off`, `x87=reduced`: frame rate and stability | untested, per title                      |
 | `glver=3.3` starts title that stopped on GL 3.1    | untested, per title                      |
 | Client window through GPU experiment               | untested, low odds                       |
+| `client-gpu on` after `cef-gpu=ok`: CPU change     | untested, report with `steam-arm --cpu-report` |
+| Site isolation off: process count and CPU change   | untested, report with `steam-arm --cpu-report` |
+| `client-tso relaxed`: 30 min browse without guard  | untested, report with `steam-arm --cpu-report` |
+| Verdict `restart loop` ever fires                  | untested, report with `steam-arm --cpu-report` |
+| `VK_HOST` matches `vulkaninfo` per release          | untested, verdict line `vulkan host`     |
 | `pi-governor`: frame rate and throttle bits        | untested, report with `steam-arm --cpu-report` |
 | Thermal capping under load                         | untested, report with `steam-arm --cpu-report` |
 
