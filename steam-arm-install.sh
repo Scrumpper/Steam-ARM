@@ -11665,9 +11665,19 @@ def renderer_verdict(state, polls):
         return "renderer: GPU (%s), %s, process %s" % (", ".join(sorted(devs)), how, comm)
     # FEX loader name: program not started yet (title processes carry their own name), so no CPU verdict
     if polls >= 15 and comm not in FEX_COMM and (len(state) < 6 or state[5] is not False):
-        why = ("x86 Mesa inside emulation loaded (%s)" % ", ".join(guest)) if guest else "no GPU device in use"
+        why = ("x86 Mesa inside emulation loaded (%s; %s)" % (guest_kind(guest), ", ".join(guest))) if guest else "no GPU device in use"
         return "renderer: warning: GPU forwarding not active: rendering on CPU (llvmpipe); %s, process %s" % (why, comm)
     return None
+
+
+def guest_kind(guest):
+    """Driver family of x86 Mesa libraries mapped inside the emulation: llvmpipe, v3d (Broadcom x86 build) or unknown."""
+    names = set(guest)
+    if names & {"v3d_dri.so", "vc4_dri.so", "libvulkan_broadcom.so"}:
+        return "v3d, Broadcom x86 driver"
+    if names & {"swrast_dri.so", "kms_swrast_dri.so", "libvulkan_lvp.so"} or all(n.startswith("libgallium") for n in names):
+        return "llvmpipe"
+    return "driver unknown"
 
 
 def renderer_watch(root, limit=180, step=2):
@@ -11699,6 +11709,8 @@ def renderer_watch(root, limit=180, step=2):
                 globals().get("RUN", {})["t_render"] = int(time.time() - t0)
                 globals().get("RUN", {})["renderer"] = "cpu" if v.startswith("renderer: warning:") else "gpu"
                 if v.startswith("renderer: warning:"):
+                    if globals().get("RUN", {}).get("reason") == "thunks-missing":
+                        log("renderer: cause: GL or Vulkan thunk off in FEX config (setup found no thunk libraries)")
                     pi = pi_hint()
                     if pi:
                         log("renderer: " + pi)
@@ -11856,7 +11868,8 @@ def run_exit(rc):
         st = ("sig%d" % -rc) if rc < 0 else str(rc)
         try:
             run_record([("t", utc_now()), ("ev", "exit"), ("app", APPID or "-"), ("run", os.getpid()), ("status", st),
-                        ("secs", secs), ("renderer", RUN["renderer"])] + ([("verdict", v)] if v else []))
+                        ("secs", secs), ("renderer", RUN["renderer"])] + ([("verdict", v)] if v else [])
+                       + ([("reason", RUN["reason"])] if RUN.get("reason") else []))
         except OSError as e:
             log("run record: exit line not written:", e)
     if AT:
@@ -12172,6 +12185,16 @@ if gfx == "b":
         log("graphics: forwarding (could not write FEX app config: %s)" % e)
 else:
     log("graphics: forwarding" + (" (%s)" % why if why else ""))
+# Forwarding with GL or Vulkan thunk off in the account's FEX config (setup found no thunk libraries): titles draw on CPU;
+# reason goes to the run record (launcher notice on Pi platforms names the fix).
+if gfx == "a":
+    try:
+        _db = json.load(open(os.path.expanduser("~/.fex-emu/Config.json"))).get("ThunksDB") or {}
+    except (OSError, ValueError, AttributeError):
+        _db = {}
+    if str(_db.get("GL", 1)) in ("0", "False") or str(_db.get("Vulkan", 1)) in ("0", "False"):
+        RUN["reason"] = "thunks-missing"
+        log("fex: GL or Vulkan thunk off in ~/.fex-emu/Config.json (setup found no thunk libraries): forwarding route draws on CPU")
 
 # 32-bit on forwarding: no 32-bit Vulkan thunk, so a Vulkan renderer lands on lavapipe (CPU).
 if gfx == "a" and vk and prof.get("vk32") != "keep":

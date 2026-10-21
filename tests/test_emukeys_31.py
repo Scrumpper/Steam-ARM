@@ -52,8 +52,8 @@ init = {}
 if os.environ.get("T_ENTRY"):
     init["ENTRY"] = os.environ.pop("T_ENTRY")
     init["CLIENT_X86"] = init["ENTRY"] == "x86"
-runpy.run_path(os.environ.pop("T_HANDLER"), init_globals=init)
-out = {"argv": sys.argv}
+g = runpy.run_path(os.environ.pop("T_HANDLER"), init_globals=init)
+out = {"argv": sys.argv, "run": {k: v for k, v in g.get("RUN", {}).items() if isinstance(v, (str, int, bool))}}
 p = os.environ.get("FEX_APP_CONFIG")
 if p and os.path.exists(p):
     out["app_config"] = json.load(open(p))
@@ -134,6 +134,36 @@ M = SRC[SRC.index("menu_app(){ cat <<'STEAMARMCONFIG'\n"):]
 check("E11 settings menu: profile_ok accepts tso=off and x87=reduced only; --clear lists them; Games row Emulation",
       "mesa=|tso=|tso=off|x87=|x87=reduced) return 0;;" in M and "multiblock diskcache autotune tso x87 d3d glver gl; do tc_set" in M
       and 'emu "Emulation            [$(emu_summary "$id")]"' in M and "game_emulation()" in M)
+
+# thunks-missing reason: GL or Vulkan thunk off in the account's FEX config
+import ast
+tree = ast.parse(H)
+keep = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.Import, ast.ImportFrom))
+        or (isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("GFX_LIB", "GUEST_MESA", "FEX_COMM", "NON_GPU_DRM") for t in n.targets))]
+ns = {}
+exec(compile(ast.Module(body=keep, type_ignores=[]), "handler-defs", "exec"), ns)
+V = ns["renderer_verdict"]
+v = V(("g", True, ["libgallium-25.0.so", "swrast_dri.so"], False, set()), 15)
+check("R1 verdict text names x86 Mesa llvmpipe", v and "x86 Mesa inside emulation loaded (llvmpipe; libgallium-25.0.so, swrast_dri.so)" in v, v)
+v = V(("g", True, ["v3d_dri.so", "libgallium-26.2.so"], False, set()), 15)
+check("R2 verdict text names Broadcom x86 driver", v and "(v3d, Broadcom x86 driver; " in v, v)
+v = V(("g", True, ["libvulkan_lvp.so"], False, set()), 15)
+check("R2b lavapipe counts as llvmpipe", v and "(llvmpipe; libvulkan_lvp.so)" in v, v)
+v = V(("g", True, ["radeonsi_dri.so"], False, set()), 15)
+check("R2c other driver: unknown", v and "(driver unknown; radeonsi_dri.so)" in v, v)
+home = tempfile.mkdtemp(dir=TMP)
+put(os.path.join(home, ".fex-emu/Config.json"), '{ "Config": { "RootFS":"/opt/x" },\n  "ThunksDB":{"GL":0,"Vulkan":0} }\n')
+r = run(home=home)
+check("R3 thunks off in FEX config: RUN reason thunks-missing, log line", r.get("run", {}).get("reason") == "thunks-missing"
+      and "fex: GL or Vulkan thunk off in ~/.fex-emu/Config.json (setup found no thunk libraries): forwarding route draws on CPU" in r["log"], r)
+home = tempfile.mkdtemp(dir=TMP)
+put(os.path.join(home, ".fex-emu/Config.json"), '{ "Config": { "RootFS":"/opt/x" },\n  "ThunksDB":{"GL":1,"Vulkan":1} }\n')
+r = run(home=home)
+check("R4 thunks on: no reason", "reason" not in r.get("run", {}) and "thunk off" not in r["log"], r)
+r = run()
+check("R5 no FEX config: no reason", "reason" not in r.get("run", {}), r)
+check("R6 run record exit line carries reason when set; renderer watch logs the cause",
+      '+ ([("reason", RUN["reason"])] if RUN.get("reason") else []))' in H and 'log("renderer: cause: GL or Vulkan thunk off in FEX config (setup found no thunk libraries)")' in H)
 
 print("%d PASS, %d FAIL" % (PASSES[0], len(FAILS)))
 sys.exit(1 if FAILS else 0)
