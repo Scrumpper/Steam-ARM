@@ -189,8 +189,10 @@ check("P3 prepare: Valve's ELF moved to .real, stand-in runs handler through hos
 r1 = subprocess.run(["sh", "-n", w])
 check("P4 stand-in parses (sh -n)", r1.returncode == 0)
 cfgd = os.path.join(a, ".fex-emu/AppConfig")
-check("P5 prepare: FEX app settings steamwebhelper.json and exe.json, thunks off",
-      all(json.load(open(os.path.join(cfgd, n))) == {"ThunksDB": {"GL": 0, "Vulkan": 0}} for n in ("steamwebhelper.json", "exe.json")))
+WANT = {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0"}}
+check("P5 prepare: FEX app settings steamwebhelper.json and exe.json, thunks off, code cache off (3.1)",
+      all(json.load(open(os.path.join(cfgd, n))) == WANT for n in ("steamwebhelper.json", "exe.json")))
+check("P5b prepare: no steam.json without STEAM_ARM_X87=reduced", not os.path.exists(os.path.join(cfgd, "steam.json")))
 check("P6 prepare: native update channel set aside", not os.path.exists(os.path.join(s, "package/beta"))
       and read(os.path.join(s, "package/beta.steam-arm-arm64")) == b"arm-channel\n")
 snap = {p: read(os.path.join(s, p)) for p in ("ubuntu12_64/steamwebhelper.sh", "ubuntu12_32/steam-launch-wrapper")}
@@ -238,14 +240,58 @@ rc, out7 = quiet(x.prepare, s, a)
 check("P10 exec line gone: file untouched, status 1, last line names transport dialog",
       rc == 1 and read(os.path.join(s, "ubuntu12_64/steamwebhelper.sh")) == before
       and out7.strip().splitlines()[-1] == "warning: steamwebhelper.sh changed by Valve; transport dialog may appear at start", out7)
-# own FEX settings only
+# FEX app settings: own keys merged, other keys kept (3.1)
 s, a = client_folder(arm_beta=False)
 put(os.path.join(a, ".fex-emu/AppConfig/exe.json"), '{"Config": {"Multiblock": "0"}}\n')
+put(os.path.join(a, ".fex-emu/AppConfig/steamwebhelper.json"), '{"ThunksDB":{"GL":0,"Vulkan":0}}\n')
 rc, out8 = quiet(x.prepare, s, a)
-check("P11 FEX app setting with other content kept, warning names it",
-      read(os.path.join(a, ".fex-emu/AppConfig/exe.json")) == b'{"Config": {"Multiblock": "0"}}\n' and "exe.json holds other settings" in out8 and rc == 1, out8)
+check("P11 FEX app setting with other keys: own keys merged, Multiblock kept, no warning, status 0",
+      json.load(open(os.path.join(a, ".fex-emu/AppConfig/exe.json"))) == {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0", "Multiblock": "0"}}
+      and rc == 0 and "exe.json: thunks off, code cache off (other keys kept)" in out8, out8)
+check("P11b 3.0 content (thunk keys only) rewritten with code cache off",
+      json.load(open(os.path.join(a, ".fex-emu/AppConfig/steamwebhelper.json"))) == WANT and "steamwebhelper.json: thunks off, code cache off (other keys kept)" in out8, out8)
+rc, out8b = quiet(x.prepare, s, a)
+check("P11c prepare again: no change, no output", rc == 0 and out8b == "", out8b)
+put(os.path.join(a, ".fex-emu/AppConfig/steamwebhelper.json"), '{"ThunksDB":{"GL":0,"Vulkan":0}\n')
+rc, out8c = quiet(x.prepare, s, a)
+check("P11d unparsable file: left as it is, warning, status 1",
+      read(os.path.join(a, ".fex-emu/AppConfig/steamwebhelper.json")) == b'{"ThunksDB":{"GL":0,"Vulkan":0}\n' and rc == 1
+      and out8c.strip().splitlines()[-1] == "warning: FEX app setting steamwebhelper.json is not valid JSON; left as it is (client window may fail)", out8c)
+put(os.path.join(a, ".fex-emu/AppConfig/steamwebhelper.json"), json.dumps(WANT))
+# steam.json: reduced x87 precision from STEAM_ARM_X87 (launcher sets it from X87_CLIENT or the environment)
+os.environ["STEAM_ARM_X87"] = "reduced"
+rc, out9 = quiet(x.prepare, s, a)
+sj = os.path.join(a, ".fex-emu/AppConfig/steam.json")
+check("P12 STEAM_ARM_X87=reduced: steam.json with X87ReducedPrecision 1, line names faster start and rendering errors",
+      json.load(open(sj)) == {"Config": {"X87ReducedPrecision": "1"}} and "steam.json: reduced x87 precision (faster client start; rendering errors possible)" in out9, out9)
+os.environ["STEAM_ARM_X87"] = "exact"
+rc, out9b = quiet(x.prepare, s, a)
+check("P12b STEAM_ARM_X87=exact: steam.json removed, logged", not os.path.exists(sj) and "steam.json: reduced x87 precision removed" in out9b, out9b)
+put(sj, '{"Config": {"X87ReducedPrecision": "1", "Multiblock": "1"}}\n')
+quiet(x.prepare, s, a)
+check("P12c exact with other key in steam.json: own key removed, other kept", json.load(open(sj)) == {"Config": {"Multiblock": "1"}})
+os.unlink(sj)
+del os.environ["STEAM_ARM_X87"]
+rc, out9c = quiet(x.prepare, s, a)
+check("P12d STEAM_ARM_X87 unset: no steam.json, nothing logged", not os.path.exists(sj) and rc == 0 and out9c == "", out9c)
+# multiblock-off (launcher restart counter): Multiblock 0 into both client files, own keys kept; second call silent
+put(os.path.join(a, ".fex-emu/AppConfig/exe.json"), json.dumps(WANT))
+rc, out10 = quiet(x.multiblock_off, s, a)
+check("P13 multiblock-off: Multiblock 0 in steamwebhelper.json and exe.json beside own keys",
+      rc == 0 and all(json.load(open(os.path.join(a, ".fex-emu/AppConfig", n))) == {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0", "Multiblock": "0"}}
+                      for n in ("steamwebhelper.json", "exe.json")) and out10.count("Multiblock off") == 2, out10)
+rc, out10b = quiet(x.multiblock_off, s, a)
+check("P13b multiblock-off again: no change, no output", rc == 0 and out10b == "", out10b)
+# restore: own keys out, Multiblock kept without the launcher's state file, file with nothing left removed
+put(os.path.join(a, ".fex-emu/AppConfig/steamwebhelper.json"), json.dumps(WANT))
 quiet(x.restore, s, a)
-check("R7 restore keeps FEX app setting it did not write", os.path.exists(os.path.join(a, ".fex-emu/AppConfig/exe.json")))
+check("R7 restore keeps FEX app setting key it did not write (Multiblock), removes own keys and empty file",
+      json.load(open(os.path.join(a, ".fex-emu/AppConfig/exe.json"))) == {"Config": {"Multiblock": "0"}}
+      and not os.path.exists(os.path.join(a, ".fex-emu/AppConfig/steamwebhelper.json")))
+put(os.path.join(a, ".config/steam-arm/multiblock-client"), "1\n")
+quiet(x.restore, s, a)
+check("R7b restore with the launcher's state file: its Multiblock removed too, state file gone",
+      not os.path.exists(os.path.join(a, ".fex-emu/AppConfig/exe.json")) and not os.path.exists(os.path.join(a, ".config/steam-arm/multiblock-client")))
 # no client files yet (first start): nothing done, status 0
 s0 = os.path.join(TMP, "empty")
 os.makedirs(s0)

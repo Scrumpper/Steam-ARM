@@ -1801,6 +1801,7 @@ pi_summary(){
 client_type(){ case "$(conf_get CLIENT)" in x86) echo x86;; *) echo arm64;; esac; }
 auto_build(){ case "$(conf_get AUTO_BUILD)" in off) echo off;; *) echo on;; esac; }
 cpu_notice(){ case "$(conf_get CPU_NOTICE)" in on) echo on;; *) echo off;; esac; }
+x87_client(){ case "$(conf_get X87_CLIENT)" in on) echo on;; *) echo off;; esac; }
 # Appids whose newest game log says CPU drawing (renderer warning line).
 cpu_apps(){
   local f id l seen=" "
@@ -6111,7 +6112,7 @@ SA_BK_PERSONAL="personal-profiles compat-tools fex mangohud personal-tuning"
 # tuned.conf lines: comments, blank, or appid with tuning keys only
 SA_TUNED_RE='^([0-9]{1,10}( +(gfx=(a|b)|multiblock=(on|off)|gl32=off))*)? *(#.*)?$'
 # steam-arm.conf keys restored; every other key is machine state (GPU_FAMILY only when GPU_FAMILY_SET=user).
-SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN"
+SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN X87_CLIENT"
 SA_BK_NAME='[A-Za-z0-9_+-][A-Za-z0-9._+-]*'
 part_label(){ case "$1" in
   setup) echo "Setup choices";; system-profiles) echo "System game profiles";;
@@ -6309,7 +6310,7 @@ rs_val(){ sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -1 | sed "s/^[\"']//; s/[\"
 rs_norm(){ tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -; }
 rs_valid(){ case "$1" in
   GFX_DEFAULT) case "$2" in auto|a|b|forward) return 0;; esac; return 1;;
-  AUTO_BUILD|CPU_NOTICE|RUN_HISTORY|UPDATE_CHECK_ON_OPEN) case "$2" in on|off|"") return 0;; esac; return 1;;
+  AUTO_BUILD|CPU_NOTICE|RUN_HISTORY|UPDATE_CHECK_ON_OPEN|X87_CLIENT) case "$2" in on|off|"") return 0;; esac; return 1;;
   SNAPSHOT_KEEP) case "$2" in [1-5]|"") return 0;; esac; return 1;;
   GPU_FAMILY) [[ "$2" =~ ^[a-z0-9-]+$ ]];;
   *) [[ "$2" =~ ^[a-z0-9,-]*$ ]];;
@@ -6744,6 +6745,7 @@ menu_maintenance(){
     [ -n "$(snap_names)" ] && up+=(15 "Go back to previous version")
     up+=(16 "Previous versions kept (now: $(snap_keep))" 17 "Check for new release when this menu opens (now: $(check_on_open))")
     up+=(18 "CPU profile of client window (two 60 s samples)")
+    [ "$(client_type)" = x86 ] && up+=(19 "Faster client start, reduced x87 precision (now: $(x87_client))")
     c=$(ui_menu "Maintenance" "Keep Steam ARM working." --default "$c" \
       1 "Update / Repair (run setup again, same parts)" 2 "View logs" \
       3 "Hardware report (for a compatibility report)" 4 "Free /dev/shm now" \
@@ -6775,8 +6777,23 @@ Setup reinstalls packages, launcher, helpers and rules for those parts. Games, s
       16) maint_keep;;
       17) maint_checkopen;;
       18) maint_cpureport;;
+      19) maint_x87;;
     esac
   done
+}
+# Reduced x87 precision for the 32-bit x86 client binary (FEX X87ReducedPrecision in steam.json), off by default.
+maint_x87(){
+  local st t; st=$(x87_client)
+  t="Reduced x87 precision for client: $st
+
+x86 client only. FEX runs the 32-bit client program with reduced x87 floating point precision (X87ReducedPrecision): client starts faster on CPUs without Armv8.1 atomics. FEX documents rendering errors as possible effect; games are not affected (setting applies to client program alone). Applies from next start of Steam ARM. STEAM_ARM_X87=exact in environment turns it off for one start."
+  if [ "$st" = on ]; then
+    ui_yesno "Reduced x87 precision" "$t" "Turn off" Back defaultno || return
+    self_root x87-client off && ui_msg "Maintenance" "Reduced x87 precision for client: off. Applies from next start of Steam ARM."
+  else
+    ui_yesno "Reduced x87 precision" "$t" "Turn on" Back || return
+    self_root x87-client on && ui_msg "Maintenance" "Reduced x87 precision for client: on. Applies from next start of Steam ARM."
+  fi
 }
 # CPU and GPU profile of the client window: report script as game account, file in game account's home.
 maint_cpureport(){
@@ -7088,6 +7105,9 @@ Commands
                             CPU and GPU profile of client window and games
                             as game account (steam-arm --cpu-report), file in
                             game account's home
+  x87-client [on|off]       x86 client: reduced x87 precision for 32-bit
+                            client program (faster start, rendering errors
+                            possible; off by default); no value: state
   run-history [on|off]      record start and end of each x86 game start
                             through emulation in client folder
                             (.local/state/steam-arm/runs.log, newest 200
@@ -7190,7 +7210,7 @@ Files
                             forward is read as a; AUTO_BUILD=on|off;
                             CPU_NOTICE=on|off; RUN_HISTORY=on|off;
                             SNAPSHOT_KEEP=1..5; UPDATE_CHECK_ON_OPEN=on|off;
-                            CLIENT=arm64|x86 set by
+                            X87_CLIENT=on|off; CLIENT=arm64|x86 set by
                             setup, Maintenance > Client type)
   $SA_LIB/snapshots  earlier versions (Go back)
   $SA_LIB/history.log  version changes
@@ -7339,6 +7359,13 @@ cli_cpu_notice(){
     on|off) conf_set CPU_NOTICE "$1" && echo "CPU drawing notice: $1";;
     '') echo "CPU drawing notice: $(cpu_notice)";;
     *) echo "usage: steam-arm-config cpu-notice [on|off]" >&2; return 2;;
+  esac
+}
+cli_x87_client(){
+  case "${1:-}" in
+    on|off) conf_set X87_CLIENT "$1" && echo "reduced x87 precision for client: $1";;
+    '') echo "reduced x87 precision for client: $(x87_client)";;
+    *) echo "usage: steam-arm-config x87-client [on|off]" >&2; return 2;;
   esac
 }
 cli_cpu_report(){
@@ -7505,6 +7532,7 @@ main(){
     auto-build)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_auto_build "$@";;
     cpu-notice)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_cpu_notice "$@";;
     cpu-report)  shift; cli_cpu_report "$@";;
+    x87-client)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_x87_client "$@";;
     run-history) case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_run_history "$@";;
     components)  cli_root "$@"; shift; cli_components "$@";;
     driver-archive) case "${2:-}" in download|local|custom) cli_root "$@";; esac; shift; cli_driver_archive "$@";;
@@ -9666,11 +9694,16 @@ cat > /usr/local/lib/steam-arm-x86client.py <<'X86PY'
                         webhelper start script gets --enable-features=NetworkServiceInProcess2 (network
                         service in the browser process, so the client's process check passes);
                         launch wrapper moved to <name>.real, stand-in runs steam-arm launch handler first;
-                        FEX app settings steamwebhelper.json and exe.json: thunks off (client window on CPU);
+                        FEX app settings steamwebhelper.json and exe.json: thunks off (client window on CPU),
+                        code cache off (FEX-2610 turns it on for Steam; zygote crash loop); own keys merged, other
+                        keys kept; steam.json: X87ReducedPrecision when STEAM_ARM_X87=reduced, removed otherwise;
                         update channel file of native client moved aside (package/beta.steam-arm-arm64);
                         private copy of host libX11 (ARMHOME/.fex-emu/hostlib) whose default X error
                         handler returns, so an X error (GLXBadFBConfig, BadDrawable) no longer ends client.
   restore S ARMHOME     undoes prepare where files are unchanged since; prints what it put back.
+  multiblock-off S ARMHOME
+                        FEX Multiblock off in steamwebhelper.json and exe.json (launcher, after repeated client
+                        window restarts); other keys kept.
   reset S ARMHOME arm64|x86
                         client type switch: next start of that client checks its files once; arm64 also
                         drops package records of both clients, so native client downloads its files again.
@@ -9700,7 +9733,11 @@ MARK = "# steam-arm stand-in"
 PY = "/usr/local/lib/steam-arm-python3"
 RUN = "/usr/local/lib/steam-arm-run.py"
 APPCFG = ("steamwebhelper.json", "exe.json")
-APPCFG_TEXT = '{"ThunksDB":{"GL":0,"Vulkan":0}}\n'
+# client window processes: thunks off (window on CPU), FEX code cache off (FEX #5996: zygote crash loop with FEX-2610's cache)
+APPCFG_WANT = {"ThunksDB": {"GL": 0, "Vulkan": 0}, "Config": {"DiskCache": "0"}}
+# 32-bit client binary (FEX keys app settings by program name): reduced x87 precision when chosen (STEAM_ARM_X87=reduced)
+STEAM_JSON = "steam.json"
+X87_WANT = {"Config": {"X87ReducedPrecision": "1"}}
 BETA_SAVE = "package/beta.steam-arm-arm64"
 X11_SRC = "/usr/lib/aarch64-linux-gnu/libX11.so.6"
 HOSTLIB = ".fex-emu/hostlib"
@@ -9864,6 +9901,69 @@ def runtime(zpath, s):
     print("  x86 client runtime: %d files" % n)
 
 
+def appcfg_read(f):
+    """Parsed FEX app settings file: dict, None when absent, False when not a JSON object."""
+    try:
+        cur = open(f).read()
+    except OSError:
+        return None
+    try:
+        d = json.loads(cur)
+    except ValueError:
+        return False
+    return d if isinstance(d, dict) else False
+
+
+def appcfg_merge(f, want):
+    """Own keys of want merged into f (other keys kept): 'new', 'changed' or None; ValueError when f is not JSON."""
+    d = appcfg_read(f)
+    if d is False:
+        raise ValueError(f)
+    out = {} if d is None else json.loads(json.dumps(d))
+    for sect, keys in want.items():
+        if not isinstance(out.get(sect), dict):
+            out[sect] = {}
+        out[sect].update(keys)
+    if out == d:
+        return None
+    os.makedirs(os.path.dirname(f), exist_ok=True)
+    put(f, (json.dumps(out, sort_keys=True) + "\n").encode(), 0o644)
+    return "new" if d is None else "changed"
+
+
+def appcfg_strip(f, want):
+    """Own keys of want removed from f; file removed when nothing is left. True when the file changed."""
+    d = appcfg_read(f)
+    if not d:
+        return False
+    out = json.loads(json.dumps(d))
+    for sect, keys in want.items():
+        if isinstance(out.get(sect), dict):
+            for k, v in keys.items():
+                if out[sect].get(k) == v:
+                    del out[sect][k]
+            if not out[sect]:
+                del out[sect]
+    if out == d:
+        return False
+    if out:
+        put(f, (json.dumps(out, sort_keys=True) + "\n").encode(), 0o644)
+    else:
+        os.unlink(f)
+    return True
+
+
+def multiblock_off(s, armhome):
+    for n in APPCFG:
+        f = os.path.join(armhome, ".fex-emu/AppConfig", n)
+        try:
+            if appcfg_merge(f, {"Config": {"Multiblock": "0"}}):
+                print("x86 client: FEX app setting %s: Multiblock off" % n)
+        except ValueError:
+            print("warning: FEX app setting %s is not valid JSON; Multiblock left as it is" % n)
+    return 0
+
+
 def prepare(s, armhome):
     warn = []
     # 1. webhelper start script
@@ -9903,25 +10003,26 @@ def prepare(s, armhome):
         if cur != want:
             put(w, want, 0o755)
             print("x86 client: %s: stand-in runs launch handler" % rel)
-    # 3. FEX app settings (own content only)
+    # 3. FEX app settings: own keys merged, other keys kept (3.0 wrote the thunk keys only)
     d = os.path.join(armhome, ".fex-emu/AppConfig")
     for n in APPCFG:
         f = os.path.join(d, n)
         try:
-            cur = open(f).read()
-        except OSError:
-            cur = None
-        if cur is None:
-            os.makedirs(d, exist_ok=True)
-            put(f, APPCFG_TEXT.encode(), 0o644)
-            print("x86 client: FEX app setting %s: thunks off" % n)
-        elif cur != APPCFG_TEXT:
-            try:
-                ok = json.loads(cur).get("ThunksDB") == {"GL": 0, "Vulkan": 0}
-            except (ValueError, AttributeError):
-                ok = False
-            if not ok:
-                warn.append("FEX app setting %s holds other settings; left as it is (client window may fail)" % n)
+            st = appcfg_merge(f, APPCFG_WANT)
+        except ValueError:
+            warn.append("FEX app setting %s is not valid JSON; left as it is (client window may fail)" % n)
+            continue
+        if st:
+            print("x86 client: FEX app setting %s: thunks off, code cache off%s" % (n, " (other keys kept)" if st == "changed" else ""))
+    f = os.path.join(d, STEAM_JSON)
+    try:
+        if os.environ.get("STEAM_ARM_X87") == "reduced":
+            if appcfg_merge(f, X87_WANT):
+                print("x86 client: FEX app setting %s: reduced x87 precision (faster client start; rendering errors possible)" % STEAM_JSON)
+        elif appcfg_strip(f, X87_WANT):
+            print("x86 client: FEX app setting %s: reduced x87 precision removed" % STEAM_JSON)
+    except ValueError:
+        warn.append("FEX app setting %s is not valid JSON; left as it is" % STEAM_JSON)
     # 4. update channel file of native client, once
     b = os.path.join(s, "package/beta")
     if os.path.isfile(b) and os.path.isfile(os.path.join(s, "steamrtarm64/steam")) \
@@ -9964,14 +10065,17 @@ def restore(s, armhome):
             # client put its own program back: saved copy is stale
             os.unlink(real)
             done.append("old copy of launch wrapper removed (%s)" % rel.split("/")[0])
-    for n in APPCFG:
+    # own keys out of the FEX app settings; a file with nothing else left is removed
+    mb = os.path.isfile(os.path.join(armhome, ".config/steam-arm/multiblock-client"))
+    for n, want in ((APPCFG[0], APPCFG_WANT), (APPCFG[1], APPCFG_WANT), (STEAM_JSON, X87_WANT)):
         f = os.path.join(armhome, ".fex-emu/AppConfig", n)
-        try:
-            if open(f).read() == APPCFG_TEXT:
-                os.unlink(f)
-                done.append("FEX app setting %s removed" % n)
-        except OSError:
-            pass
+        w = json.loads(json.dumps(want))
+        if mb and n in APPCFG:
+            w.setdefault("Config", {})["Multiblock"] = "0"
+        if appcfg_strip(f, w):
+            done.append("FEX app setting %s %s" % (n, "removed" if not os.path.exists(f) else "own keys removed"))
+    if mb:
+        os.unlink(os.path.join(armhome, ".config/steam-arm/multiblock-client"))
     sv = os.path.join(s, BETA_SAVE)
     if os.path.isfile(sv):
         os.replace(sv, os.path.join(s, "package/beta"))
@@ -10168,11 +10272,13 @@ def main(a):
         return restore(a[1], a[2])
     if len(a) == 4 and a[0] == "reset" and a[3] in ("arm64", "x86"):
         return reset(a[1], a[2], a[3])
+    if len(a) == 3 and a[0] == "multiblock-off":
+        return multiblock_off(a[1], a[2])
     if len(a) in (2, 3) and a[0] == "probe" and (len(a) == 2 or a[2] == "--run"):
         print(probe(a[1], len(a) == 3))
         return 0
     sys.stderr.write("usage: steam-arm-x86client.py bootstrap ZIP S | runtime ZIP S | prepare S ARMHOME | restore S ARMHOME"
-                     " | reset S ARMHOME arm64|x86 | probe ZIP [--run]\n")
+                     " | reset S ARMHOME arm64|x86 | multiblock-off S ARMHOME | probe ZIP [--run]\n")
     return 2
 
 
@@ -14124,6 +14230,10 @@ fi
 SLOW=0; [ "$CLIENT" = x86 ] && [ "$CPU_LSE" = 0 ] && SLOW=1
 PLATFORM=${PLATFORM:-}
 export STEAM_ARM_SLOW="$SLOW" STEAM_ARM_PLATFORM="$PLATFORM"
+# Reduced x87 precision for the 32-bit client binary (client helper writes steam.json): STEAM_ARM_X87=reduced|exact wins
+# over setting X87_CLIENT=on (steam-arm-config x87-client on); off by default.
+case "${STEAM_ARM_X87:-}" in reduced|exact) ;; *) if [ "${X87_CLIENT:-off}" = on ]; then STEAM_ARM_X87=reduced; else STEAM_ARM_X87=exact; fi;; esac
+export STEAM_ARM_X87
 llog "session: ${XDG_SESSION_TYPE:-unknown}, desktop ${XDG_CURRENT_DESKTOP:-unknown}$(pgrep -x labwc >/dev/null 2>&1 && printf ', labwc')$(pgrep -x Xwayland >/dev/null 2>&1 && printf ', Xwayland'), platform ${PLATFORM:-none}, slow emulation class $SLOW"
 # Emulation needs 4K pages; STEAM_ARM_IGNORE_PAGESIZE=1 skips it (x86 side in a separate 4K guest).
 PGSZ=$(getconf PAGESIZE 2>/dev/null || echo 4096)
@@ -14717,6 +14827,25 @@ if [ "$CLIENT" = x86 ]; then
   # x86 files checked once (marker): a native package leaves files of the same names in the folder
   XOK="$ARMHOME/.config/steam-arm/x86-verified"
   x86_ok(){ mkdir -p "${XOK%/*}" && : > "$XOK" && lwarn "x86 client files checked; later starts skip file check"; }
+  # Client window restarts (slow emulation class): after the file check and 5 min, the third change of the oldest
+  # steamwebhelper pid turns FEX Multiblock off for the client window files, once (state file); deleting them retries.
+  MBSTATE="$ARMHOME/.config/steam-arm/multiblock-client"
+  wh_restart_watch(){
+    [ "$SLOW" = 1 ] && [ ! -f "$MBSTATE" ] || return 0
+    t0=$(date +%s); last=; n=0
+    while sleep 10; do
+      client_running || return 0
+      [ -f "$XOK" ] && [ $(( $(date +%s) - t0 )) -ge 300 ] || continue
+      p=$(pgrep -o -u "$(id -u)" -x steamwebhelper 2>/dev/null)
+      [ -n "$p" ] || continue
+      [ -n "$last" ] && [ "$p" != "$last" ] && n=$((n + 1))
+      last=$p
+      [ "$n" -ge 3 ] || continue
+      python3 /usr/local/lib/steam-arm-x86client.py multiblock-off "$S" "$ARMHOME" >/dev/null 2>&1 && { mkdir -p "${MBSTATE%/*}"; date +%s > "$MBSTATE"; }
+      lnote "steamwebhelper restarted 3 times: FEX Multiblock off for client window from next start; delete .fex-emu/AppConfig/steamwebhelper.json and exe.json in client home to retry" "Steam ARM: client window"
+      return 0
+    done
+  }
   if [ ! -f "$READY" ] || [ ! -f "$XOK" ]; then
     first_start_notice </dev/null >/dev/null 2>&1 &
     NOTEWATCH=$!
@@ -14764,6 +14893,7 @@ if [ "$CLIENT" = x86 ]; then
     done
   fi
   start_state start
+  wh_restart_watch </dev/null >/dev/null 2>&1 &
   tries=0
   while :; do
     off=$(stat -c %s "$BOOTLOG" 2>/dev/null || echo 0)

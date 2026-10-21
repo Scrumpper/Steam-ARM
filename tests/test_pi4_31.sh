@@ -122,5 +122,82 @@ OUT=$(cat "$T/hp.out")
 check "D19 handler platform()/slow_class(): settings file, empty environment wins over file, native client never slow" \
   "grep -qx 'conf pi4 True' <<<\"\$OUT\" && grep -qx \"env '' False\" <<<\"\$OUT\" && grep -qx 'env2 pi5 True' <<<\"\$OUT\" && grep -qx 'native False' <<<\"\$OUT\""
 
+# launcher: reduced x87 precision environment for the client helper
+XB=$T/x87.sh; awk '/^# Reduced x87 precision for the 32-bit client binary/{f=1} f{print} f && /^export STEAM_ARM_X87$/{exit}' "$L" > "$XB"
+x87(){ ( unset STEAM_ARM_X87 X87_CLIENT; [ "$1" = - ] || X87_CLIENT=$1; [ "$2" = - ] || export STEAM_ARM_X87=$2; . "$XB"; echo "$STEAM_ARM_X87" ) 2>&1; }
+OUT=$(x87 on -); check "X1 X87_CLIENT=on -> STEAM_ARM_X87=reduced" "[ \"\$OUT\" = reduced ]"
+OUT=$(x87 - -); check "X2 no setting -> exact (off by default)" "[ \"\$OUT\" = exact ]"
+OUT=$(x87 on exact); check "X3 environment STEAM_ARM_X87=exact wins over setting on" "[ \"\$OUT\" = exact ]"
+OUT=$(x87 off reduced); check "X4 environment reduced wins over setting off" "[ \"\$OUT\" = reduced ]"
+OUT=$(x87 on bogus); check "X5 unknown environment value falls back to setting" "[ \"\$OUT\" = reduced ]"
+
+# launcher: client window restart counter (slow emulation class only)
+RW=$T/rw.sh; awk '/^  wh_restart_watch\(\)\{/{f=1} f{print} f && /^  }$/{exit}' "$L" > "$RW"
+check "R0 restart watcher extracted, started in background before the normal x86 start loop" \
+  "[ -s $RW ] && grep -q '^  wh_restart_watch </dev/null >/dev/null 2>&1 &$' $L && [ \$(grep -n '^  wh_restart_watch </dev/null' $L | cut -d: -f1) -lt \$(grep -n 'client_x86 \$XFLAGS \${GPUI:+\"\$GPUI\"} -noverifyfiles' $L | cut -d: -f1) ]"
+rw(){ # SLOW XOK(1/0) STATE(1/0) pid-sequence...
+  local slow=$1 xok=$2 st=$3; shift 3; rm -rf "$T/rw"; mkdir -p "$T/rw/.config/steam-arm" "$T/rw/bin"
+  [ "$xok" = 1 ] && : > "$T/rw/.config/steam-arm/x86-verified"; [ "$st" = 1 ] && echo 1 > "$T/rw/.config/steam-arm/multiblock-client"
+  printf '%s\n' "$@" > "$T/rw/q"
+  printf '#!/bin/sh\necho "py $*" >> "%s/rw/calls"\n' "$T" > "$T/rw/bin/python3"; chmod 755 "$T/rw/bin/python3"
+  ( SLOW=$slow ARMHOME=$T/rw S=$T/rw/S XOK=$T/rw/.config/steam-arm/x86-verified MBSTATE=$T/rw/.config/steam-arm/multiblock-client PATH=$T/rw/bin:$PATH
+    sleep(){ :; }; date(){ if [ -e "$T/rw/t0" ]; then echo 2000; else : > "$T/rw/t0"; echo 1000; fi; }
+    # client gone once the pid queue is empty, or after 20 looks (watcher loops that never read the queue)
+    client_running(){ echo . >> "$T/rw/cr"; [ "$(grep -c . "$T/rw/cr")" -le 20 ] && [ -s "$T/rw/q" ]; }
+    pgrep(){ head -n 1 "$T/rw/q"; sed -i 1d "$T/rw/q"; }
+    lnote(){ echo "NOTE $1 | $2" >> "$T/rw/calls"; }
+    . "$RW"; wh_restart_watch; echo "rc=$?" ) 2>&1; cat "$T/rw/calls" 2>/dev/null; }
+OUT=$(rw 1 1 0 100 100 200 200 300 400 400)
+check "R1 slow class, three changes of the oldest steamwebhelper pid: multiblock-off once, state file, one notice" \
+  "[ \$(grep -c 'multiblock-off ' <<<\"\$OUT\") = 1 ] && grep -q \"^py /usr/local/lib/steam-arm-x86client.py multiblock-off $T/rw/S $T/rw\$\" <<<\"\$OUT\" && grep -q '^NOTE steamwebhelper restarted 3 times: FEX Multiblock off for client window from next start; delete .fex-emu/AppConfig/steamwebhelper.json and exe.json in client home to retry | Steam ARM: client window' <<<\"\$OUT\" && [ -s $T/rw/.config/steam-arm/multiblock-client ] && grep -q '^rc=0' <<<\"\$OUT\""
+OUT=$(rw 1 1 0 100 100 200 200 300)
+check "R2 two changes only, client gone: nothing written, no notice" "! grep -q 'py\\|NOTE' <<<\"\$OUT\" && [ ! -e $T/rw/.config/steam-arm/multiblock-client ]"
+OUT=$(rw 0 1 0 100 200 300 400 500)
+check "R3 not slow class: watcher returns at once" "! grep -q 'py\\|NOTE' <<<\"\$OUT\" && [ -s $T/rw/q ]"
+OUT=$(rw 1 1 1 100 200 300 400 500)
+check "R4 state file present (fired before): nothing done" "! grep -q 'py\\|NOTE' <<<\"\$OUT\" && [ -s $T/rw/q ]"
+OUT=$(rw 1 0 0 100 200 300 400 500)
+check "R5 file check marker missing (first start): never counts" "! grep -q 'py\\|NOTE' <<<\"\$OUT\""
+rw1(){ rm -rf "$T/rw"; mkdir -p "$T/rw/.config/steam-arm"; : > "$T/rw/.config/steam-arm/x86-verified"; printf '%s\n' 100 200 300 400 500 > "$T/rw/q"
+  ( SLOW=1 ARMHOME=$T/rw S=$T/rw/S XOK=$T/rw/.config/steam-arm/x86-verified MBSTATE=$T/rw/.config/steam-arm/multiblock-client; sleep(){ :; }; date(){ echo 1000; }
+    client_running(){ echo . >> "$T/rw/cr"; [ "$(grep -c . "$T/rw/cr")" -le 20 ] && [ -s "$T/rw/q" ]; }; pgrep(){ head -n 1 "$T/rw/q"; sed -i 1d "$T/rw/q"; }; lnote(){ echo "NOTE" >> "$T/rw/calls"; }
+    python3(){ echo py >> "$T/rw/calls"; }; . "$RW"; wh_restart_watch ) 2>&1; cat "$T/rw/calls" 2>/dev/null; }
+OUT=$(rw1); check "R6 within 5 minute grace: pid changes not counted" "! grep -q 'py\\|NOTE' <<<\"\$OUT\""
+
+# menu: Maintenance item 19 for x86 client type, CLI x87-client, backup key
+T0=$SARM_TESTS/config-ui
+export SARM_UI_FAKE=$T/fake SARM_UI_COPY=$T/app-copy.sh
+bash "$T0/mkfake.sh" >/dev/null
+sed -e "s#^APP=.*#APP=\"$CFG\"#" -e "s#^COPY=.*#COPY=$T/app-copy.sh#" "$T0/harness.sh" > "$T/harness.sh"
+export Q=$T/q LOG=$T/ui.log
+cat > "$T/stubs.sh" <<'EOF'
+nxt(){ A=$(head -n 1 "$Q"); sed -i 1d "$Q"; }
+ui_menu(){ printf 'MENU %s|%s|%s\n' "$1" "$2" "${*:3}" >> "$LOG"; nxt; [ -n "$A" ] && [ "$A" != BACK ] || return 1; echo "$A"; }
+ui_msg(){ printf 'MSG %s|%s\n' "$1" "$2" >> "$LOG"; }
+ui_textstr(){ printf 'TEXT %s\n' "$1" >> "$LOG"; }
+ui_info(){ :; }
+ui_yesno(){ printf 'YESNO %s|%s\n' "$1" "$2" >> "$LOG"; nxt; [ "$A" = yes ]; }
+up_notice(){ :; }; up_check_open(){ :; }; state_pending(){ return 1; }; status_line(){ :; }
+EOF
+ui(){ local s=$1; shift; : > "$LOG"; printf '%s\n' "$@" > "$Q"; bash -c ". $T/harness.sh --help >/dev/null; . $T/stubs.sh; $s" >/dev/null 2>"$T/err"; RC=$?; OUT=$(cat "$LOG" "$T/err"); }
+cli(){ OUT=$(bash -c ". $T/harness.sh --help >/dev/null; main $*" 2>&1); RC=$?; }
+CONF=$SARM_UI_FAKE/etc/steam-arm/steam-arm.conf
+echo CLIENT=x86 >> "$CONF"
+ui menu_maintenance 19 BACK
+check "M1 x86 client: Maintenance item 19 Faster client start (now: off); screen names FEX X87ReducedPrecision and rendering errors" \
+  "grep -q ' 19 Faster client start, reduced x87 precision (now: off)' <<<\"\$OUT\" && grep -q '^YESNO Reduced x87 precision|Reduced x87 precision for client: off' <<<\"\$OUT\" && grep -q 'X87ReducedPrecision' <<<\"\$OUT\" && grep -q 'rendering errors' <<<\"\$OUT\""
+ui menu_maintenance 19 yes BACK
+check "M2 Turn on: X87_CLIENT=on written, message names next start" "grep -qx 'X87_CLIENT=on' '$CONF' && grep -q '^MSG Maintenance|Reduced x87 precision for client: on. Applies from next start of Steam ARM.' <<<\"\$OUT\""
+ui menu_maintenance 19 yes BACK
+check "M3 Turn off: X87_CLIENT=off" "grep -qx 'X87_CLIENT=off' '$CONF'"
+sed -i 's/^CLIENT=x86$/CLIENT=arm64/' "$CONF"
+ui menu_maintenance BACK
+check "M4 native client: no item 19" "! grep -q ' 19 Faster client start' <<<\"\$OUT\""
+cli x87-client; check "M5 CLI state line" "[ $RC = 0 ] && grep -q '^reduced x87 precision for client: off$' <<<\"\$OUT\""
+cli x87-client on; check "M5b CLI on writes key" "[ $RC = 0 ] && grep -qx 'X87_CLIENT=on' '$CONF'"
+cli x87-client maybe; check "M5c CLI bad value: usage, status 2" "[ $RC = 2 ]"
+cli --help; check "M6 --help lists x87-client and X87_CLIENT" "grep -q '^  x87-client \\[on|off\\]' <<<\"\$OUT\" && grep -q 'X87_CLIENT=on|off' <<<\"\$OUT\""
+check "M7 X87_CLIENT in backup key list and value rule" "grep -q '^SA_BK_KEYS=.* X87_CLIENT\"' '$CFG' && grep -q 'UPDATE_CHECK_ON_OPEN|X87_CLIENT) case \"\$2\" in on|off|\"\") return 0;; esac; return 1;;' '$CFG'"
+
 echo "pi4 detection 3.1: $pass pass, $fail fail"
 [ "$fail" = 0 ]
