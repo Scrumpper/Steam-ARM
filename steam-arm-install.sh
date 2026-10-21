@@ -144,7 +144,7 @@ user_write(){
 GAMEPASS=""
 # Opt-in components (all others default on). pad-xbox: client's own Steam Input re-identifies pads.
 # shader-cache: several GB download and long first-run processing. kde-input-prompt: security trade-off.
-DEFAULT_OFF="pad-xbox shader-cache kde-input-prompt"
+DEFAULT_OFF="pad-xbox shader-cache kde-input-prompt pi-governor"
 # Client home: env, then saved setting, then default; re-run never moves the client away from its games.
 ARMHOME_ENV=${ARMHOME_DIR:-}; GAMEUSER_ENV=${GAMEUSER:-}
 ARMHOME_DIR="${ARMHOME_DIR:-$(sed -n 's/^ARMHOME_DIR=//p' /etc/steam-arm/steam-arm.conf 2>/dev/null | tail -1)}"
@@ -827,7 +827,7 @@ rfs_root_own(){
   find "$1" -xdev -type f -perm /6000 -exec chmod ug-s {} + && echo "  set-user-ID and set-group-ID bits removed in $1"
 }
 # ---------------------------------------------------------------------------
-COMPONENTS_ALL="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray kde-input-prompt page-size"
+COMPONENTS_ALL="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray kde-input-prompt page-size pi-governor"
 # page-size applies to Raspberry Pi 5 class boards (16K page kernel), or where its boot line is still in place.
 ps_relevant(){
   case "$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null)" in
@@ -844,10 +844,15 @@ kde_relevant(){
 }
 # KDE Plasma Wayland session running now (its prompt shows when a controller drives desktop input).
 kde_wayland(){ pgrep -x kwin_wayland >/dev/null 2>&1; }
-# Components listed and saved on this system; page-size and kde-input-prompt only where they apply.
+# pi-governor (CPU governor performance while Steam runs) applies on Raspberry Pi boards, or while its sudo rule is in place.
+GOV_HELPER=/usr/local/sbin/steam-arm-governor
+GOV_SUDO=/etc/sudoers.d/steam-arm-governor
+gov_relevant(){ case "$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null)" in "Raspberry Pi"*) return 0;; esac; [ -e "$GOV_SUDO" ]; }
+# Components listed and saved on this system; page-size, kde-input-prompt and pi-governor only where they apply.
 COMPONENTS=$COMPONENTS_ALL
-ps_relevant || COMPONENTS=${COMPONENTS% page-size}
+ps_relevant || COMPONENTS=${COMPONENTS/ page-size/}
 kde_relevant || COMPONENTS=${COMPONENTS/ kde-input-prompt/}
+gov_relevant || COMPONENTS=${COMPONENTS/ pi-governor/}
 desc_of(){ case "$1" in
   glx-lax)    echo "Private Mesa GLX copy, for GL contexts bound from several threads";;
   vk-spoof)   echo "Vulkan feature layer: DXVK device on the Mali driver (Proton titles)";;
@@ -865,6 +870,7 @@ desc_of(){ case "$1" in
   tray)       echo "Steam icon in the panel tray: open, Big Picture, desktop mode, Steam pages, Stop, Steam ARM Settings, log";;
   kde-input-prompt) echo "KDE Plasma (Wayland): no \"Remote control requested\" prompt; any X11 program may then send input";;
   page-size)  echo "Raspberry Pi 5: boot firmware's 4K page kernel (no effect elsewhere)";;
+  pi-governor) echo "Raspberry Pi: CPU governor performance while Steam runs (more heat and power); off by default";;
 esac; }
 var_of(){ echo "OPT_$(echo "$1" | tr 'a-z-' 'A-Z_')"; }
 for c in $COMPONENTS_ALL; do eval "$(var_of "$c")=1"; done
@@ -1286,8 +1292,8 @@ X86_PROTON=proton_experimental
 ARM64_PROTON=proton_11-arm64
 SA_CPUFREQ=/sys/devices/system/cpu/cpufreq
 # Fallback component list when the installer cannot be asked.
-SA_COMPONENTS="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray kde-input-prompt page-size"
-SA_DEFAULT_OFF="pad-xbox shader-cache kde-input-prompt"
+SA_COMPONENTS="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray kde-input-prompt page-size pi-governor"
+SA_DEFAULT_OFF="pad-xbox shader-cache kde-input-prompt pi-governor"
 SA_MALI_ONLY="vk-spoof gpu-in-emulation"
 SA_TOOL_RE='^(FEX|Proton|Steam Linux Runtime|Steamworks Common|Steamworks Shared)'
 
@@ -3061,6 +3067,7 @@ comp_short(){ case "$1" in
   tray)       echo "Steam icon in the panel tray";;
   kde-input-prompt) echo "KDE: no input prompt; X11 apps may send input";;
   page-size)  echo "Raspberry Pi 5: switch to 4K page kernel";;
+  pi-governor) echo "Raspberry Pi: governor performance while Steam runs";;
   *)          echo "$1";;
 esac; }
 # Component names from installer --list, else built-in list.
@@ -3071,8 +3078,12 @@ comp_all(){
   l=${l:-$SA_COMPONENTS}
   page_size_applies || l=$(echo " $l " | sed 's/ page-size / /')
   kde_applies || l=$(echo " $l " | sed 's/ kde-input-prompt / /')
+  gov_applies || l=$(echo " $l " | sed 's/ pi-governor / /')
   echo "$l" | trim
 }
+# pi-governor part applies on Raspberry Pi boards, or while its sudo rule is in place.
+gov_applies(){ case "$(hw_model)" in "Raspberry Pi"*) return 0;; esac; [ -e /etc/sudoers.d/steam-arm-governor ]; }
+gov_state(){ if comp_is_on pi-governor; then echo on; else echo off; fi; }
 # kde-input-prompt part applies where KDE Plasma's Wayland compositor is installed, or while its setting is in place.
 kde_applies(){ have kwin_wayland || [ -f "$(game_home)/.config/steam-arm/kde-input-prompt" ]; }
 # Recommended set for family $1 (auto = detect) and Vulkan yes/no: installer's defaults, else built-in rules.
@@ -4850,6 +4861,7 @@ sa_owned_paths(){
     /usr/local/lib/steam-arm-cpu-report.sh /usr/local/lib/steam-arm-glx-lax-patch.py /usr/local/lib/steam-arm-glx-lax.src /usr/local/lib/steam-arm-glx-lax.stat \
     /usr/local/lib/steam-arm-glx-lax.state /usr/local/lib/steam-arm-vk-spoof.c /usr/local/lib/steam-arm-nopkg \
     /usr/local/sbin/steam-arm-glx-lax /usr/local/sbin/steam-arm-xpad-dedup /usr/local/sbin/steam-arm-pad-xbox \
+    /usr/local/sbin/steam-arm-governor /etc/sudoers.d/steam-arm-governor \
     /usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0 /usr/lib/aarch64-linux-gnu/libVkLayer_steam_arm_spoof.so \
     /usr/share/vulkan/implicit_layer.d/VkLayer_steam_arm_spoof.json \
     /etc/udev/rules.d/71-steam-arm-xpad-dedup.rules /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules \
@@ -6782,6 +6794,7 @@ menu_maintenance(){
     [ "$(client_type)" = x86 ] && up+=(19 "Faster client start, reduced x87 precision (now: $(x87_client))")
     [ "$(client_type)" = x86 ] && ! cpu_has_lse && up+=(20 "Client window: lighter (now: $(client_light))")
     [ "$(client_type)" = x86 ] && up+=(21 "Experiment: client window through GPU at next start")
+    gov_applies && up+=(22 "CPU governor while Steam runs (now: $(gov_state))")
     c=$(ui_menu "Maintenance" "Keep Steam ARM working." --default "$c" \
       1 "Update / Repair (run setup again, same parts)" 2 "View logs" \
       3 "Hardware report (for a compatibility report)" 4 "Free /dev/shm now" \
@@ -6816,8 +6829,20 @@ Setup reinstalls packages, launcher, helpers and rules for those parts. Games, s
       19) maint_x87;;
       20) maint_light;;
       21) maint_lab;;
+      22) maint_governor;;
     esac
   done
+}
+# CPU governor performance while Steam runs: pi-governor part (root helper plus sudo rule), setup runs on change.
+maint_governor(){
+  local st c was; st=$(gov_state); was=$(comps_effective)
+  c=$(ui_menu "CPU governor while Steam runs" "Now: $st. Governor in use: $(cpu_governor).
+
+On: launcher sets performance on every CPU policy while Steam ARM runs and puts the saved governor back at exit (part pi-governor: root helper /usr/local/sbin/steam-arm-governor and its sudo rule; setup runs). Cores stay at top clock: more heat and power; throttle bits show in steam-arm --cpu-report. Default (off) keeps the distribution's governor. Boot-time choice belongs to the distribution (Raspberry Pi OS: /etc/default/cpu_governor), not to Steam ARM." \
+      --default "$st" on "On: performance while Steam runs" off "Off: distribution governor (default)") || return
+  [ "$c" = "$st" ] && { ui_msg "CPU governor" "CPU governor while Steam runs: already $st."; return; }
+  if [ "$c" = on ]; then was="$was pi-governor"; else was=$(echo " $was " | sed 's/ pi-governor / /'); fi
+  INST_ENV=(); run_installer "CPU governor" "--select=$(echo "$was" | trim | tr ' ' ',')"
 }
 # Experiment screen: arms one start with ANGLE on Vulkan or GL; result from the state file.
 maint_lab(){
@@ -8131,6 +8156,7 @@ installed(){ case "$1" in
   tray)       [ -e /usr/local/bin/steam-arm-tray ];;
   kde-input-prompt) [ -f "$2/$KDE_MARK" ];;
   page-size)  grep -qs '^# steam-arm-setup page-size:' /boot/firmware/config.txt /boot/config.txt;;
+  pi-governor) [ -e "$GOV_SUDO" ];;
   *)          return 1;;
 esac; }
 # Selection of last run: COMPONENTS_ON and COMPONENTS_OFF in $CONF, else read from files of
@@ -8502,6 +8528,7 @@ remove_all(){
         /usr/local/lib/steam-arm-glx-lax.state \
         /usr/local/lib/steam-arm-vk-spoof.c \
         /usr/local/sbin/steam-arm-glx-lax /usr/local/sbin/steam-arm-xpad-dedup /usr/local/sbin/steam-arm-pad-xbox \
+        /usr/local/sbin/steam-arm-governor /etc/sudoers.d/steam-arm-governor \
         /usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0 /usr/lib/aarch64-linux-gnu/libVkLayer_steam_arm_spoof.so \
         /usr/share/vulkan/implicit_layer.d/VkLayer_steam_arm_spoof.json \
         /etc/udev/rules.d/71-steam-arm-xpad-dedup.rules /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules \
@@ -14622,6 +14649,13 @@ if [ -f /etc/systemd/system/steam-arm-pad-xbox.service ] && systemctl is-active 
   PADSVC=1; sudo -n systemctl stop steam-arm-pad-xbox 2>/dev/null || systemctl stop steam-arm-pad-xbox 2>/dev/null
 fi
 restore_pad(){ [ "$PADSVC" = 1 ] && { sudo -n systemctl start steam-arm-pad-xbox 2>/dev/null || systemctl start steam-arm-pad-xbox 2>/dev/null; }; }
+# pi-governor (component, off by default): CPU governor performance while this client runs, through the root helper and its sudo rule.
+GOVSET=0
+if [ -n "${COMPONENTS_ON+x}" ] && comp_on pi-governor && [ -x /usr/local/sbin/steam-arm-governor ]; then
+  if sudo -n /usr/local/sbin/steam-arm-governor performance 2>/dev/null; then GOVSET=1; llog "CPU governor: performance while Steam runs (pi-governor); put back at exit"
+  else lwarn "CPU governor not changed: sudo rule for steam-arm-governor missing (run setup again with pi-governor)"; fi
+fi
+restore_gov(){ [ "$GOVSET" = 1 ] && sudo -n /usr/local/sbin/steam-arm-governor restore 2>/dev/null; }
 # Display mode (X11): a title that switches mode and quits, crashes or is stopped can leave it set.
 # Modes are saved when a title starts and put back once no title runs, and when Steam closes.
 MODEF="$XDG_RUNTIME_DIR/steam-arm-display-mode"
@@ -14715,7 +14749,7 @@ FEXWATCH=; PHYSXWATCH=; NOTEWATCH=
 # Single exit path: stop the watchers, put back a display mode a title left, restore the pad service and Bluetooth power.
 on_exit(){ [ -n "$FEXWATCH" ] && kill "$FEXWATCH" 2>/dev/null; [ -n "$PHYSXWATCH" ] && kill "$PHYSXWATCH" 2>/dev/null
   [ -n "$NOTEWATCH" ] && kill "$NOTEWATCH" 2>/dev/null
-  mode_ok && ! game_up && { mode_restore; rm -f "$MODEF"; }; restore_pad; bt_restore; }
+  mode_ok && ! game_up && { mode_restore; rm -f "$MODEF"; }; restore_pad; restore_gov; bt_restore; }
 trap on_exit EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 # Another x86 Steam client (not from this client folder) running.
@@ -16071,6 +16105,38 @@ if __name__ == "__main__":
 LOPY
 chmod 644 /usr/local/lib/steam-arm-launchopts.py
 chmod 755 /usr/local/bin/steam-arm
+# pi-governor: root helper that sets CPU governor performance while Steam runs and puts the saved one back; the launcher
+# calls it through a sudo rule that exists only with this component (checked with visudo, like the pad rule below).
+if opt pi-governor; then
+cat > "$GOV_HELPER" <<'GOVSH'
+#!/bin/sh
+# steam-arm-governor: CPU governor performance while Steam ARM runs (pi-governor component, sudo rule); restore puts the saved one back.
+P=/sys/devices/system/cpu/cpufreq
+S=/run/steam-arm-governor.prev
+case "${1:-}" in
+  performance)
+    [ -f "$S" ] || for d in "$P"/policy*; do [ -f "$d/scaling_governor" ] && printf '%s %s\n' "${d##*/}" "$(cat "$d/scaling_governor")"; done > "$S"
+    for d in "$P"/policy*; do [ -f "$d/scaling_governor" ] && echo performance > "$d/scaling_governor"; done 2>/dev/null
+    exit 0;;
+  restore)
+    [ -f "$S" ] || exit 0
+    while read -r p g; do [ -n "$g" ] && echo "$g" > "$P/$p/scaling_governor"; done < "$S" 2>/dev/null
+    rm -f "$S"; exit 0;;
+  *) echo "usage: steam-arm-governor performance|restore" >&2; exit 2;;
+esac
+GOVSH
+chmod 755 "$GOV_HELPER"
+if [ -d /etc/sudoers.d ] && command -v visudo >/dev/null 2>&1 && T=$(mktemp /etc/sudoers.d/.steam-arm-governor.XXXXXX); then
+  CLEANUP+=("$T")
+  printf '%s ALL=(root) NOPASSWD: %s performance, %s restore\n' "$GAMEUSER" "$GOV_HELPER" "$GOV_HELPER" > "$T"
+  if visudo -cqf "$T" >/dev/null 2>&1 && chmod 440 "$T" && mv -f "$T" "$GOV_SUDO"; then :
+  else rm -f "$T" "$GOV_SUDO"; warn "sudo did not accept the governor rule for account '$GAMEUSER'; pi-governor stays without effect"; fi
+else
+  warn "sudo is not set up on this system; pi-governor stays without effect"
+fi
+else
+rm -f "$GOV_HELPER" "$GOV_SUDO"
+fi
 # Launcher pauses the pad-xbox service while it runs; the sudo rule exists only with that component.
 if opt pad-xbox; then
 # Checked with visudo before it goes live (a bad line would stop every sudo); a dotted name is skipped by sudo meanwhile.
