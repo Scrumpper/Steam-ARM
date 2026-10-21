@@ -100,6 +100,10 @@ steam-arm-config upgrade (Maintenance, Upgrade to newest release)
 |    older setup before 3.1: snapshot saved here, run without --allow-older
 +- failure after snapshot -> restore offered (upgrade --rollback)
 
+setup stopped after its change began (upgrade.state left)
++- installed menu 3.1+ -> restore named (upgrade --rollback)
++- menu before 3.1 (no upgrade command) -> same setup again with --keep named
+
 steam-arm-config upgrade --rollback (Maintenance, Go back to previous version)
 +- unfinished change without snapshot (--no-snapshot) -> no automatic pick,
 |    snapshots listed, version named by hand

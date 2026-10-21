@@ -340,7 +340,22 @@ check "I2 finish step right after done line" "[ \$(( l_end - l_done )) -le 3 ] &
 BLK=$(sed -n "$l_begin,$((l_begin + 2))p" "$INST")
 check "I3 failed snapshot stops setup (die), --no-snapshot passed on" "grep -q -- '--no-snapshot' <<<\"\$BLK\" && grep -q 'die \"installed version not saved; nothing changed' <<<\"\$BLK\""
 check "I4 setup records INSTALLED_FROM package only for package script path owned by dpkg" "grep -q 'conf_set INSTALLED_FROM package' '$INST' && grep -q \"dpkg-query -S /usr/share/steam-arm-setup/install.sh 2>/dev/null | grep -q '^steam-arm-setup:'\" '$INST'"
-check "I5 unfinished change of another version named at setup start" "grep -q 'did not finish; restore: sudo steam-arm-config upgrade --rollback' '$INST'"
+check "I5 unfinished change of another version named at setup start" "grep -q 'SA_RHINT=\"restore: sudo steam-arm-config upgrade --rollback\"' '$INST' && grep -q 'did not finish; \$SA_RHINT\"' '$INST'"
+# I7: interrupted setup names recovery that installed menu has (3.0 style menu: no upgrade command)
+mkhint(){ { echo 'warn(){ echo "[warn] $*"; }'; echo "SA_VERSION=3.1 SA_STATE=$T/hint.state"; fn resume_hint "$INST"; fn exit_hint "$INST"; echo "$1"; } \
+  | sed -e "s#/usr/local/bin/steam-arm-config#$T/hint-menu#g" -e "s#/usr/share/steam-arm-setup/install.sh#${2:-/nonexistent}#" > "$T/hint.sh"; OUT=$(bash "$T/hint.sh" 2>&1); }
+printf 'FROM=3.0\nTO=3.1\nKIND=upgrade\n' > "$T/hint.state"; fx_menu "$T/hint-menu"
+mkhint 'SA_BEGUN=1; exit_hint 143'
+check "I7 3.0 menu: stopped setup names rerun of this installer with --keep, not upgrade --rollback" "has '[warn] setup of 3.1 stopped (status 143) before it finished; settings menu of installed version has no restore; finish 3.1 with: sudo bash \"$T/hint.sh\" --keep' && ! has 'upgrade --rollback'"
+mkhint 'SA_BEGUN=1; exit_hint 1' "$T/hint.sh"
+check "I7 3.0 menu, package script: names steam-arm-setup --keep" "has 'finish 3.1 with: sudo steam-arm-setup --keep'"
+cp "$CFG" "$T/hint-menu"; mkhint 'SA_BEGUN=1; exit_hint 143'
+check "I7 3.1 menu: stopped setup names upgrade --rollback" "has 'stopped (status 143) before it finished; restore: sudo steam-arm-config upgrade --rollback'"
+mkhint 'exit_hint 143'; check "I7 no hint before change began" "[ -z \"\$OUT\" ]"
+mkhint 'SA_BEGUN=1; exit_hint 0'; check "I7 no hint after success" "[ -z \"\$OUT\" ]"
+sed -i 's/^TO=.*/TO=3.2/' "$T/hint.state"; mkhint 'SA_BEGUN=1; exit_hint 143'; check "I7 no hint for change of another version" "[ -z \"\$OUT\" ]"
+check "I7 exit trap runs hint; SA_BEGUN set after setup-begin" "grep -q \"^trap 'exit_hint \\\$?; rm -rf\" '$INST' && grep -A2 'sa_menu_call upgrade --setup-begin' '$INST' | grep -qx '  SA_BEGUN=1'"
+check "I7 launcher line: restore only with menu 3.1+" "grep -q \"echo 'run Steam ARM setup again with --keep to finish'\" '$INST'"
 check "I6 menu helper runs embedded menu from temporary copy (snapshot code of this version)" "fn sa_menu_call '$INST' | grep -q 'menu_app > \"\$t\" && bash \"\$t\" \"\$@\"'"
 check "U15 --remove deletes /var/lib/steam-arm and /var/cache/steam-arm" "fn remove_all '$INST' | grep -qx '  rm -rf /var/lib/steam-arm /var/cache/steam-arm'"
 check "U15 removal gate requires both menu folders" "grep -q 'MENU_DIRS = (\"/var/lib/steam-arm\", \"/var/cache/steam-arm\")' '$SARM_GATES/check-removal.py'"
