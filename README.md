@@ -291,6 +291,10 @@ Command line, same settings from scripts:
 | `compat <appid> linux\|windows\|ge\|clear` | Force Linux, Windows or GE-Proton build, or clear it; Steam closed |
 | `auto-build [on\|off]`                  | Automatic Windows build; no value: state, rules, titles |
 | `cpu-notice [on\|off]`                  | CPU drawing notice; no value: state                     |
+| `cpu-report [--quick] [--no-wait]`     | CPU and GPU profile of client window and games (see CPU report) |
+| `x87-client [on\|off]`                  | x86 client: reduced x87 precision for client program; no value: state |
+| `client-light [on\|off]`                | x86 client on Armv8.0 CPU: desktop window, no friends view; no value: state |
+| `lab-cef-gpu [vulkan\|gl\|off\|retry\|status]` | Experiment: client window through GPU at next start only |
 | `run-history [on\|off]`                 | Run history; no value: state                            |
 | `components a,b,...`                   | Install exactly these parts (runs setup)                |
 | `driver-archive status\|download`      | Archive source, extra Mesa; `download` clears saved file |
@@ -491,7 +495,10 @@ Notes installer prints per family:
 - Raspberry Pi 4 and 5 (`broadcom-v3d42`, `broadcom-v3d71`): OpenGL 3.1; Windows titles
   through WineD3D by default, since DXVK cannot run on V3D; OpenGL version report and Zink
   per title (Raspberry Pi GPU settings). Raspberry Pi 4: x86 client through emulation
-  (Armv8.0 CPU, see x86 client). Untested on Raspberry Pi hardware.
+  (Armv8.0 CPU, see x86 client); setup writes `PLATFORM=pi4`. On `pi4`, `pi5` and
+  `pi-other`, GL or Vulkan forwarding off in FEX config (setup found no thunk libraries)
+  raises notice at every start: every game then draws on CPU; FEX packages include those
+  libraries. Untested on Raspberry Pi hardware.
 - `apple-agx`: not supported on 16K page kernel; setup halts and does not install `muvm`
   (4K page virtual machine). `broadcom-vc4`: not supported.
   `vivante`: no Vulkan driver, most titles do not run.
@@ -652,6 +659,11 @@ upgrade from 1.2, which saved no family record, only turns such parts off.
   Listed only on Raspberry Pi 5 class boards, on other Raspberry Pi with page size other
   than 4K, or while its `config.txt` block is in place; off and hidden elsewhere. (scope:
   Raspberry Pi)
+- `pi-governor`: CPU governor `performance` on every CPU policy while Steam ARM runs,
+  saved governor back at exit (root helper `/usr/local/sbin/steam-arm-governor`, sudo rule
+  `/etc/sudoers.d/steam-arm-governor` for game account). More heat and power. Off by
+  default; listed on Raspberry Pi boards or while its rule is in place. (scope: Raspberry
+  Pi)
 
 ## Graphics route per title
 
@@ -817,9 +829,29 @@ What runs:
   `/usr/local/lib/steam-arm-pv-bwrap`; x86 `bwrap` in root filesystem, if any, set aside
   (put back on switch to native client).
 - Client window: drawn on CPU (`-cef-disable-gpu`; FEX app settings `steamwebhelper.json`
-  and `exe.json` turn GL and Vulkan forwarding off for client browser only). Webhelper
-  start script gets `--enable-features=NetworkServiceInProcess2`, so client's process
-  check passes without transport dialog.
+  and `exe.json` turn GL and Vulkan forwarding off for client browser only, and turn FEX
+  code cache off for those processes: FEX-2610 turns it on for Steam, and its zygote
+  processes then restart in loop on some systems). Own keys are merged, other keys in
+  those files stay. Webhelper start script gets
+  `--enable-features=NetworkServiceInProcess2`, so client's process check passes without
+  transport dialog.
+- CPU without Armv8.1 atomics (`CPU_LSE=0`): client opens desktop interface (Deck
+  interface is one animated page drawn on CPU through emulation) and starts without
+  friends view. `steam-arm --bigpicture` or `STEAM_ARM_UI=bigpicture` picks Deck
+  interface for one start, `STEAM_ARM_FRIENDS=1` keeps friends view, Maintenance, Client
+  window: lighter (`client-light off`) restores Deck interface and friends view for good.
+- Reduced x87 precision for 32-bit client program (Maintenance, Faster client start, or
+  `x87-client on`; off by default): FEX app setting `steam.json` with
+  `X87ReducedPrecision` 1; FEX names rendering errors as possible effect; games stay at
+  full precision (setting applies to client program alone). `STEAM_ARM_X87=exact` turns
+  it off for one start.
+- Client window restarts: on Armv8.0 CPU, after file check and five minutes, third
+  change of oldest `steamwebhelper` process turns FEX Multiblock off for client window
+  files once (state file `.config/steam-arm/multiblock-client`, one notice); deleting
+  `steamwebhelper.json` and `exe.json` in client home `.fex-emu/AppConfig` retries.
+- Measuring: `steam-arm --cpu-report` (see CPU report) names which process uses CPU and
+  whether GPU is in use. Lower client CPU use on such CPUs is expected, not measured; no
+  figure is claimed until reports exist.
 - Games: x86 Linux titles reach GPU through emulator's GL and Vulkan forwarding (route A
   only; Mali drivers inside emulation not wired for x86 client); Windows titles use x86
   Proton through emulation. 32-bit Windows titles draw on CPU (llvmpipe): emulator has no
@@ -1053,6 +1085,8 @@ Line: `<appid> key=value ...`.
 | `mesa`       | version, such as `26.2.4`    | Extra Mesa version, route B only (see Extra Mesa versions)           |
 | `multiblock` | `on`, `off`                  | FEX Multiblock for title                                             |
 | `diskcache`  | `on`, `off`                  | FEX code cache for title (FEX 2609.1 or newer)                       |
+| `tso`        | `off`                        | FEX relaxed memory model for title (`TSOEnabled` 0); see Emulation keys |
+| `x87`        | `reduced`                    | FEX reduced x87 precision for title (`X87ReducedPrecision` 1)        |
 | `autotune`   | `fix`, `off`                 | Automatic tuning for title (default `off`)                           |
 | `d3d`        | `dxvk`, `wined3d`            | Raspberry Pi GPU: Direct3D route of Proton title (default `wined3d`) |
 | `glver`      | `3.2`, `3.3`, `4.0` to `4.6` | Raspberry Pi GPU: OpenGL version report, GLSL to match               |
@@ -1104,12 +1138,53 @@ Raspberry Pi). Untested on Raspberry Pi hardware.
 - `gl=zink`: `MESA_LOADER_DRIVER_OVERRIDE=zink` and `GALLIUM_DRIVER=zink`, OpenGL on V3DV.
   Experimental and unproven on Raspberry Pi; pair with `glver=3.3`.
 - Settings menu: Graphics, Route per game, rows Direct3D, OpenGL version, OpenGL driver.
+- Automatic tuning on these GPUs (`autotune=fix`): trial order OpenGL version 3.3, then
+  Zink, then Multiblock; `gl32=off` left out (x86 Mesa inside emulation has no v3d
+  driver, so it draws on CPU).
+- `pi-governor` component (off by default, listed on Raspberry Pi boards): governor
+  `performance` on every CPU policy while Steam ARM runs, saved governor back at exit
+  (root helper `/usr/local/sbin/steam-arm-governor` with sudo rule for game account;
+  Maintenance, CPU governor while Steam runs). More heat and power; throttle bits in CPU
+  report.
+- `steam-arm --cpu-report`: CPU and GPU profile with v3d queue statistics and throttle
+  bits (see CPU report).
 - x86 Linux titles and x86 Proton get settings through launch handler (game log lines `d3d:`
   and `pi gpu:`). Windows titles on ARM64 Proton get them as Steam launch option: launcher
   writes `STEAM_ARM_LAUNCHOPTS=<names> NAME=value ... %command%` ahead of own launch options
   in each `localconfig.vdf` before client start, while client is not running. Change applies at next
   start of Steam ARM; removed setting takes its part out again; uninstall removes it.
   Variable own launch options set already stays theirs.
+
+### Emulation keys
+
+`tso=off` and `x87=reduced` (Games, game, Emulation; `steam-arm-config profile <appid>
+tso=off x87=reduced`) set FEX `TSOEnabled` 0 (relaxed memory model) and
+`X87ReducedPrecision` 1 for one title. Both trade correctness for speed: relaxed memory
+model is faster on CPUs without Armv8.1 atomics, and games with several threads can
+crash, hang or corrupt saves; reduced x87 precision is faster for 32-bit and older games,
+and geometry or physics errors are possible. Off unless set, per title only, never global,
+never client files, never automatic tuning knobs. Launch option `FEX_APP_CONFIG` holding
+same key and Steam's own FEX setting win (log: `launch option kept`, `Steam setting
+kept`); run record and run report carry `tso` and `x87`. CPU drawing notice on CPUs
+without Armv8.1 atomics names memory model setting. Magnitude on Raspberry Pi 4 is
+unmeasured.
+
+### CPU report
+
+`steam-arm --cpu-report [--quick] [--no-wait] [--out FILE]` (also Maintenance, CPU profile
+of client window, and `steam-arm-config cpu-report`) writes one text file in your home:
+system facts (model, kernel, CPU features and parts, memory, governor, firmware config,
+settings keys), firmware throttle bits decoded (`vcgencmd` when present), session type and
+compositor, host graphics stack (`glxinfo`, `vulkaninfo`, Mesa packages), emulator (FEX
+packages, `FEXGetConfig`, `Config.json`, app settings, thunk folders, variables of running
+Steam processes, `glxinfo` and `vulkaninfo` through FEX), Steam processes (flags, render
+nodes and graphics libraries per process, client log lines about GPU process and
+compositing, launcher log tail), then two 60 s profiles (idle on Library, then browsing;
+5 s samples): CPU share per group (`steam`, `steamwebhelper`, `fex`, `game`, `runtime`),
+v3d GPU statistics and per-process GPU time, threads above 0.5 %, temperature, clocks,
+throttle bits. Home folders are replaced by `~`; host name, account name and serial are
+never read; file mode 600. Hardware report (`steam-arm-config report`) appends static
+system and processes sections. Read file before posting it.
 
 ## Fixing games
 
@@ -1563,7 +1638,13 @@ quotes (launcher reads it as shell):
 | `CLIENT`                 | setup       | `arm64` (native client) or `x86` (absent: arm64) |
 | `CLIENT_SET`             | setup       | `user` when client type was set by hand          |
 | `CLIENT_PROBE`           | setup       | Native client check: `<build>:ok\|lse\|err`      |
-| `STEAM_ARM_UI`           | you         | `desktop`: `steam-arm` opens desktop interface   |
+| `CPU_LSE`                | setup       | `1` with Armv8.1 atomics, `0` without (3.1)      |
+| `CPU_CORES`              | setup       | Processor count (reporting only)                 |
+| `PLATFORM`               | setup       | `pi4`, `pi5`, `pi-other` on Raspberry Pi, else empty |
+| `MESA_HOST`              | setup       | Host Mesa version (`libgl1-mesa-dri`)            |
+| `X87_CLIENT`             | menu        | `on`: reduced x87 precision for x86 client program (absent: off) |
+| `CLIENT_LIGHT`           | menu        | `off`: Deck interface and friends view on Armv8.0 CPU (absent: on) |
+| `STEAM_ARM_UI`           | you         | `desktop`: `steam-arm` opens desktop interface; `bigpicture`: Deck interface on Armv8.0 CPU |
 | `STEAM_ARM_HOME`         | you         | Client folder (absolute path) for launcher, tray |
 
 `GFX_DEFAULT`, for x86 titles without `gfx=` of their own:
@@ -1582,6 +1663,11 @@ values.
 Environment for launcher (`steam-arm`) and its helpers:
 
 - `STEAM_ARM_HOME=path`: client folder in place of saved one (absolute path).
+- `STEAM_ARM_X87=reduced` or `=exact`: x86 client, reduced x87 precision for client program
+  for that start, over `X87_CLIENT`.
+- `STEAM_ARM_FRIENDS=1`: x86 client on Armv8.0 CPU, keeps friends view for that start.
+- `STEAM_ARM_LAB_CEF_GPU=vulkan` or `=gl`: experiment, client window through GPU for that
+  start only (see Experiments in `steam-arm-config`, Help).
 - `STEAM_ARM_PHYSX_SKIP=0` or `=1`: turns `physx-skip` off or on for that client
   session, over saved component setting: `STEAM_ARM_PHYSX_SKIP=0 steam-arm`.
 - `STEAM_ARM_VK_SPOOF_DEBUG=1`: troubleshooting; `vk-spoof` layer prints its decisions

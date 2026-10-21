@@ -138,8 +138,27 @@ steam-arm (launcher, desktop account only, refuses root)
 |    bubblewrap for runtime containers (steam-arm-pv-bwrap), client browser on
 |    CPU, webhelper flag, launch wrapper stand-in and private libX11 copy (X
 |    errors not fatal) set again at each start; first start checks files once;
+|    client window processes: FEX app settings steamwebhelper.json and exe.json
+|      (thunks off, code cache off; own keys merged, other keys kept);
+|      steam.json X87ReducedPrecision while X87_CLIENT=on or STEAM_ARM_X87=reduced
+|    CPU without LSE atomics (CPU_LSE=0, slow emulation class): desktop interface
+|      (SA_UI_SLOW), -nofriendsui; CLIENT_LIGHT=off, --bigpicture,
+|      STEAM_ARM_UI=bigpicture, STEAM_ARM_FRIENDS=1 change it; third restart of
+|      oldest steamwebhelper after 5 min -> Multiblock 0 for client files, once
+|    PLATFORM pi4|pi5|pi-other with ThunksDB GL or Vulkan 0 in FEX config
+|      -> notice that stays at every start (games draw on CPU)
+|    experiment STEAM_ARM_LAB_CEF_GPU=vulkan|gl (or one-shot file from
+|      steam-arm-config lab-cef-gpu), one start: thunks on for client files,
+|      -cef-force-gpu, ANGLE flags in webhelper script; watcher records
+|      cef-gpu=ok|failed:<reason> in client home .config/steam-arm/state
+|    pi-governor part on: steam-arm-governor performance through sudo at start,
+|      restore at exit
 |    launch wrapper stand-in -> steam-arm-run.py -> launch handler per title
 |    (forwarding route only) -> Valve's launch wrapper
++- steam-arm --cpu-report: steam-arm-cpu-report.sh, system, firmware, session,
+|    graphics, emulator and Steam process sections, then two 60 s profiles
+|    (CPU per process group, v3d gpu_stats, drm fdinfo, threads, throttle bits);
+|    hardware report takes its static sections
 +- kde-input-prompt: sets or puts back KDE input permission in desktop session
 |
 +- Play: Windows title -> Proton ARM64 -> DXVK -> system Vulkan (PanVK)
@@ -163,6 +182,10 @@ steam-arm (launcher, desktop account only, refuses root)
      32-bit Source title not yet switched by automatic Windows build: start
        skipped once, desktop notice (STEAM_ARM_AUTO_BUILD=0 starts it)
      profile multiblock=on|off sets FEX Multiblock for title
+     profile tso=off sets FEX TSOEnabled 0, x87=reduced sets X87ReducedPrecision 1
+       for title (same precedence as multiblock; run record carries both)
+     forwarding with GL or Vulkan thunk off in account's FEX config: reason
+       thunks-missing in run record, cause line beside CPU verdict
      profile diskcache=on|off sets FEX code cache for title (FEX tool 2609.1+);
        cache deleted once when FEX tool or game build changed; FEX tool 2610+
        turns cache on for every title (1 GB cap): diskcache=on adds nothing,

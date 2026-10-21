@@ -103,7 +103,7 @@ GPU detection.
 | `adreno-a702`                                         | Adreno 702                      | off        | off                | on        | untested | Vulkan too limited for most Windows titles                                                      |
 | `adreno-legacy`                                       | Adreno 5xx and older            | off        | off                | on        | untested | no Vulkan driver; native OpenGL titles only                                                     |
 | `apple-agx`                                           | Apple GPU (Asahi)               | off        | off                | on        | untested | not supported on 16K page kernel; setup does not set up `muvm`                                  |
-| `broadcom-v3d71`, `broadcom-v3d42`                    | Raspberry Pi 5, 4               | off        | off                | on        | untested | OpenGL 3.1; Windows titles through WineD3D, not DXVK; Pi 4: x86 client through emulation        |
+| `broadcom-v3d71`, `broadcom-v3d42`                    | Raspberry Pi 5, 4               | off        | off                | on        | untested | OpenGL 3.1; Windows titles through WineD3D, not DXVK; Pi 4: x86 client through emulation, `PLATFORM=pi4` |
 | `broadcom-vc4`                                        | Raspberry Pi 0 to 3             | off        | off                | on        | untested | not supported                                                                                   |
 | `vivante`                                             | Vivante (etnaviv)               | off        | off                | on        | untested | no Vulkan driver; most titles do not run                                                        |
 | `img-powervr`                                         | PowerVR                         | off        | off                | off       | untested | Vulkan driver in development; OpenGL through Zink                                               |
@@ -426,6 +426,59 @@ Status: Raspberry Pi behaviour above is untested on Raspberry Pi hardware (no Pi
 it follows from Mesa source and community reports. Reports welcome; table in `GAMES.md`,
 Raspberry Pi 5.
 
+### Raspberry Pi 4
+
+Cortex-A72 (Armv8.0, no LSE atomics), VideoCore VI (`broadcom-v3d42`), Mesa v3d (OpenGL
+3.1) and V3DV (Vulkan 1.2 on Raspberry Pi OS bookworm Mesa 24.2, Vulkan 1.3 on trixie
+Mesa 25 and 26). Setup writes `PLATFORM=pi4`, `CPU_LSE=0` and `MESA_HOST`, picks FEX
+package `fex-emu-armv8.0` and Valve's x86 client (native client stops with SIGILL on this
+CPU; setup checks each new native build and moves back by itself).
+
+What runs where:
+
+- Client window: x86 client through emulation, drawn on CPU. Expected, not fault; native
+  client is blocked by Valve issue 13288. 3.1 lowers its work: desktop interface by
+  default (Deck interface is one animated page), no friends view, FEX code cache off for
+  client processes, optional reduced x87 precision for client program, Multiblock off
+  after repeated client window restarts. Magnitude is unmeasured; `steam-arm
+  --cpu-report` names processes and threads.
+- Games: x86 Linux titles reach v3d and V3DV through FEX GL and Vulkan forwarding when
+  FEX's thunk libraries are present (package `fex-emu-armv8.0` includes
+  `HostThunks/libGL-host.so`, `libvulkan-host.so`, `GuestThunks/libGL-guest.so`,
+  `libvulkan-guest.so`, `ThunksDB.json`; checked by project's container test). Without
+  them every game draws on CPU and launcher raises notice at every start. 32-bit titles
+  are worst case: no 32-bit Vulkan thunk, GL thunk only.
+- Windows titles: x86 Proton through emulation, WineD3D on OpenGL 3.1 (Direct3D 9 class,
+  feature level 9_3); Direct3D 10 and 11 titles need `glver=3.3` and may misrender.
+- Per-title levers (opt-in): `tso=off`, `x87=reduced` (Emulation keys), `glver`, Zink,
+  automatic tuning order on Pi families (OpenGL version 3.3, Zink, Multiblock; no
+  `gl32`), `pi-governor` component.
+- Session: Raspberry Pi OS desktop runs labwc (Wayland), client and titles draw through
+  XWayland; launcher logs session type once per start.
+- Power and heat: under-voltage and 80 C capping lower clocks; `steam-arm --cpu-report`
+  decodes `vcgencmd get_throttled` bits per sample.
+
+Not movable to GPU by any setting: emulator's translated code (client, Proton, game
+logic), memory model barriers, translation time, per-call marshalling of forwarded GL,
+software video decode.
+
+Untested on Raspberry Pi 4 hardware; report with two `steam-arm --cpu-report` files
+(before and after change) at project's issues:
+
+| Item                                              | State                                    |
+|---------------------------------------------------|------------------------------------------|
+| Thunk libraries load on v3d and V3DV under FEX     | untested, report with `steam-arm --cpu-report` |
+| Idle CPU split (client, client window, emulator)   | untested, report with `steam-arm --cpu-report` |
+| Desktop interface and no friends view: CPU change  | untested, report with `steam-arm --cpu-report` |
+| Code cache off: client window restart loop absent  | untested, report with `steam-arm --cpu-report` |
+| Reduced x87 precision: start time                  | untested, report with `steam-arm --cpu-report` |
+| Multiblock restart counter ever fires              | untested, report with `steam-arm --cpu-report` |
+| `tso=off`, `x87=reduced`: frame rate and stability | untested, per title                      |
+| `glver=3.3` starts title that stopped on GL 3.1    | untested, per title                      |
+| Client window through GPU experiment               | untested, low odds                       |
+| `pi-governor`: frame rate and throttle bits        | untested, report with `steam-arm --cpu-report` |
+| Thermal capping under load                         | untested, report with `steam-arm --cpu-report` |
+
 ### Raspberry Pi 5 performance tips
 
 Gains below are unmeasured on Raspberry Pi 5. Settings that cost heat or power are opt-in
@@ -453,10 +506,13 @@ and stay off unless set by hand.
 6. **CPU governor (opt-in).** Raspberry Pi kernel default is `ondemand`
    (`CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND=y` in `bcm2712_defconfig`,
    <https://github.com/raspberrypi/linux>). `performance` holds cores at top clock, with
-   more heat and power. Until next reboot:
+   more heat and power. Component `pi-governor` (off by default; Maintenance, CPU governor
+   while Steam runs) sets it while Steam ARM runs and puts saved governor back at exit.
+   By hand until next reboot:
    `echo performance | sudo tee /sys/devices/system/cpu/cpufreq/policy0/scaling_governor`;
    back with `ondemand` in same command. `steam-arm-config` Information shows governor in
-   use (`CPU governor` line).
+   use (`CPU governor` line); `steam-arm --cpu-report` shows governor and throttle bits
+   per sample.
 7. **FEX Multiblock per title (opt-in).** `steam-arm-config profile <appid> multiblock=on`;
    `multiblock=` removes it. Valve sets this per title in its own data; profile replaces
    that default for one title. Unmeasured on Pi 5; on RK3588 test device one 32-bit Unity

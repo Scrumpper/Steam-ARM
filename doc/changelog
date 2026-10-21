@@ -31,6 +31,24 @@ steam-arm-setup (3.1) UNRELEASED; urgency=low
   * Client channel shown by name (stable, Valve ARM channel of Steam Frame
     mode, Steam Beta Participation).
   * --remove deletes /var/lib/steam-arm and /var/cache/steam-arm.
+  * Host facts CPU_LSE, CPU_CORES, PLATFORM (pi4, pi5, pi-other) and
+    MESA_HOST in settings file; --detect prints them.
+  * steam-arm --cpu-report: CPU and GPU profile of client window and
+    games (two 60 s samples); Maintenance item and steam-arm-config
+    cpu-report; hardware report appends static sections.
+  * x86 client: FEX code cache off for client window processes, own
+    keys merged into FEX app settings; reduced x87 precision for client
+    program (x87-client, off by default); Multiblock off for client
+    files after repeated client window restarts on Armv8.0 CPUs.
+  * CPUs without Armv8.1 atomics: desktop interface and no friends view
+    by default (client-light off restores Deck interface).
+  * GPU forwarding notice on Raspberry Pi platforms when thunk libraries
+    were not found; Information row GPU forwarding; run record reason.
+  * Per-title keys tso=off and x87=reduced (Games, Emulation); automatic
+    tuning on Raspberry Pi GPUs tries OpenGL version 3.3 and Zink first.
+  * Experiment: client window through GPU for one start (lab-cef-gpu).
+  * Component pi-governor (off by default): governor performance while
+    Steam runs on Raspberry Pi boards.
 
  -- Scrumpper <Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 00:00:00 +0000
 

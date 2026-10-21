@@ -17,6 +17,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Downgrade protection: setup over newer install stops before any change unless `--allow-older`; upgrade never installs older release by itself (`--allow-older` permits it with warning; setup before 3.1 runs without that option, after upgrade saves installed version). Going back through snapshot needs no option.
 - Check for new release when menu opens, off by default (Maintenance item, `steam-arm-config update-check-on-open on|off`, `UPDATE_CHECK_ON_OPEN`): at most once daily, 8 s limit, result stored for main screen line only.
 - Show what is new: release notes of newest release from last check.
+- Host facts in `/etc/steam-arm/steam-arm.conf` on every setup run: `CPU_LSE`, `CPU_CORES`, `PLATFORM` (`pi4`, `pi5`, `pi-other` on Raspberry Pi, else empty), `MESA_HOST`; `--detect` prints them. Launcher derives slow emulation class (x86 client on CPU without Armv8.1 atomics), exports `STEAM_ARM_SLOW` and `STEAM_ARM_PLATFORM` to client helper and launch handler, logs session type once per start.
+- `steam-arm --cpu-report [--quick] [--no-wait] [--out FILE]`, Maintenance, CPU profile of client window, and `steam-arm-config cpu-report`: CPU and GPU profile of client window and games (system, firmware throttle bits, session, host graphics stack, emulator, Steam processes with render nodes and graphics libraries per process, two 60 s profiles with CPU share per process group, v3d statistics, per-process GPU time, threads, temperature, clocks, throttle bits); home folders replaced by `~`, host name, account name and serial never read; hardware report appends its static sections.
+- x86 client FEX app settings: own keys merged into `steamwebhelper.json` and `exe.json` (thunks off, FEX code cache off for client window processes; files of 3.0 rewritten, other keys kept); `steam.json` with reduced x87 precision for client program while Maintenance, Faster client start (`x87-client on`, `X87_CLIENT`) or `STEAM_ARM_X87=reduced` is set, off by default; on CPUs without LSE atomics third restart of oldest `steamwebhelper` after 5 minutes turns FEX Multiblock off for client window files once, with notice.
+- Lighter client window on CPUs without Armv8.1 atomics: desktop interface by default and no friends view; `steam-arm --bigpicture`, `STEAM_ARM_UI=bigpicture`, `STEAM_ARM_FRIENDS=1` for one start, Maintenance, Client window: lighter (`client-light off`, `CLIENT_LIGHT`) restores Deck interface and friends view; setup summary names it.
+- GPU forwarding state: on `PLATFORM` `pi4`, `pi5`, `pi-other`, thunks off in FEX config raise notice that stays at every start; Information, Steam ARM status row GPU forwarding; launch handler sets reason `thunks-missing` in run record and names x86 Mesa driver kind inside emulation.
+- Per-title emulation keys `tso=off` (FEX relaxed memory model) and `x87=reduced` (reduced x87 precision): Games, game, Emulation; `steam-arm-config profile`; same precedence as `multiblock`; run record carries both; never automatic tuning knobs.
+- Automatic tuning on Raspberry Pi GPU families: OpenGL version 3.3, then Zink, then Multiblock; no `gl32` there.
+- Experiment, x86 client: client window through GPU for one start (`STEAM_ARM_LAB_CEF_GPU=vulkan|gl`, `steam-arm-config lab-cef-gpu`, Maintenance item); result `cef-gpu=ok|failed:<reason>` in client home `.config/steam-arm/state`; Help page Experiments.
+- Component `pi-governor`, off by default, on Raspberry Pi boards: CPU governor `performance` while Steam ARM runs through root helper and sudo rule, saved governor back at exit; Maintenance, CPU governor while Steam runs.
+- Container test matrix row `raspios-pi4` (Cortex-A72 without LSE, bcm2711 device tree, v3d render node, x86 client stand-ins): settings `CLIENT=x86`, `PLATFORM=pi4`, FEX package `fex-emu-armv8.0`, PPA package lists thunk files setup searches for.
 
 ### Changed
 
@@ -25,6 +35,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Information and run report name client channel: `stable`, `Valve ARM channel (set by Steam Frame mode)`, `beta (Steam Beta Participation)`, else raw name; run report adds raw name in brackets.
 - `--remove` deletes `/var/lib/steam-arm` (snapshots, records) and `/var/cache/steam-arm` (upgrade downloads).
 - Settings file keys `SNAPSHOT_KEEP`, `UPDATE_CHECK_ON_OPEN` (part of setup choices in backups; earlier versions skip them) and `INSTALLED_FROM` (package installs of 3.0 and earlier, which lack it, detected through dpkg).
+- Settings file keys `X87_CLIENT` and `CLIENT_LIGHT` (setup choices in backups); machine state keys `CPU_LSE`, `CPU_CORES`, `PLATFORM`, `MESA_HOST`.
+- Setup warning without FEX thunk libraries names that FEX packages include them and that games draw on CPU without them.
 
 ## [3.0] - 2026-10-16
 

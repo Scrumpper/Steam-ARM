@@ -7096,6 +7096,58 @@ Reading "Rules used at last start" (Games > a game)
   lines (Proton keeps its own logs).
 EOF
 }
+pi_text(){ cat <<'EOF'
+Raspberry Pi
+
+Pi 4 (Cortex-A72, no Armv8.1 atomics)
+- Valve's native client stops on this CPU (Valve issue
+  13288); setup installs Valve's x86 client through
+  emulation. Client window is drawn on CPU: expected,
+  not a fault. Games reach GPU through GL and Vulkan
+  forwarding when FEX's libraries are present
+  (Information > Steam ARM status, GPU forwarding).
+- Lighter client window on this CPU: desktop
+  interface, no friends view (Maintenance > Client
+  window: lighter turns it off; steam-arm --bigpicture
+  opens Deck interface for one start).
+- Faster client start: Maintenance > Faster client
+  start (reduced x87 precision for client program;
+  rendering errors possible; games unaffected).
+- Steam settings that lower client work (Settings in
+  Steam): Library > Low Performance Mode and Low
+  Bandwidth Mode, Library > Disable Community Content,
+  Interface > Smooth Scrolling off, Store and Library
+  video autoplay off. Not written by Steam ARM.
+- shader-cache part: not recommended here (shader
+  pre-compile is emulated CPU work).
+- Measure before and after: steam-arm --cpu-report
+  (Maintenance > CPU profile of client window).
+
+Pi 4 and Pi 5 games
+- OpenGL 3.1 driver: Graphics > Route per game >
+  OpenGL version 3.3 starts games that only check
+  version; Zink is experimental.
+- Windows games: WineD3D on OpenGL (Direct3D 9 class).
+  Direct3D 10 and 11 need OpenGL version 3.3 and may
+  draw wrong.
+- 32-bit games: no 32-bit Vulkan forwarding; GL only.
+- Per game, Games > game > Emulation: Memory model
+  relaxed (faster without LSE atomics; crashes, hangs,
+  corrupt saves possible), x87 precision reduced.
+- Automatic tuning (Games > game) tries OpenGL version
+  3.3, then Zink, then Multiblock.
+- CPU governor while Steam runs: Maintenance (part
+  pi-governor, off by default; heat and power).
+- Under-voltage and 80 C capping lower clocks;
+  steam-arm --cpu-report decodes throttle bits.
+
+Reporting
+- Two steam-arm --cpu-report files (before and after
+  a change) at the project's issue tracker settle
+  what no test machine here can: idle CPU split,
+  thunk libraries on v3d, thermal capping.
+EOF
+}
 experiments_text(){ cat <<'EOF'
 Experiments
 
@@ -7133,8 +7185,9 @@ EOF
 }
 menu_help(){
   local c=""
-  while c=$(ui_menu "Help / About" "Choose a page." --default "$c" 1 "Fixing a game" 2 "Experiments" 3 "About steam-arm-config"); do
-    case "$c" in 1) ui_textstr "Fixing a game" "$(fixing_text)";; 2) ui_textstr "Experiments" "$(experiments_text)";; 3) ui_textstr "About" "$(about_text)";; esac
+  while c=$(ui_menu "Help / About" "Choose a page." --default "$c" 1 "Fixing a game" 2 "Experiments" 3 "Raspberry Pi" 4 "About steam-arm-config"); do
+    case "$c" in 1) ui_textstr "Fixing a game" "$(fixing_text)";; 2) ui_textstr "Experiments" "$(experiments_text)";;
+      3) ui_textstr "Raspberry Pi" "$(pi_text)";; 4) ui_textstr "About" "$(about_text)";; esac
   done
 }
 
