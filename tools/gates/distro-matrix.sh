@@ -450,7 +450,8 @@ row(){
   [ "$a" != arm64 ] && [ "$kind" != x86 ] && simapt=1
   case $kind in gate|x86) SIMPATH=;; *) standins "$R" $simapt $mode "$r"; SIMPATH=/sim/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin;; esac
   export SIMPATH
-  [ $mode = real ] && in_root "$R" dpkg-query -W -f='${Package}\n' 2>/dev/null | sort > "$L/pkgs-before.txt"
+  [ $mode = real ] && in_root "$R" dpkg-query -W -f='${Package} ${Version}\n' 2>/dev/null | sort > "$L/pkgver-before.txt" \
+    && cut -d' ' -f1 "$L/pkgver-before.txt" > "$L/pkgs-before.txt"
   snap "$R" "$L/before.tsv"
   case $kind in
     gate|x86)
@@ -551,8 +552,14 @@ row_install(){
     in_root "$R" dpkg-query -W -f='${Package}\n' 2>/dev/null | sort | comm -13 "$L/pkgs-before.txt" - > "$L/pkgs-new.txt"
     [ -s "$L/pkgs-new.txt" ] && in_root "$R" xargs -r dpkg -L < "$L/pkgs-new.txt" 2>/dev/null \
       | awk '/^\//{print $0 "\tdistribution package installed by setup, stays (removal names it)"}' > "$L/pkgfiles.tsv"
+    # packages present before whose version changed (dependency upgrades of apt-get install): their files stay too
+    in_root "$R" dpkg-query -W -f='${Package} ${Version}\n' 2>/dev/null | sort | comm -13 "$L/pkgver-before.txt" - | cut -d' ' -f1 | sort \
+      | comm -12 - "$L/pkgs-before.txt" > "$L/pkgs-upgraded.txt"
+    [ -s "$L/pkgs-upgraded.txt" ] && in_root "$R" xargs -r dpkg -L < "$L/pkgs-upgraded.txt" 2>/dev/null \
+      | awk '/^\//{print $0 "\tdistribution package upgraded by setup'"'"'s apt-get install, stays"}' >> "$L/pkgfiles.tsv"
     keeps+=(--keep-list "$L/pkgfiles.tsv"
-      --keep '__pycache__/|^/etc/alternatives/|^/var/lib/|^/etc/(passwd|group|shadow|gshadow|subuid|subgid)-?$|^/etc/ssl/certs/|^/usr/share/mime/|^/usr/.*\.cache$|gschemas\.compiled$|^/etc/systemd/(?!.*steam-arm)|^/etc/dbus-1/=written by maintainer scripts of installed packages')
+      --keep '__pycache__(/|$)|^/etc/alternatives/|^/var/lib/|^/etc/(passwd|group|shadow|gshadow|subuid|subgid)-?$|^/etc/ssl/certs/|^/usr/share/mime/|^/usr/.*\.cache$|gschemas\.compiled$|^/etc/systemd/(?!.*steam-arm)|^/etc/dbus-1/|^/etc/rc[0-6S]\.d/|^/etc/fonts/conf\.d/|^/var/cache/fontconfig(/|$)|^/usr/local/share/fonts$|^/usr/share/icons/default/index\.theme$|^/etc/(nsswitch\.conf|pam\.d/common-)|^/usr/lib/udev/hwdb\.bin$|^/usr/bin/pinentry$=written by maintainer scripts and triggers of installed packages (init links, fontconfig, pam-auth-update, nss, hwdb, alternatives)'
+      --keep '^/root/\.launchpadlib(/|$)=add-apt-repository cache; removal names it')
   fi
   d=$(python3 -I "$TREE" diff "$L/before.tsv" "$L/after.tsv" --purge --removal "$REMOVAL" --home "/home/$GAMEUSER" "${keeps[@]}" --count -v 2>&1); rc=$?
   printf '%s\n' "$d" > "$L/diff.txt"
