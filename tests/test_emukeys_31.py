@@ -116,7 +116,7 @@ check("E7 unknown values: logged with the accepted value, nothing written", r["c
 r = run("tso=off x87=reduced", conf="GPU_FAMILY=other\nGFX_DEFAULT=auto\nRUN_HISTORY=on\n")
 runs = os.path.join(r["home"], ".local/state/steam-arm/runs.log")
 line = open(runs).read().splitlines()[-1] if os.path.exists(runs) else ""
-check("E8 run record start line: tso=off x87=reduced before profile", " tso=off x87=reduced profile=" in line, line or r["log"][-600:])
+check("E8 run record start line: tso=off x87=reduced, vkhost, then profile", " tso=off x87=reduced vkhost=- profile=" in line, line or r["log"][-600:])
 r = run(conf="GPU_FAMILY=other\nGFX_DEFAULT=auto\nRUN_HISTORY=on\n")
 runs = os.path.join(r["home"], ".local/state/steam-arm/runs.log")
 line = open(runs).read().splitlines()[-1] if os.path.exists(runs) else ""

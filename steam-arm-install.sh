@@ -46,18 +46,42 @@ platform_pick(){
   return 0
 }
 # Host Mesa version (libgl1-mesa-dri); empty when not installed.
-mesa_host(){ dpkg-query -W -f='${Version}' libgl1-mesa-dri 2>/dev/null; }
+mesa_host(){ dpkg-query -W -f='${Version}\n' libgl1-mesa-dri 2>/dev/null | head -n 1; }
+# Vulkan class of the host driver on Broadcom families (V3DV: 1.2 below Mesa 24.3, 1.3 from it), from the Mesa version
+# of family $1; empty elsewhere or without Mesa. Fact for reports and docs; no rule reads it.
+vk_host(){
+  local v maj min
+  case "$1" in broadcom-*) ;; *) return 0;; esac
+  v=$(mesa_host | sed 's/^[0-9]*://; s/[-+~].*//'); [ -n "$v" ] || return 0
+  maj=${v%%.*}; min=${v#*.}; min=${min%%.*}
+  case "$maj$min" in *[!0-9]*|"") return 0;; esac
+  if [ "$maj" -gt 24 ] || { [ "$maj" = 24 ] && [ "$min" -ge 3 ]; }; then echo 1.3; else echo 1.2; fi
+}
+# Setup block for the x86 client on a CPU without LSE: what runs where, defaults in force, where to measure.
 x86_warn(){ cat <<EOF
 CPU without Armv8.1 atomics (LSE): $(cpu_label | sed 's/^$/cores not listed/').
        Valve's native ARM64 client stops at start on this CPU (steam-for-linux #13288);
        setup installs Valve's x86 client, run through emulation:
        - first start downloads client files and takes several minutes; later starts are
          slower than native client
-       - client window drawn on CPU; games reach GPU through emulator's GL and Vulkan forwarding
+       - client window drawn on CPU through emulation: high CPU use while window is open
+         is expected on this CPU class; games reach GPU through emulator's GL and Vulkan
+         forwarding (game log line "renderer:")
+       - lighter client window on by default: desktop interface, no friends view, site
+         isolation off (steam-arm-config client-light off turns it off)
        - Windows titles use x86 Proton through emulation
-       Setup moves to native client by itself once Valve's build runs on this CPU again.
+       Levels: always on CPU (client window); per title (steam-arm-config, Games, Emulation:
+       memory model relaxed, x87 reduced; correctness trades); experiments (steam-arm-config
+       lab-cef-gpu vulkan, client-gpu on, x87-client on). Measure: steam-arm --cpu-report.
+$(pi_class_line)       Setup moves to native client by itself once Valve's build runs on this CPU again.
        --client=arm64 (or STEAM_ARM_ALLOW_ARMV80=1) keeps native client instead.
 EOF
+}
+# One line for Raspberry Pi platforms: host Mesa, Vulkan class, session type (empty elsewhere).
+pi_class_line(){
+  local p v; p=$(platform_pick "${GPU_FAMILY:-}"); [ -n "$p" ] || return 0
+  v=$(vk_host "${GPU_FAMILY:-}")
+  printf '       Raspberry Pi: host Mesa %s, Vulkan %s class (V3DV), session %s%s.\n' "$(mesa_host | grep . || echo unknown)" "${v:-unknown}" "${XDG_SESSION_TYPE:-unknown}" "$(pgrep -x labwc >/dev/null 2>&1 && printf ' (labwc, x86 client through Xwayland)')"
 }
 ARMV80_NATIVE_WARN="CPU without Armv8.1 atomics (LSE), native ARM64 client chosen by hand (--client=arm64 or
        STEAM_ARM_ALLOW_ARMV80=1): client builds newer than 15 April 2026 stop at start with SIGILL here
@@ -1208,6 +1232,7 @@ gpu_report(){
   echo "cpu cores: $(nproc 2>/dev/null || echo unknown)"
   v=$(platform_pick "$GPU_FAMILY"); echo "platform: ${v:-none}"
   v=$(mesa_host); echo "mesa host: ${v:-unknown}"
+  v=$(vk_host "$GPU_FAMILY"); echo "vulkan host: ${v:-n/a}"
   client_pick
   case "$CLIENT:$CLIENT_SET" in
     x86:auto) echo "client: x86 (CPU without Armv8.1 atomics)";;
@@ -7143,13 +7168,27 @@ Pi 4 (Cortex-A72, no Armv8.1 atomics)
 - Valve's native client stops on this CPU (Valve issue
   13288); setup installs Valve's x86 client through
   emulation. Client window is drawn on CPU: expected,
-  not a fault. Games reach GPU through GL and Vulkan
+  not a fault; high CPU use while the window is open
+  comes with it. Games reach GPU through GL and Vulkan
   forwarding when FEX's libraries are present
-  (Information > Steam ARM status, GPU forwarding).
+  (Information > Steam ARM status, GPU forwarding and
+  Client window rows).
+- Three levels: always on CPU (client window, FEX
+  JIT); per game (Games > game > Emulation: memory
+  model relaxed, x87 reduced; correctness trades);
+  experiments (Maintenance > Experiment: client window
+  through GPU, keep with client-gpu on; Faster client
+  start). steam-arm --cpu-report ends with a verdict
+  and one next step.
 - Lighter client window on this CPU: desktop
-  interface, no friends view (Maintenance > Client
-  window: lighter turns it off; steam-arm --bigpicture
-  opens Deck interface for one start).
+  interface, no friends view, site isolation off
+  (Maintenance > Client window: lighter turns it off;
+  steam-arm --bigpicture opens Deck interface for one
+  start). Hung view kills and restarts: Maintenance,
+  off only after the report names a restart loop.
+- Vulkan class (V3DV): 1.2 on Raspberry Pi OS bookworm
+  (Mesa 24.2), 1.3 on trixie (Mesa 25 and 26); setup
+  stores it as VK_HOST (--detect: vulkan host).
 - Faster client start: Maintenance > Faster client
   start (reduced x87 precision for client program;
   rendering errors possible; games unaffected).
@@ -10719,6 +10758,7 @@ conf_set CPU_LSE "$(cpu_lse && echo 1 || echo 0)"
 conf_set CPU_CORES "$(nproc 2>/dev/null || echo 0)"
 conf_set PLATFORM "$(platform_pick "$GPU_FAMILY")"
 conf_set MESA_HOST "$(mesa_host)"
+conf_set VK_HOST "$(vk_host "$GPU_FAMILY")"
 # Graphics for x86 titles: auto = forwarding plus the handler's rules; a (or forward) = forwarding only; b = every title on Mali drivers.
 [ -n "$(conf_get GFX_DEFAULT)" ] || conf_set GFX_DEFAULT auto
 conf_set VERSION "$SA_VERSION"
@@ -12581,7 +12621,8 @@ if _why:
                     ("fex", fex_ver_str(_fv) if _fv else "unknown"), ("tool", tool_kind(tool_dir()) if tool_dir() else "-"),
                     ("mesa", mesa_version(mroot if gfx == "b" else "")), ("proton", (tool or "x86") if x86_proton else "-"),
                     ("multiblock", mbp or "-"), ("diskcache", dcp or "-"), ("tso", prof.get("tso") or "-"),
-                    ("x87", prof.get("x87") or "-"), ("profile", ",".join(sorted(prof)) or "-")])
+                    ("x87", prof.get("x87") or "-"), ("vkhost", conf_value("VK_HOST") or "-"),
+                    ("profile", ",".join(sorted(prof)) or "-")])
         log("run record: on (%s)" % _why)
     except OSError as e:
         RUN["on"] = False
@@ -14598,6 +14639,15 @@ export STEAM_ARM_SLOW="$SLOW" STEAM_ARM_PLATFORM="$PLATFORM"
 case "${STEAM_ARM_X87:-}" in reduced|exact) ;; *) if [ "${X87_CLIENT:-off}" = on ]; then STEAM_ARM_X87=reduced; else STEAM_ARM_X87=exact; fi;; esac
 export STEAM_ARM_X87
 llog "session: ${XDG_SESSION_TYPE:-unknown}, desktop ${XDG_CURRENT_DESKTOP:-unknown}$(pgrep -x labwc >/dev/null 2>&1 && printf ', labwc')$(pgrep -x Xwayland >/dev/null 2>&1 && printf ', Xwayland'), platform ${PLATFORM:-none}, slow emulation class $SLOW"
+# Slow class, first start in this client home: one notice that the client window on CPU is expected (marker slow-notice=shown
+# in the state file; STEAM_ARM_NOTICE=0 skips it).
+SLOWST="$ARMHOME/.config/steam-arm/state"
+if [ "$SLOW" = 1 ] && [ "${STEAM_ARM_NOTICE:-1}" != 0 ] && ! grep -qs '^slow-notice=shown' "$SLOWST"; then
+  mkdir -p "${SLOWST%/*}" && echo "slow-notice=shown" >> "$SLOWST"
+  SLOWMSG="Client window is drawn by CPU through emulation: high CPU use while the window is open is expected on this CPU class. Games reach GPU through forwarding (game log line renderer:). Measure: steam-arm --cpu-report (verdict section names the next step); settings: sudo steam-arm-config, Maintenance."
+  llog "notice: $SLOWMSG"
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && ( notice 0 "Steam ARM: this CPU class" "$SLOWMSG" 0 ) </dev/null >/dev/null 2>&1 &
+fi
 # Emulation needs 4K pages; STEAM_ARM_IGNORE_PAGESIZE=1 skips it (x86 side in a separate 4K guest).
 PGSZ=$(getconf PAGESIZE 2>/dev/null || echo 4096)
 if [ "$PGSZ" != 4096 ] && [ "${STEAM_ARM_IGNORE_PAGESIZE:-0}" != 1 ]; then
@@ -15959,7 +16009,7 @@ fexval(){
   echo default
 }
 section_verdict(){
-  local L cw st n loop ex top tso x87 sl mb gl vk fl mx thr nx=""
+  local L cw st n loop ex top tso x87 sl mb gl vk fl mx thr vkh api nx=""
   hdr "verdict"
   L=$(client_logs)
   cw=$(cw_state "$L")
@@ -15977,6 +16027,9 @@ section_verdict(){
   echo "fex client: tso=$tso x87=$x87 silentlog=$sl multiblock=$mb thunks=GL$gl/VK$vk (steamwebhelper; x87 from steam.json)"
   thr=$(throttled); mx=$(cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq 2>/dev/null); mx=${mx:+$((mx / 1000))}
   echo "clock floor: ${MIN_MHZ:-n/a} MHz (max ${mx:-n/a}) throttled=$thr"
+  vkh=$(sed -n 's/^VK_HOST=//p' /etc/steam-arm/steam-arm.conf 2>/dev/null | tail -n 1)
+  api=$(have vulkaninfo && timeout 30 vulkaninfo --summary 2>/dev/null | grep -m1 -oE 'apiVersion *= *[0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+$')
+  echo "vulkan host: ${vkh:-n/a} (settings file VK_HOST); vulkaninfo ${api:-n/a}$([ -n "$vkh" ] && [ -n "$api" ] && [ "$vkh" != "$api" ] && printf '; differ: run setup again')"
   # throttle bits decide (idle clocks sit low under ondemand, so the floor alone proves nothing)
   fl=0; case "$thr" in *under-voltage*|*arm-freq-capped*|*" throttled"*|*soft-temp-limit*) fl=1;; esac
   if [ "$fl" = 1 ]; then nx="CPU clock capped or throttled: power supply and cooling first; numbers above do not show the board's capacity"

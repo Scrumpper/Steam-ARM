@@ -50,11 +50,27 @@ printf 'raspberrypi,4-model-b\0' > "$T/pi4/dt/compatible"; OUT=$(srun pi4 'platf
 check "D6 model string alone -> pi4" "[ \"\$OUT\" = pi4 ]"
 
 # setup writes the four keys beside GPU_FAMILY; --detect prints them
-OUT=$(grep -n 'conf_set CPU_LSE\|conf_set CPU_CORES\|conf_set PLATFORM\|conf_set MESA_HOST\|conf_set GPU_FAMILY_SET' "$INST")
-check "D7 setup writes CPU_LSE, CPU_CORES, PLATFORM (platform_pick of GPU_FAMILY), MESA_HOST after GPU_FAMILY_SET" \
-  "[ \$(grep -c . <<<\"\$OUT\") = 5 ] && grep -q 'conf_set CPU_LSE \"\$(cpu_lse && echo 1 || echo 0)\"' <<<\"\$OUT\" && grep -q 'conf_set PLATFORM \"\$(platform_pick \"\$GPU_FAMILY\")\"' <<<\"\$OUT\" && grep -q 'conf_set MESA_HOST \"\$(mesa_host)\"' <<<\"\$OUT\" && [ \$(head -1 <<<\"\$OUT\" | cut -d: -f1) -lt \$(tail -1 <<<\"\$OUT\" | cut -d: -f1) ]"
+OUT=$(grep -n 'conf_set CPU_LSE\|conf_set CPU_CORES\|conf_set PLATFORM\|conf_set MESA_HOST\|conf_set VK_HOST\|conf_set GPU_FAMILY_SET' "$INST")
+check "D7 setup writes CPU_LSE, CPU_CORES, PLATFORM (platform_pick of GPU_FAMILY), MESA_HOST, VK_HOST after GPU_FAMILY_SET" \
+  "[ \$(grep -c . <<<\"\$OUT\") = 6 ] && grep -q 'conf_set CPU_LSE \"\$(cpu_lse && echo 1 || echo 0)\"' <<<\"\$OUT\" && grep -q 'conf_set PLATFORM \"\$(platform_pick \"\$GPU_FAMILY\")\"' <<<\"\$OUT\" && grep -q 'conf_set MESA_HOST \"\$(mesa_host)\"' <<<\"\$OUT\" && grep -q 'conf_set VK_HOST \"\$(vk_host \"\$GPU_FAMILY\")\"' <<<\"\$OUT\" && [ \$(head -1 <<<\"\$OUT\" | cut -d: -f1) -lt \$(tail -1 <<<\"\$OUT\" | cut -d: -f1) ]"
 GR=$(fn gpu_report "$INST")
-check "D8 --detect prints cpu lse, cpu cores, platform and mesa host lines" "grep -q 'echo \"cpu lse: ' <<<\"\$GR\" && grep -q 'echo \"cpu cores: ' <<<\"\$GR\" && grep -q 'echo \"platform: \${v:-none}\"' <<<\"\$GR\" && grep -q 'echo \"mesa host: \${v:-unknown}\"' <<<\"\$GR\""
+check "D8 --detect prints cpu lse, cpu cores, platform, mesa host and vulkan host lines" "grep -q 'echo \"cpu lse: ' <<<\"\$GR\" && grep -q 'echo \"cpu cores: ' <<<\"\$GR\" && grep -q 'echo \"platform: \${v:-none}\"' <<<\"\$GR\" && grep -q 'echo \"mesa host: \${v:-unknown}\"' <<<\"\$GR\" && grep -q 'echo \"vulkan host: \${v:-n/a}\"' <<<\"\$GR\""
+# Vulkan class from the host Mesa version (Broadcom families only)
+vkh(){ ( eval "$(fn vk_host "$INST")"; mesa_host(){ echo "$MH"; }; MH=$2; v=$(vk_host "$1"); echo "[$v]" ) 2>&1; }
+OUT=$(vkh broadcom-v3d42 "24.2.8-1~bpo12+rpt5"); check "VK1 bookworm Mesa 24.2.8 on v3d42 -> 1.2" "[ \"\$OUT\" = '[1.2]' ]"
+OUT=$(vkh broadcom-v3d42 "26.2.2-1~bpo13+0~rpt1"); check "VK2 trixie Mesa 26.2.2 -> 1.3" "[ \"\$OUT\" = '[1.3]' ]"
+OUT=$(vkh broadcom-v3d71 "2:24.3.0-1"); check "VK3 epoch stripped, 24.3 -> 1.3" "[ \"\$OUT\" = '[1.3]' ]"
+OUT=$(vkh mali-csf-v10 "26.2.2-1"); check "VK4 other family: empty" "[ \"\$OUT\" = '[]' ]"
+OUT=$(vkh broadcom-v3d42 ""); check "VK5 no Mesa package: empty" "[ \"\$OUT\" = '[]' ]"
+OUT=$(vkh broadcom-v3d42 "garbage"); check "VK6 unparsable version: empty" "[ \"\$OUT\" = '[]' ]"
+check "VK7 handler start record carries vkhost from the settings file; report verdict cross-checks VK_HOST against vulkaninfo" "grep -q '(\"vkhost\", conf_value(\"VK_HOST\") or \"-\")' '$INST' && grep -q '^  echo \"vulkan host: \${vkh:-n/a} (settings file VK_HOST); vulkaninfo' '$INST'"
+# setup block for the x86 client: levels, measure command, Pi line only on Pi platforms
+XW=$(sed -n '/^x86_warn(){/,/^}/p' "$INST")
+check "XW1 x86 client setup block names the CPU-class expectation, lighter window, three levels and --cpu-report" "grep -q 'high CPU use while window is open' <<<\"\$XW\" && grep -q 'site' <<<\"\$XW\" && grep -q 'Levels: always on CPU' <<<\"\$XW\" && grep -q 'steam-arm --cpu-report' <<<\"\$XW\" && grep -q 'pi_class_line' <<<\"\$XW\""
+OUT=$( eval "$(fn pi_class_line "$INST")"; platform_pick(){ echo pi4; }; vk_host(){ echo 1.2; }; mesa_host(){ echo 24.2.8-1~bpo12+rpt5; }; XDG_SESSION_TYPE=wayland; GPU_FAMILY=broadcom-v3d42; pgrep(){ return 1; }; pi_class_line )
+check "XW2 Pi line: host Mesa, Vulkan class, session" "[ \"\$OUT\" = '       Raspberry Pi: host Mesa 24.2.8-1~bpo12+rpt5, Vulkan 1.2 class (V3DV), session wayland.' ]"
+OUT=$( eval "$(fn pi_class_line "$INST")"; platform_pick(){ :; }; pi_class_line; echo "[end]" )
+check "XW3 not a Pi platform: no line" "[ \"\$OUT\" = '[end]' ]"
 OUT=$(bash -c "cd '$T' && env -i HOME='$T' PATH=/usr/bin:/bin bash '$INST' --detect" 2>&1)
 check "D9 --detect on this host: platform line present (none or pi value), cpu lse 0 or 1" "grep -qE '^platform: (none|pi4|pi5|pi-other)$' <<<\"\$OUT\" && grep -qE '^cpu lse: [01]$' <<<\"\$OUT\" && grep -qE '^cpu cores: [0-9]+$' <<<\"\$OUT\""
 
@@ -94,6 +110,18 @@ OUT=$(sl arm64 0 pi5 "Features	: fp asimd evtstrm crc32 cpuid")
 check "D17 native client: never slow class, platform passed on" "grep -qx 'slow=0 platform=\[pi5\]' <<<\"\$OUT\""
 OUT=$(sl x86 1 - "")
 check "D18 CPU_LSE=1 from setup wins over an empty Features line" "grep -qx 'slow=0 platform=\[\]' <<<\"\$OUT\""
+# launcher: one notice at the first start on the slow class
+NB=$T/notice.sh; awk '/^# Slow class, first start in this client home: one notice/{f=1} f{print} f && /^fi$/{exit}' "$L" > "$NB"
+nrun(){ # SLOW env(-) keep-home(0|1)
+  [ "$3" = 1 ] || { rm -rf "$T/nh"; mkdir -p "$T/nh"; }
+  ( SLOW=$1 ARMHOME=$T/nh LOG=$T/nh.log DISPLAY=:0; unset STEAM_ARM_NOTICE; [ "$2" = - ] || export STEAM_ARM_NOTICE=$2; rm -f "$T/nh.log"
+    notice(){ echo "NOTICE $2|$3" >> "$T/nh.log"; }; llog(){ echo "$*" >> "$T/nh.log"; }; . "$NB"; wait ) 2>&1; cat "$T/nh.log" 2>/dev/null; cat "$T/nh/.config/steam-arm/state" 2>/dev/null; }
+OUT=$(nrun 1 - 0); check "N1 slow class, first start: notice names CPU class, renderer line and --cpu-report; marker written" "grep -q '^NOTICE Steam ARM: this CPU class|Client window is drawn by CPU through emulation' <<<\"\$OUT\" && grep -q 'renderer:' <<<\"\$OUT\" && grep -q 'steam-arm --cpu-report' <<<\"\$OUT\" && grep -qx 'slow-notice=shown' <<<\"\$OUT\""
+OUT=$(nrun 1 - 1); check "N2 second start, same home: no notice, marker once" "! grep -q NOTICE <<<\"\$OUT\" && [ \$(grep -c 'slow-notice=shown' <<<\"\$OUT\") = 1 ]"
+OUT=$(nrun 1 0 0); check "N3 STEAM_ARM_NOTICE=0: no notice, no marker" "! grep -q 'NOTICE\|slow-notice' <<<\"\$OUT\""
+OUT=$(nrun 0 - 0); check "N4 not slow class: nothing" "[ -z \"\$OUT\" ]"
+rm -rf "$T/nh"; mkdir -p "$T/nh/.config/steam-arm"; printf 'cef-gpu=ok:vulkan\n' > "$T/nh/.config/steam-arm/state"
+OUT=$(nrun 1 - 1); check "N5 state file with other lines: marker appended, other line kept" "[ \"\$(tail -n 2 <<<\"\$OUT\" | paste -sd,)\" = 'cef-gpu=ok:vulkan,slow-notice=shown' ]"
 
 # handler: platform() and slow_class() from environment, else settings file
 H=$T/handler.py
