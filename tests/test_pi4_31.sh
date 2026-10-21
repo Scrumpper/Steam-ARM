@@ -297,5 +297,24 @@ cli profile 400 x87=fast; check "E7b CLI refuses x87=fast" "[ $RC = 2 ]"
 cli profile 400 --clear; check "E8 --clear removes them" "[ $RC = 0 ] && ! grep -q '^400 ' '$TC'"
 cli --help; check "E9 --help names tso=off, x87=reduced" "grep -q 'multiblock, diskcache, tso=off, x87=reduced,' <<<\"\$OUT\""
 
+# driver archive recipe: --family broadcom preset (dry run; setup never selects it)
+RECIPE=$(dirname "$INST")/tools/build-driver-archive.sh
+if [ -f "$RECIPE" ]; then
+  OUT=$(bash "$RECIPE" --family broadcom --dry-run 2>&1); RC=$?
+  if grep -q "missing host tools\|user namespaces are off" <<<"$OUT"; then echo "SKIP A1 recipe dry run: $OUT"
+  else
+    check "A1 --family broadcom --dry-run: v3d,vc4,zink,llvmpipe,softpipe and broadcom,swrast, archive name with -broadcom, no panfrost note" \
+      "[ $RC = 0 ] && grep -q '^  family     broadcom$' <<<\"\$OUT\" && grep -q '^  gallium    v3d,vc4,zink,llvmpipe,softpipe$' <<<\"\$OUT\" && grep -q '^  vulkan     broadcom,swrast$' <<<\"\$OUT\" && grep -q 'steam-arm-fex-mesa-26.1.8-broadcom-x86_64-i386.tar.zst' <<<\"\$OUT\" && ! grep -q 'no panfrost driver selected' <<<\"\$OUT\""
+    OUT=$(bash "$RECIPE" --family broadcom --gallium v3d,zink --dry-run 2>&1)
+    check "A2 --gallium given by hand wins over preset" "grep -q '^  gallium    v3d,zink$' <<<\"\$OUT\" && grep -q '^  vulkan     broadcom,swrast$' <<<\"\$OUT\""
+    OUT=$(bash "$RECIPE" --dry-run 2>&1)
+    check "A3 default family mali: lists unchanged, archive name unchanged" "grep -q '^  family     mali$' <<<\"\$OUT\" && grep -q '^  gallium    panfrost,llvmpipe,softpipe,zink$' <<<\"\$OUT\" && grep -q 'steam-arm-fex-mesa-26.1.8-x86_64-i386.tar.zst' <<<\"\$OUT\""
+  fi
+  OUT=$(bash "$RECIPE" --family nvidia --dry-run 2>&1); RC=$?
+  check "A4 unknown family refused" "[ $RC = 1 ] && grep -q -- '--family: mali or broadcom' <<<\"\$OUT\""
+  check "A5 verify step checks dri/v3d_dri.so, dri/vc4_dri.so and libvulkan_broadcom.so for the broadcom family, FAMILY passed into the build root" \
+    "grep -q 'broadcom) for f in dri/v3d_dri.so dri/vc4_dri.so libvulkan_broadcom.so; do check' '$RECIPE' && grep -q \"FAMILY='\\\"\\\$FAMILY\\\"'\" '$RECIPE'"
+else echo "SKIP recipe checks: $RECIPE not found"; fi
+
 echo "pi4 detection 3.1: $pass pass, $fail fail"
 [ "$fail" = 0 ]

@@ -1773,6 +1773,7 @@ Needs:
 
 | Option              | Effect                                                      |
 |---------------------|-------------------------------------------------------------|
+| `--family mali\|broadcom` | Driver preset: `mali` (default) or `broadcom` (v3d, vc4, Zink, CPU fallbacks; Vulkan broadcom, swrast; archive name carries `-broadcom`); research preset for Raspberry Pi GPUs inside emulation, never selected by setup |
 | `--mesa VERSION`    | Mesa release from archive.mesa3d.org (default 26.1.8)       |
 | `--mesa-sha256 SHA` | SHA-256 of that release tarball (known for default release) |
 | `--mesa-ref REF`    | Mesa git tag, branch or commit in place of release          |
