@@ -3974,7 +3974,8 @@ graphics_still_notice(){
 
 When a game shows no frame for 20 s after start, a desktop notice
 (terminal line without notice service) names likely state:
-compiling shaders, loading, or not responding. It closes on first
+compiling shaders, loading, or idle (own launcher window waiting
+for input, or not responding). It closes on first
 frame. Frame signal: GPU time of game (kernel fdinfo), or files of
 frame pacing readout (steam-arm --perf-stats). Kernel without
 per-process GPU time: no notice unless readout is on.
@@ -7453,7 +7454,7 @@ Commands
                             no value: state
   still-notice [on|off|auto]
                             notice when game shows no frame 20 s after
-                            start (shaders, loading, not responding);
+                            start (shaders, loading, idle);
                             auto (default): on where display mode
                             restore runs; no value: state
   components a,b,...        install exactly these parts (runs setup)
@@ -14899,7 +14900,7 @@ def log_line(path, line):
 def watch(d, log, secs=5.0, rounds=0):
     """Summary lines every secs until client is gone; rounds > 0: that many rounds without waiting."""
     vk, col, gl = Tail(os.path.join(d, VK_FILE)), [3], {}
-    gone, n = 0, 0
+    gone, n, prev = 0, 0, ""
     while True:
         if rounds:
             n += 1
@@ -14920,7 +14921,10 @@ def watch(d, log, secs=5.0, rounds=0):
             if not s:
                 continue
             if apps is None:
-                apps = ",".join(game_apps()) or "unknown"
+                # frames flushed after game end carry last seen appid
+                apps = ",".join(game_apps())
+                prev = apps or prev
+                apps = apps or (prev + " (ended)" if prev else "unknown")
             line = "%s app %s %s: %s" % (time.strftime("%F %T"), apps, src, fmt(s))
             print("steam-arm: perf " + line[20:], flush=True)
             log_line(log, line)
@@ -15090,14 +15094,16 @@ def still(reaper, after=20.0, home=None, perf=None, poll=2.0, limit=900.0, nogpu
         if nps > psz + 64 or gpu_up >= 2:
             print("frame", flush=True)
             return 0
-        if not seen and not perf and now >= after:
+        # readout without growth by nogpu (route it does not cover): rules of readout off
+        ro = perf and now < nogpu
+        if not seen and not ro and now >= after:
             # kernel without per-process GPU lines: no guess, silent end
             if not drm and probe == "?":
                 probe = own_fdinfo()
             if drm or probe is False:
                 print("nosignal fdinfo", flush=True)
                 return 0
-        if seen and not keys and not perf and now >= after:
+        if seen and not keys and not ro and now >= after:
             # driver without engine time in fdinfo: no frame signal
             print("nosignal", flush=True)
             return 0
@@ -15423,7 +15429,10 @@ fi
 # Game-only lines: native client gets them through Valve's game environment file (its launch wrapper sets them at each
 # game start; they win over launch options, so settings a title may override stay exports below); else exports.
 GFXOK=0
-if [ "$CLIENT" = arm64 ]; then out=$(python3 /usr/local/lib/steam-arm-entry.py gfx "$S" $GAMEENV 2>&1) && GFXOK=1
+# Steam running with readout of another launcher: its lines stay (steam:// starts through xdg-open land here)
+if [ "$CLIENT" = arm64 ] && [ -z "$PERFDIR" ] && client_running && pgrep -u "$(id -u)" -f 'steam-arm-perf.py watch' >/dev/null 2>&1; then
+  GFXOK=1; out="game environment file: kept (frame pacing readout of running Steam)"
+elif [ "$CLIENT" = arm64 ]; then out=$(python3 /usr/local/lib/steam-arm-entry.py gfx "$S" $GAMEENV 2>&1) && GFXOK=1
 else out=$(python3 /usr/local/lib/steam-arm-entry.py gfx "$S" 2>&1); fi
 [ -n "$out" ] && printf '%s\n' "$out" | while IFS= read -r l; do llog "$l"; done
 [ "$GFXOK" = 1 ] || for v in $GAMEENV; do export "$v"; done
@@ -15626,7 +15635,7 @@ STILLAFTER=${STEAM_ARM_STILL_AFTER:-20}; case $STILLAFTER in ''|*[!0-9]*) STILLA
 STILLR=; STILLW=
 still_msg(){ case $1 in
   shaders) echo "No frame for $2 s: compiling shaders (shader cache growing or Steam shader pre-caching running). First start of a game, or start after driver or game update, can take minutes.";;
-  stuck) echo "No frame for $2 s: game not responding (no CPU use, or waiting on disk, for 10 s or more). Stop it from Steam if this stays.";;
+  stuck) echo "No frame for $2 s: game idle (no CPU use, or waiting on disk, for 10 s or more): own launcher or settings window waiting for input, or not responding. Stop it from Steam if no window shows.";;
   *) echo "No frame for $2 s: loading (game busy on CPU or disk).";;
 esac; }
 # $1 reaper pid: state lines of steam-arm-perf.py still -> one notice replaced in place (terminal line without one).

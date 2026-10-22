@@ -1072,7 +1072,7 @@ under `Frame pacing`, ready to attach to compatibility report.
 Frame times come from Mesa, through game environment file (x86 client: launcher
 environment), only while readout is on:
 
-- Vulkan (Windows titles on Proton, Vulkan titles through emulation): Mesa overlay layer
+- Vulkan (Windows titles on Proton): Mesa overlay layer
   `VK_LAYER_MESA_overlay` with `no_display`, one line per present into
   `.cache/steam-arm/perf/vk-frames.csv` of client home. Layer comes with Mesa's Vulkan
   drivers (`mesa-vulkan-drivers` on Debian and Ubuntu).
@@ -1086,10 +1086,14 @@ Limits:
 - No Mesa overlay layer on host: Vulkan titles report nothing; no Gallium driver: OpenGL
   titles report nothing. Launcher log names missing source. Proprietary drivers report
   nothing.
+- Vulkan titles through Valve's FEX tool report nothing: Steam runtime container carries no
+  x86-64 Mesa overlay layer.
 - Steam client already running: readout covers games started from then on, prints in that
   terminal until Ctrl+C or Steam exits, and takes its lines out of game environment file
-  on exit. x86 client takes them only at client start: close Steam and start it with
-  `--perf-stats`.
+  on exit. Game started meanwhile through `steam://` link (desktop shortcut, browser)
+  keeps those lines. x86 client takes them only at client start: close Steam and start it
+  with `--perf-stats`.
+- Frames read after game end carry last app id with `(ended)`.
 - Several Vulkan instances in one game share one file; readout skips damaged lines.
 - While off, nothing is set and no watcher runs.
 
@@ -1101,18 +1105,20 @@ notice service), replaced in place as state changes and closed on first frame:
 - compiling shaders: shader cache of game or Mesa (`steamapps/shadercache/<appid>`,
   `.cache/mesa_shader_cache*` in client home) grew during last 10 s, or Steam's
   `fossilize_replay` runs
-- not responding: game's processes used under 0.1 s CPU in last 10 s, or busiest one
-  waited on disk (state D) for 10 s with no reads
+- idle: game's processes used under 0.1 s CPU in last 10 s, or busiest one waited on disk
+  (state D) for 10 s with no reads; game's own launcher or settings window waiting for
+  click reads same, as does game not responding
 - loading: otherwise (game busy on CPU or disk)
 
 Frame signal: GPU engine time or cycles of game's processes in kernel `fdinfo`
 (`drm-engine-*`, `drm-cycles-*`) rising over 2 polls, or growth of readout files while
-frame pacing readout is on. Notice needs kernel that reports per-process GPU time: when no
-open DRM file of game carries such lines (`drm-driver`, `drm-engine-*`, `drm-cycles-*`), and
-readout is off, watcher ends silently before any notice and logs it once per game start.
-GPU driver without engine time, and games that draw on CPU, give no signal either: watcher
-ends without notice (`no frame signal`). Watch ends after 15 minutes. Never sends signal
-to game. Lines go to `steam-arm.log` (`still-working:`).
+frame pacing readout is on (no growth in first 120 s: readout counts as off). Notice needs
+kernel that reports per-process GPU time: when no open DRM file of game carries such lines
+(`drm-driver`, `drm-engine-*`, `drm-cycles-*`), and readout is off, watcher ends silently
+before any notice and logs it once per game start. GPU driver without engine time, and
+games that draw on CPU, give no signal either: watcher ends without notice (`no frame
+signal`). Watch ends after 15 minutes. Never sends signal to game. Lines go to
+`steam-arm.log` (`still-working:`).
 
 `STILL_NOTICE` (settings menu Graphics, Still-working notice, or
 `steam-arm-config still-notice on|off|auto`): absent (`auto`) turns it on where display

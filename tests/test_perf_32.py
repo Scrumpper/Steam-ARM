@@ -147,6 +147,30 @@ r = subprocess.run([sys.executable, "-c", "import sys; exec(open(sys.argv[1]).re
                     "'if False:')); watch(sys.argv[2], sys.argv[3], rounds=2)", HELPER, wd, log],
                    capture_output=True, text=True, timeout=60)
 check("W2 second round without new frames: no line (fresh process reads files once)", len(r.stdout.splitlines()) == 2, r)
+# last frames read after game end: labelled with last seen appid, not "unknown"
+import contextlib
+import io
+feed = [["frame_timing(us)", "16700"], ["16700", "16700"], ["16700"]]
+games = [["4242"], [], []]
+class FeedTail:
+    def __init__(self, path):
+        pass
+    def lines(self):
+        return feed.pop(0) if feed else []
+M["Tail"], M["game_apps"] = FeedTail, lambda: games.pop(0) if games else []
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    M["watch"](wd + "-none", os.path.join(TMP, "state", "perf-e.log"), rounds=3)
+el = buf.getvalue().splitlines()
+check("W4 frames after game end: last appid marked ended, no 'app unknown'", len(el) == 3 and " app 4242 vulkan: " in el[0]
+      and all(" app 4242 (ended) vulkan: " in x for x in el[1:]), el)
+games[:] = [[]]
+feed[:] = [["frame_timing(us)", "16700"]]
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    M["watch"](wd + "-none", os.path.join(TMP, "state", "perf-e.log"), rounds=1)
+check("W4 no game seen in session: app unknown", " app unknown vulkan: " in buf.getvalue(), buf.getvalue())
+exec(compile(P, HELPER, "exec"), M)
 open(log, "w").write("".join("old %d\n" % i for i in range(400)))
 M["log_line"](log, "newest")
 lg = open(log).read().splitlines()
@@ -249,6 +273,24 @@ out, dt = still("sleep 3; for i in $(seq 40); do echo 16.7 >> %s/gl/frametime_x;
                 timeout=20, pre=SIN)
 check("F1 no client lines, readout on: readout growth still gives frame", out[-1:] == ["frame"] and "nosignal fdinfo" not in out,
       (out, dt))
+# readout on, route without readout data (client lines, no busy keys): readout counts until nogpu only
+pd3 = os.path.join(TMP, "pf3")
+os.makedirs(os.path.join(pd3, "gl"))
+open(FD, "w").write("drm-driver:\tpanthor\ndrm-client-id:\t7\n")
+out, dt = still("sleep 30", 1, (pd3, "14"), timeout=40, pre=SIN)
+check("F2 readout on, no growth, no busy keys: states, then nosignal at nogpu (not limit)", out[:1]
+      and out[0].startswith("state ") and out[-1] == "nosignal" and 13 < dt < 21, (out, dt))
+out, dt = still("sleep 12", 1, (pd3, "60"), timeout=30, pre=SIN)
+check("F2 readout on, no growth, before nogpu: no nosignal, gone at end", out[:1] and out[0].startswith("state ")
+      and out[-1] == "gone" and "nosignal" not in out, (out, dt))
+open(FD, "w").write("pos:\t0\nflags:\t02100002\n")
+out, dt = still("sleep 30", 1, (pd3, "6"), timeout=30, pre=SIN)
+check("F2 readout on, no growth, DRM file without client lines: nosignal fdinfo at nogpu", out[-1:] == ["nosignal fdinfo"]
+      and 5 < dt < 12, (out, dt))
+open(FD, "w").write("drm-driver:\tpanthor\ndrm-client-id:\t7\n")
+out, dt = still("sleep 4; for i in $(seq 40); do echo 16.7 >> %s/gl/frametime_x; done; sleep 30" % pd3, 1, (pd3, "60"),
+                timeout=20, pre=SIN)
+check("F2 readout on, no busy keys, readout grows: frame", out[-1:] == ["frame"] and "nosignal" not in out, (out, dt))
 out, dt = still("sleep 30", 1, ("", "60"), timeout=20, pre=NODRM + "\nown_fdinfo = lambda: False")
 check("F1 no DRM file yet, own render node without client lines: nosignal fdinfo", out == ["nosignal fdinfo"], (out, dt))
 out, dt = still("sleep 30", 1, ("", "13"), timeout=30, pre=NODRM + "\nown_fdinfo = lambda: True")

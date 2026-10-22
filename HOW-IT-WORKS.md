@@ -179,8 +179,9 @@ steam-arm (launcher, desktop account only, refuses root)
 |    Steam already running: foreground for games started from then on
 +- still-working notice (1 s watcher, auto: where display mode restore runs):
 |    game start without frame 20 s -> one notice: compiling shaders (cache
-|    growth, fossilize_replay), loading, not responding (no CPU or disk wait
-|    10 s); frame = GPU engine time in fdinfo rising, or readout files growing;
+|    growth, fossilize_replay), loading, idle (no CPU or disk wait 10 s:
+|    launcher window or not responding); frame = GPU engine time in fdinfo
+|    rising, or readout files growing (none in 120 s: readout counts as off);
 |    closed on first frame; no per-process GPU lines in fdinfo, readout off ->
 |    silent end before any notice
 |

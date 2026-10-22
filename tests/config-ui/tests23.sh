@@ -410,7 +410,7 @@ check "W1 Graphics: item 5 Still-working notice (now: auto), absent key = auto" 
 fresh STILL_NOTICE=off; ru menu_graphics BACK
 check "W1 STILL_NOTICE=off -> (now: off); unknown value -> auto" "grep -q ' 5 Still-working notice (now: off)\$' <<<\"\$OUT\" && [ \"\$(bash -c \". $T/harness.sh --help >/dev/null; conf_get(){ echo maybe; }; still_notice\")\" = auto ]"
 fresh; ru menu_graphics 5 BACK BACK
-check "W2 item 5 opens choice screen: state, three states named, Back writes nothing" "grep -q '^MENU Still-working notice|Still-working notice: auto' <<<\"\$OUT\" && grep -q 'compiling shaders, loading, or not responding' <<<\"\$OUT\" && grep -q '1 Auto 2 On 3 Off' <<<\"\$OUT\" && [ -z \"\$(key STILL_NOTICE)\" ] && [ \$(grep -c '^MENU Graphics' <<<\"\$OUT\") = 2 ]"
+check "W2 item 5 opens choice screen: state, three states named, Back writes nothing" "grep -q '^MENU Still-working notice|Still-working notice: auto' <<<\"\$OUT\" && grep -q 'compiling shaders, loading, or idle (own launcher window waiting' <<<\"\$OUT\" && grep -q '1 Auto 2 On 3 Off' <<<\"\$OUT\" && [ -z \"\$(key STILL_NOTICE)\" ] && [ \$(grep -c '^MENU Graphics' <<<\"\$OUT\") = 2 ]"
 check "W2 screen text fits 66 columns" "! sed -n '/^MENU Still-working notice/,/^MENU Graphics/p' <<<\"\$OUT\" | grep -v '^MENU' | sed 's/|1 Auto 2 On 3 Off\$//' | awk 'length > 66' | grep -q ."
 fresh; ru graphics_still_notice 3
 check "W3 choice Off: STILL_NOTICE=off written, message" "[ \"\$(key STILL_NOTICE)\" = off ] && grep -q '^MSG Graphics|Still-working notice: off. Applies at next start of Steam ARM.' <<<\"\$OUT\""

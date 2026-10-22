@@ -52,7 +52,8 @@ gr(){ rm -f "$T"/*-calls.log "$T/l.log"
   OUT=$( ( export T; ARMHOME=$T/arm S=$T/arm/Steam LOG=$T/l.log CLIENT=${CL:-arm64} GAMEENV=STEAM_ARM_VK_SPOOF=1 PERF=${PERF:-1}
     lwarn(){ echo "WARN $*"; }; llog(){ :; }; stop(){ echo "STOP $1"; exit 1; }
     client_running(){ [ "${RUNNING:-0}" = 1 ]; }
-    . "$G.2"; echo "GAMEENV=$GAMEENV"; echo "GAMEENV0=$GAMEENV0"; echo "PERFDIR=$PERFDIR"; echo REACHED ) 2>&1 ); }
+    pgrep(){ echo "pgrep $*" >> "$T/pgrep-calls.log"; [ "${WATCHING:-0}" = 1 ]; }
+    . "$G.2"; echo "GAMEENV=$GAMEENV"; echo "GAMEENV0=$GAMEENV0"; echo "PERFDIR=$PERFDIR"; echo "GFXOK=$GFXOK"; echo REACHED ) 2>&1 ); }
 gr
 check "G1 on: helper env with client home cache folder; lines appended to game lines" "grep -qx \"env $T/arm/.cache/steam-arm/perf\" $T/perf-calls.log && grep -qx 'GAMEENV=STEAM_ARM_VK_SPOOF=1 VK_LOADER_LAYERS_ENABLE=VK_LAYER_MESA_overlay GALLIUM_HUD=frametime' <<<\"\$OUT\" && grep -qx 'GAMEENV0=STEAM_ARM_VK_SPOOF=1' <<<\"\$OUT\""
 check "G1 native client: game environment file gets all lines" "grep -qx \"gfx $T/arm/Steam STEAM_ARM_VK_SPOOF=1 VK_LOADER_LAYERS_ENABLE=VK_LAYER_MESA_overlay GALLIUM_HUD=frametime\" $T/entry-calls.log && grep -q REACHED <<<\"\$OUT\""
@@ -70,6 +71,16 @@ check "G6 Steam running: foreground watch with folder and log, then exit (no cli
 check "G6 exit puts game environment file back without readout lines" "[ \"\$(tail -1 $T/entry-calls.log)\" = \"gfx $T/arm/Steam STEAM_ARM_VK_SPOOF=1\" ]"
 RUNNING=1 GFX_RC=1 gr
 check "G7 Steam running, file not usable: stop names restart with option" "grep -q '^STOP Frame pacing readout needs Steam started with it' <<<\"\$OUT\" && ! grep -q '^watch' $T/perf-calls.log"
+
+# start while Steam runs (steam:// link through xdg-open runs launcher): readout lines of another launcher stay
+RUNNING=1 PERF=0 WATCHING=1 gr
+check "G8 Steam running, readout watcher of this account: file left alone, no export, start continues" "[ ! -f $T/entry-calls.log ] && grep -qx 'GFXOK=1' <<<\"\$OUT\" && grep -q REACHED <<<\"\$OUT\" && grep -q -- \"-u \$(id -u) -f steam-arm-perf.py watch\" $T/pgrep-calls.log"
+RUNNING=1 PERF=0 WATCHING=0 gr
+check "G9 Steam running, no readout watcher: block rewritten without readout lines" "[ \"\$(cat $T/entry-calls.log)\" = \"gfx $T/arm/Steam STEAM_ARM_VK_SPOOF=1\" ]"
+RUNNING=0 PERF=0 WATCHING=1 gr
+check "G10 Steam not running (stale watcher): block rewritten" "[ \"\$(cat $T/entry-calls.log)\" = \"gfx $T/arm/Steam STEAM_ARM_VK_SPOOF=1\" ]"
+CL=x86 RUNNING=1 PERF=0 WATCHING=1 gr
+check "G11 x86 client: no file check, exports as before" "grep -qx 'GFXOK=0' <<<\"\$OUT\" && grep -q REACHED <<<\"\$OUT\""
 
 # --- watcher start, exit cleanup ---
 check "W1 1 s watcher: one game look per second shared by display mode restore and notice" "grep -q '^( n=0; while sleep 1; do entry_check; fex_check; GPID=; { mode_ok || \[ \"\$STILL\" = 1 \]; } && GPID=\$(game_pid)\$' $L && grep -q '^  mode_watch; still_watch;' $L"
@@ -121,7 +132,7 @@ check "N3 first frame: notice closed, log lines, no terminal line with notice se
 DISP=1 PD=$T/pf LINES='frame\n' sr
 check "N4 frame before any state: nothing shown, nothing logged; readout folder passed" "[ -z \"\$NL\" ] && [ -z \"\$OUT\" ] && grep -q -- \"--perf $T/pf\" $T/still-args.log"
 DISP='' LINES='state stuck 31\ngone\n' sr
-check "N5 headless: terminal lines for state and end, no notice" "grep -q '^steam-arm: No frame for 31 s: game not responding' <<<\"\$OUT\" && grep -qx 'steam-arm: Game ended.' <<<\"\$OUT\" && ! grep -q NOTICE <<<\"\$NL\""
+check "N5 headless: terminal lines for state and end, no notice" "grep -q '^steam-arm: No frame for 31 s: game idle (no CPU use, or waiting on disk, for 10 s or more): own launcher or settings window waiting for input, or not responding' <<<\"\$OUT\" && grep -qx 'steam-arm: Game ended.' <<<\"\$OUT\" && ! grep -q NOTICE <<<\"\$NL\""
 DISP=1 NOSVC=1 LINES='state loading 20\nnosignal\n' sr
 check "N6 display without notice service: terminal lines" "grep -q '^steam-arm: No frame for 20 s: loading' <<<\"\$OUT\" && grep -qx 'steam-arm: No frame signal; notice closed.' <<<\"\$OUT\""
 DISP=1 NOCLOSE=1 LINES='state loading 20\nframe\n' sr
