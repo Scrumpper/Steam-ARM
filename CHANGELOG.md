@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [3.1] - Unreleased
+## [3.1] - 2026-10-21
 
 ### Added
 
@@ -51,12 +51,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - x86 client FEX app settings gain `SilentLog` 1 in `steamwebhelper.json`, `exe.json` and `steam.json` (FEX-2603 names its logging as `steamwebhelper` crash cause; nothing reads those logs); `steam.json` exists with that key alone when reduced x87 precision is off.
 - Lighter client window on CPUs without LSE atomics also passes `-cef-disable-site-isolation` (one renderer process for store and library); `client-light off` removes it with rest.
 - Title setting `d3d=dxvk` on Raspberry Pi GPU families kept but not applied: DXVK needs `shaderInt64`, `robustBufferAccess2`, `textureCompressionBC`, `multiViewport` and `tessellationShader`, V3DV reports none; run proceeds through WineD3D with log line and notice. Direct3D screen says so.
-- Settings file keys `CLIENT_GPU`, `CEF_HANG_KILLS`, `CLIENT_TSO` (setup choices in backups; earlier versions skip them)
+- Settings file keys `CLIENT_GPU`, `CEF_HANG_KILLS`, `CLIENT_TSO` (setup choices in backups; earlier versions skip them).
 - Going back to earlier version (`upgrade --rollback`) removes `TSOEnabled` and `X87ReducedPrecision` keys from client FEX files first (earlier setup knows no such keys).
 - CPU report verdict: `gpu process exits` line printed once when count is 0; since-boot throttle bits get own line and no longer decide `next step` (current bits 0 to 3 do).
 - `VK_HOST` empty on `broadcom-vc4` (no Vulkan driver); GPU forwarding notice names `fex-emu-armv8.2` on `pi5`.
 - Client window watchers (experiment, restart counter, memory model guard) wait up to 90 s for client process before treating its absence as exit; earlier trial could end `failed:client-exited` before client started.
-- Experiment `lab-cef-gpu gl`: OpenGL 4.5 report set for client window no longer reaches games started in that session (handler drops it).; machine state key `VK_HOST`. `mesa_host` takes first package instance on multiarch hosts.
+- Experiment `lab-cef-gpu gl`: OpenGL 4.5 report set for client window no longer reaches games started in that session (handler drops it).
+- Machine state key `VK_HOST`. `mesa_host` takes first package instance on multiarch hosts.
 
 ## [3.0] - 2026-10-16
 

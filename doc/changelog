@@ -1,4 +1,4 @@
-steam-arm-setup (3.1) UNRELEASED; urgency=low
+steam-arm-setup (3.1) stable; urgency=low
 
   * Upgrade to newest release from settings menu (Maintenance) or
     steam-arm-config upgrade: zip and .sha256 from GitHub over HTTPS,
@@ -60,8 +60,20 @@ steam-arm-setup (3.1) UNRELEASED; urgency=low
     Raspberry Pi GPUs (five Vulkan features missing), WineD3D used.
   * Component pi-governor (off by default): governor performance while
     Steam runs on Raspberry Pi boards.
+  * Frame pacing readout, off by default (steam-arm --perf-stats):
+    frame interval p50, p95, p99 and maximum per frame source every
+    5 s, from Mesa overlay layer (Vulkan) and Gallium HUD dump
+    (OpenGL); steam:// starts included; hardware report section.
+  * Still-working notice: game with no frame 20 s after start gets one
+    notice (compiling shaders, loading or idle), closed on first frame;
+    kernel without per-process GPU time and readout off: no notice.
+  * Display mode restore after game also covers KDE Plasma Wayland
+    sessions (kscreen-doctor).
+  * Setup stopped during version change prints recovery command
+    installed menu offers; restore of unfinished change recorded as
+    restore.
 
- -- Scrumpper <Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 00:00:00 +0000
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 00:00:00 +0000
 
 steam-arm-setup (3.0) stable; urgency=low
 
