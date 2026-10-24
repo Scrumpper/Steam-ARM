@@ -58,6 +58,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Client window watchers (experiment, restart counter, memory model guard) wait up to 90 s for client process before treating its absence as exit; earlier trial could end `failed:client-exited` before client started.
 - Experiment `lab-cef-gpu gl`: OpenGL 4.5 report set for client window no longer reaches games started in that session (handler drops it).
 - Machine state key `VK_HOST`. `mesa_host` takes first package instance on multiarch hosts.
+- COMPATIBILITY.md, GPU families: Panthor GPU job timeouts with Windows titles; Wayland compositor resets its GPU context (short freezes), X11 session advised.
 
 ## [3.0] - 2026-10-16
 

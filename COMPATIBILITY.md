@@ -121,6 +121,12 @@ excluded; 32-bit Vulkan titles switch to it on `mali-csf-v10` only, since PanVK 
 default only there <https://docs.mesa3d.org/drivers/panfrost.html>. On other families
 those titles lose `-vulkan` unless profile says `vk32=keep`.
 
+**Panthor GPU job timeouts with Windows titles.** Windows titles (Proton, DXVK) on Panthor
+kernel driver with Mesa PanVK log GPU job timeouts in kernel log. X11 session: no visible
+effect, title keeps running. Wayland session: compositor loses GPU context and resets it,
+screen freezes for short periods while title runs. Play Windows titles in X11 session on
+Panthor GPUs. Titles built for Linux not affected. Cause open.
+
 ## Component scope
 
 | Component                                                 | Scope         | Note                                                                                                       |
