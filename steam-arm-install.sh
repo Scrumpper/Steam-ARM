@@ -17738,23 +17738,28 @@ if __name__ == "__main__":
     main(sys.argv[1:])
 ABPY
 chmod 644 /usr/local/lib/steam-arm-autobuild.py
-# Steam Deck category of a title for the settings menu Games screen (read only).
+# Steam Deck and Steam Frame ratings of a title for the settings menu Games screen and run report (read only).
 cat > /usr/local/lib/steam-arm-appinfo.py <<'AIPY'
 #!/usr/bin/env python3
-"""steam-arm-appinfo APPINFO.VDF APPID...: Steam Deck category and runtime of titles from client's appinfo cache.
+"""steam-arm-appinfo APPINFO.VDF APPID...: Steam Deck and Steam Frame ratings of titles from client's appinfo cache.
 
-Prints "<appid>\t<deck>\t<frame>\t<runtime>" per requested title; deck: Verified, Playable, Unsupported or unknown;
-runtime: Steam Deck recommended_runtime (native, proton-...) or unknown. Frame: unknown until its key is known.
+Prints "<appid>\t<deck>\t<frame>\t<runtime>\t<frame_runtime>\t<frame_tokens>\t<oslist>\t<frame_tested>" per requested
+title. deck, frame: Verified, Playable, Unsupported or unknown; runtime, frame_runtime: recommended_runtime of Steam Deck
+and Steam Frame blocks (native, proton-..., lepton-...) or unknown; frame_tokens: Frame test result tokens without
+"#SteamFrame_TestResult_" prefix, comma-joined in Valve's order, "-" when none; oslist: common/oslist or unknown;
+frame_tested: Frame test_timestamp as UTC date YYYY-MM-DD or unknown.
 Read only; any read or format problem gives unknown, exit status 0."""
 import os
+import re
 import struct
 import sys
 import time
 
 MAGIC = {0x07564428: 40, 0x07564429: 41}
 CATEGORY = {1: "Unsupported", 2: "Playable", 3: "Verified"}
-# appinfo key of Steam Frame rating; None until confirmed, Frame then stays unknown
-FRAME_KEY = None
+# appinfo key of Steam Frame rating (same category values as Steam Deck)
+FRAME_KEY = "steam_frame_compatibility"
+TOKEN_PREFIX = "#SteamFrame_TestResult_"
 MAX_SIZE = 512 << 20
 MAX_TIME = 2.0
 FIXED = 60
@@ -17857,22 +17862,62 @@ def lookup(path, want):
     return found
 
 
-def hint(sec):
-    root = sec.get("appinfo") if isinstance(sec.get("appinfo"), dict) else sec
-    common = root.get("common") if isinstance(root.get("common"), dict) else {}
-    deck = common.get("steam_deck_compatibility")
-    cat, rt, frame = "unknown", "unknown", "unknown"
-    if isinstance(deck, dict):
-        c = deck.get("category")
-        cat = CATEGORY.get(c, "unknown") if isinstance(c, int) else "unknown"
-        cfg = deck.get("configuration")
+def as_int(v):
+    """int of binary int or digit string (web PICS form), else None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    return int(v) if isinstance(v, str) and v.isdigit() else None
+
+
+def rating(block):
+    """(category, recommended_runtime) of one compatibility block; unknown where absent or malformed."""
+    cat, rt = "unknown", "unknown"
+    if isinstance(block, dict):
+        cat = CATEGORY.get(as_int(block.get("category")), "unknown")
+        cfg = block.get("configuration")
         r = cfg.get("recommended_runtime") if isinstance(cfg, dict) else None
         if isinstance(r, str) and r and r.replace("-", "").replace("_", "").replace(".", "").isalnum():
             rt = r
-    if FRAME_KEY and isinstance(common.get(FRAME_KEY), dict):
-        c = common[FRAME_KEY].get("category")
-        frame = CATEGORY.get(c, "unknown") if isinstance(c, int) else "unknown"
-    return cat, frame, rt
+    return cat, rt
+
+
+def tokens(block):
+    """Frame test result tokens in index order, prefix removed, letters, digits and _ kept; "-" when none."""
+    tests = block.get("tests") if isinstance(block, dict) else None
+    if not isinstance(tests, dict):
+        return "-"
+    out = []
+    for k in sorted(tests, key=lambda x: (as_int(x) is None, as_int(x) or 0, x)):
+        t = tests[k].get("token") if isinstance(tests[k], dict) else None
+        if isinstance(t, str):
+            t = re.sub(r"[^A-Za-z0-9_]", "", t[len(TOKEN_PREFIX):] if t.startswith(TOKEN_PREFIX) else t)
+            if t:
+                out.append(t)
+    return ",".join(out) or "-"
+
+
+def tested(block):
+    """Frame test_timestamp as UTC date, unknown when absent or out of range."""
+    ts = as_int(block.get("test_timestamp")) if isinstance(block, dict) else None
+    if ts is None or not 0 < ts < 1 << 40:
+        return "unknown"
+    try:
+        return time.strftime("%Y-%m-%d", time.gmtime(ts))
+    except (OverflowError, ValueError, OSError):
+        return "unknown"
+
+
+def hint(sec):
+    root = sec.get("appinfo") if isinstance(sec.get("appinfo"), dict) else sec
+    common = root.get("common") if isinstance(root.get("common"), dict) else {}
+    cat, rt = rating(common.get("steam_deck_compatibility"))
+    fblock = common.get(FRAME_KEY)
+    frame, frt = rating(fblock)
+    osl = common.get("oslist")
+    osl = re.sub(r"[^a-z,]", "", osl.lower()) if isinstance(osl, str) else ""
+    return cat, frame, rt, frt, tokens(fblock), osl or "unknown", tested(fblock)
 
 
 def main(a):
@@ -17885,7 +17930,11 @@ def main(a):
     except (OSError, Bad, struct.error, ValueError, IndexError, MemoryError):
         found = {}
     for appid in want:
-        print("%s\t%s\t%s\t%s" % ((appid,) + hint(found.get(appid, {}))))
+        try:
+            f = hint(found.get(appid, {}))
+        except (AttributeError, TypeError, ValueError):
+            f = ("unknown",) * 4 + ("-", "unknown", "unknown")
+        print("\t".join((appid,) + f))
 
 
 if __name__ == "__main__":
