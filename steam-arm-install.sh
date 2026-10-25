@@ -236,6 +236,7 @@ FEXPPA="ppa:fex-emu/fex"
 # Debian: same PPA as plain apt source; key pinned to Launchpad's signing_key_fingerprint for the PPA.
 FEXPPA_URI=https://ppa.launchpadcontent.net/fex-emu/fex/ubuntu
 FEXPPA_FPR=EDB98BFE8A2310DC9C4A376E76DBFEBEA206F5AC
+FEX_PPA_CURRENT=2610   # newest FEX build (YYMM) in FEX's PPA; Launchpad publishes per Ubuntu series, some lag
 FEXSRC=/etc/apt/sources.list.d/steam-arm-fex.sources
 FEXKEY=/etc/apt/keyrings/steam-arm-fex.gpg
 # Ubuntu family: add-apt-repository maps the PPA to its own series; elsewhere it maps to the Debian codename, which the PPA lacks.
@@ -9111,6 +9112,10 @@ else
   [ -z "$FEX_MISS" ] || die "FEX packages not offered by this system's package sources: ${FEX_MISS% }
        Install FEX from another source with its x86 binfmt entries (FEX's InstallFEX.py or
        build guide: https://github.com/FEX-Emu/FEX), then run this again."
+  # candidate behind PPA's newest build: host FEX only (Remote Play, thunks); titles use Valve's FEX tool
+  FEX_CAND=$(LC_ALL=C apt-cache policy "$FEXPKG" 2>/dev/null | sed -n 's/^  Candidate: //p' | head -n 1)
+  FEX_CAND_YM=${FEX_CAND#*:}; FEX_CAND_YM=${FEX_CAND_YM%%[^0-9]*}
+  case $FEX_CAND_YM in [0-9][0-9][0-9][0-9]) [ "$FEX_CAND_YM" -lt "$FEX_PPA_CURRENT" ] && warn "FEX package source offers FEX $FEX_CAND for this distribution release; FEX $FEX_PPA_CURRENT builds exist there for other Ubuntu releases. Host FEX serves Remote Play and thunk libraries; titles use Valve's FEX tool from Steam and are unaffected.";; esac
 fi
 wait_apt; apt-get install -y $FEXPKGS $HOSTPKGS \
   || die "host packages did not install (apt-get install failed; its message is above). $NETHINT If it reports packages it cannot find, this distribution release lacks them; README, Requirements names supported releases."
