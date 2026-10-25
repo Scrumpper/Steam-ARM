@@ -372,8 +372,15 @@ Status: researched; test system runs 26.1.4.
   (conditional rendering, mutable descriptor type, memory budget, attachment feedback
   loop, shader stencil export); recommended floor for Proton titles
   <https://christian-gmeiner.info/2026-04-20-panvk-extensions/>.
-- 26.2.x: further extensions; 26.2.3 (2026-09-16) is newest bugfix release at time of
-  writing <https://docs.mesa3d.org/relnotes/26.2.3.html>.
+- 26.2.x: further extensions; 26.2.5 (2026-10-14) is newest bugfix release as of
+  2026-10-24; 26.2.4 and 26.2.5 carry PanVK CSF and `GetInstanceProcAddr` fixes
+  <https://docs.mesa3d.org/relnotes/26.2.5.html>.
+- 26.3 (rc2 2026-10-21, final due 2026-11-04): Vulkan 1.3 on PanVK v6 and v7,
+  `VK_KHR_maintenance4` to `maintenance8`, cooperative matrix, copy memory indirect, shader
+  constant data, incremental present, swapchain colorspace, image compression control;
+  Panfrost support for Mali-G68, G715 and G615. No transform feedback and no geometry
+  shaders (M5, M8)
+  <https://gitlab.freedesktop.org/mesa/mesa/-/raw/staging/26.3/docs/relnotes/new_features.txt>.
 
 What to change: check version with `glxinfo -B`. Newer Mesa for Ubuntu family comes from
 kisak-mesa PPA (test system's source) or ernstp/mesarc PPA
@@ -395,6 +402,9 @@ UE4 title failed for this reason in Armbian community forum topic 55217; forum
 thread tracks it as open Mesa merge request 38401. With `vk-spoof`, feature is reported
 present and removed at device creation, so such title gets device and then misrenders,
 crashes or hangs instead of refusing to start.
+
+Checked 2026-10-24: MR 38401 remains draft; MR 44118 (experimental geometry shader
+support, opened 2026-10-22) is open; neither is in Mesa 26.3.
 
 What to change: none. No setting adds geometry shaders.
 
@@ -445,6 +455,11 @@ fall under same limits (E2).
 Open Mesa merge requests cover geometry shaders (38401, 44118), transform feedback (43359)
 and clip and cull distance (40343, 43156); none covers tessellation, and none has merge
 date <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/43359>.
+
+Checked 2026-10-24 on GitLab: transform feedback MR 43359 open (opened 2026-08-01);
+geometry shaders MR 38401 draft; MR 44118, experimental geometry shader support, opened
+2026-10-22; `shaderClipDistance` MR 40343 opened 2026-10-22; `shaderCullDistance` MR 43156
+open. None merged for Mesa 26.3 (rc2 2026-10-21), so blockers stand.
 
 What to change: none. Direct3D 12 titles do not run on Mali.
 
