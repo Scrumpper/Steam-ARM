@@ -76,6 +76,8 @@ steam-arm-setup (3.1) stable; urgency=low
     (category, recommended runtime), Rules page (runtime) and run report
     (category, runtime, test result tokens, test date), from client's
     appinfo cache.
+  * Run report row Class: Android-only, VR-only or Lepton route title
+    from Steam Frame columns of appinfo cache; 2D titles get no row.
 
  -- Scrumpper <Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 00:00:00 +0000
 

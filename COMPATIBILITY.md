@@ -314,6 +314,11 @@ such guest, emulation fails. Untested.
 
 **Hardware with no 64-bit ARM support**, which is excluded by architecture itself.
 
+**Android-only Steam titles and VR titles.** Android builds run through Lepton runtime and VR
+titles need VR runtime; both are Steam Frame components, not present on this stack, on any
+GPU family. Run report names class in row `Class` (Android-only title, VR-only title, Lepton
+route title); 2D titles get no row.
+
 ## What decides it, in practice
 
 **Which Mali driver OS image includes.** On Rockchip boards two stacks exist: open one,

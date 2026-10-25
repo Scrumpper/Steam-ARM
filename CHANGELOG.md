@@ -38,6 +38,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Per-title memory model: title with `tso=off` whose last two recorded runs (run history on for that title) ended crash or hang (or without verdict under 60 s) runs strict for one start (start record `tso=off:strict`, log and notice; run that ends well re-arms it). End hint on slow emulation class: title that kept all cores busy for 120 s or more while drawing on GPU, without `tso=off`, raises one notice naming per-title emulation settings; nothing applied.
 - Run record reason `vk32-cpu` for 32-bit title that keeps `-vulkan` on forwarding (`vk32=keep`; Vulkan on lavapipe).
 - Steam Frame rating beside Steam Deck hint: settings menu Game header names Frame category and Frame recommended runtime from `steam_frame_compatibility` in client's `appcache/appinfo.vdf` (hint only: other GPU); Rules page adds Steam Frame runtime; run report, Upstream fields, lists Frame category, runtime, test result tokens and test date when known; reader prints Frame runtime, test tokens, `oslist`, test date and VR class (`only`, `supported`, `none`) as added columns, earlier columns unchanged.
+- Run report row `Class` after Upstream fields: Android-only title (`oslist` android: Lepton runtime, no Linux or Windows build), VR-only title (VR runtime absent) or Lepton route title, from Steam Frame columns of client's appinfo cache; 2D titles and unknown cache get no row. COMPATIBILITY, Out of scope, names both classes.
 
 ### Changed
 

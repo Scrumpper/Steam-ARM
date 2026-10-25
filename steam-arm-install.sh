@@ -4679,6 +4679,19 @@ rr_upstream(){
   [ -n "$fdate" ] && [ "$fdate" != unknown ] && printf '%-15s %s\n' "Frame tested" "$fdate"
   return 0
 }
+# rr_class APPID: title class from appinfo reader (Frame runtime, oslist, vr columns); no row for 2D titles or unread cache.
+rr_class(){
+  local rt os vr
+  IFS=$'\t' read -r _ _ _ _ rt _ os _ vr <<<"$(appinfo_line "$1")"
+  if [ "$os" = android ]; then
+    rr_row Class "Android-only title: needs Lepton runtime, not available outside Steam Frame; no Linux or Windows build to run"
+  elif [ "$vr" = only ]; then
+    rr_row Class "VR-only title: needs VR runtime (Steam Frame or SteamVR component), not present on this stack"
+  elif [ "$rt" = lepton-stable ]; then
+    rr_row Class "Lepton route title: Steam Frame runs its Android build through Lepton, not present here; Windows or Linux build starts instead"
+  fi
+  return 0
+}
 # rr_outcome START END: kernel lines, core dump lines, resources (read-only; never signals a process).
 rr_outcome(){
   local s=$1 e=$2 k t
@@ -4805,6 +4818,7 @@ rr_make(){
     [ -n "$(rr_v handler)" ] && [ "$(rr_v handler)" != none ] && printf '%-15s %s\n' Handler "$(rr_v handler)"
     echo; echo "## Upstream fields"; echo
     rr_upstream "$app" "$eng"
+    rr_class "$app"
     echo; echo "## Knobs"; echo
     sed -n 's/^K //p' <<<"$raw" | grep . || echo "(no handler lines for this start)"
     echo; echo "## Outcome"; echo
