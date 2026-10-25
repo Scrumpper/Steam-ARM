@@ -754,7 +754,8 @@ game picks one. None is installed by default.
 Command line: `sudo bash steam-arm-install.sh --keep --mesa-extra=<version>[,<version>]`,
 plus `--mesa-extra-file=<archive>` for local copy (version read from its SHA-256, added to
 list); `--mesa-extra=` removes every extra tree. Version list is fixed in installer and
-pinned by SHA-256; no online list.
+pinned by SHA-256; no online list. Each listed version carries SHA-256 of its archive;
+versions without published archive (26.2.5 of 2026-10-14 and later) are not listed.
 
 Rules at game start (handler log line `mesa:` or `graphics: Mesa <version> drivers in
 emulation`):
