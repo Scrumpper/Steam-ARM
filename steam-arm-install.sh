@@ -4003,16 +4003,24 @@ menu_graphics(){
 # ===========================================================================
 # 5. Games
 # ===========================================================================
-# Steam Deck category and runtime of one title ("deck<TAB>runtime") from client's appinfo cache; read as game account.
-deck_hint(){
+# Reader line of one title from client's appinfo cache (8 columns, see steam-arm-appinfo.py), read as game account; empty when unread.
+appinfo_line(){
   local f o=""; f="$(steam_dir)/appcache/appinfo.vdf"
   [ -f "$SA_APPINFO_PY" ] && o=$(game_read timeout 3 python3 "$SA_APPINFO_PY" "$f" "$1" 2>/dev/null </dev/null)
-  o=$(awk -F'\t' -v id="$1" '$1 == id { print $2 "\t" $4; exit }' <<<"$o")
-  printf '%s\n' "${o:-unknown	unknown}"
+  awk -F'\t' -v id="$1" '$1 == id { print; exit }' <<<"$o"
 }
-deck_line(){ echo "Steam Deck: $(cut -f1 <<<"$1") (hint only: Steam Deck has other GPU)."; }
+# Steam Deck and Steam Frame hint of one title: "deck<TAB>deck runtime<TAB>frame<TAB>frame runtime"; unknown where unread.
+deck_hint(){
+  local o; o=$(appinfo_line "$1" | awk -F'\t' '{ for (i = 2; i <= 5; i++) if ($i == "") $i = "unknown"; print $2 "\t" $4 "\t" $3 "\t" $5 }')
+  printf '%s\n' "${o:-unknown	unknown	unknown	unknown}"
+}
+deck_line(){
+  local f r; f=$(cut -f3 <<<"$1"); r=$(cut -f4 <<<"$1")
+  [ -n "$r" ] && [ "$r" != unknown ] && r=", runtime $r" || r=""
+  echo "Steam Deck: $(cut -f1 <<<"$1"). Steam Frame: ${f:-unknown}$r (hint only: other GPU, not a promise for this device)."
+}
 game_rules(){
-  local id=$1 f
+  local id=$1 f h
   if f=$(game_fexlog "$id"); then
     echo "Last start of this game ($(date -r "$f" '+%F %H:%M' 2>/dev/null)):"
     echo
@@ -4023,7 +4031,9 @@ game_rules(){
   fi
   echo
   echo "Profile: $(tc_effective "$id" | tr '\n' ' ' | trim)"
-  echo "Steam Deck runtime: $(deck_hint "$id" | cut -f2)"
+  h=$(deck_hint "$id")
+  echo "Steam Deck runtime: $(cut -f2 <<<"$h")"
+  echo "Steam Frame runtime: $(cut -f4 <<<"$h")"
 }
 game_set(){ self_root profile "$1" "$2=$3"; }
 # How a game runs: windows (Proton mapped, Windows build installed, or Proton prefix in compatdata), linux (other tool mapped), unknown.
@@ -4651,9 +4661,9 @@ rr_proton(){
   elif [ -n "$(rr_v steam_route)" ]; then echo "none (Linux build)"
   else echo "unknown (no start line in Steam's log)"; fi
 }
-# rr_upstream APPID ENGINE: fields of the FEX, Proton and Steam client issue templates.
+# rr_upstream APPID ENGINE: fields of the FEX, Proton and Steam client issue templates; Steam Frame rating rows when known.
 rr_upstream(){
-  local v
+  local v fc frt ftok fdate
   # shellcheck disable=SC2016
   v=$(rr_read sh -c 'sed -n "s/^[[:space:]]*\"version\"[[:space:]]*\"\([0-9]*\)\".*/\1/p" "$1"/package/steam_client_*.manifest' sh "$(steam_dir)" | head -1)
   printf '%-15s %s\n' OS "$(distro)" Kernel "$(uname -r)" CPU "$(cpu_info)" GPU "$(gpu_name) ($(gpu_family))" \
@@ -4662,6 +4672,12 @@ rr_upstream(){
     "Steam client" "${v:-unknown} ($(client_label), $(client_channel_full))" \
     "FEX tool" "$(fex_tool_row)" "FEX (system)" "$(fex_ver)" "RootFS" "$( [ -d "$SA_RFS" ] && basename "$SA_RFS" || echo none)" \
     "Executable" "${2:-not detected}" "Proton" "$(rr_proton "$1")"
+  IFS=$'\t' read -r _ _ fc _ frt ftok _ fdate <<<"$(appinfo_line "$1")"
+  [ -n "$fc" ] && [ "$fc" != unknown ] && printf '%-15s %s\n' "Steam Frame" "$fc (Valve's rating for Steam Frame; hint only on this device)"
+  [ -n "$frt" ] && [ "$frt" != unknown ] && printf '%-15s %s\n' "Frame runtime" "$frt"
+  [ -n "$ftok" ] && [ "$ftok" != - ] && printf '%-15s %s\n' "Frame tests" "${ftok//,/, }"
+  [ -n "$fdate" ] && [ "$fdate" != unknown ] && printf '%-15s %s\n' "Frame tested" "$fdate"
+  return 0
 }
 # rr_outcome START END: kernel lines, core dump lines, resources (read-only; never signals a process).
 rr_outcome(){

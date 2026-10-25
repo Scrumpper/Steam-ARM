@@ -228,6 +228,23 @@ check "C7 backup: RUN_HISTORY a setup key with on/off check" "grep -q V1 <<<\"\$
 OUT=$(sh_ "main report </dev/null | head -3")
 check "C8 plain report unchanged: hardware report" "grep -q '^Steam ARM hardware report' <<<\"\$OUT\""
 
+# ---------------- F Steam Frame rows (3.1): reader stub, rows only when known ----------------
+cat > "$T/ai.py" <<EOF
+import sys
+for a in sys.argv[2:]:
+    print(a + "\t" + open("$T/ai-out").read().strip() if a == "100" else a + "\tunknown\tunknown\tunknown\tunknown\t-\tunknown\tunknown")
+EOF
+printf 'Verified\tPlayable\tnative\tproton-stable\tDefaultConfigurationIsNotPerformant,InterfaceTextIsLegible\twindows,linux\t2026-09-01\n' > "$T/ai-out"
+OUT=$(sh_ "SA_APPINFO_PY=$T/ai.py; rr_make 100 0 $T/rep.md"); REP=$(cat "$T/rep.md")
+check "F1 Upstream fields: Steam Frame category row with hint note, after Proton row" "grep -q '^Steam Frame  *Playable (Valve.s rating for Steam Frame; hint only on this device)\$' <<<\"\$REP\" && [ \"\$(grep -nE '^(Proton|Steam Frame) ' <<<\"\$REP\" | cut -d: -f1 | tr '\n' ' ')\" = \"\$(grep -nE '^(Proton|Steam Frame) ' <<<\"\$REP\" | cut -d: -f1 | sort -n | tr '\n' ' ')\" ]"
+check "F1 Frame runtime, Frame tests (comma and space), Frame tested rows" "grep -q '^Frame runtime  *proton-stable\$' <<<\"\$REP\" && grep -q '^Frame tests  *DefaultConfigurationIsNotPerformant, InterfaceTextIsLegible\$' <<<\"\$REP\" && grep -q '^Frame tested  *2026-09-01\$' <<<\"\$REP\""
+check "F1 Frame rows sit in Upstream fields section" "sed -n '/^## Upstream fields/,/^## Knobs/p' <<<\"\$REP\" | grep -q '^Steam Frame '"
+printf 'Verified\tunknown\tnative\tunknown\t-\tunknown\tunknown\n' > "$T/ai-out"
+OUT=$(sh_ "SA_APPINFO_PY=$T/ai.py; rr_make 100 0 $T/rep.md"); REP=$(cat "$T/rep.md")
+check "F2 Frame fields unknown: no Frame rows, Proton row kept" "! grep -qE '^(Steam Frame|Frame runtime|Frame tests|Frame tested) ' <<<\"\$REP\" && grep -q '^Proton ' <<<\"\$REP\""
+OUT=$(sh_ "SA_APPINFO_PY=$T/none.py; rr_make 100 0 $T/rep.md"); REP=$(cat "$T/rep.md")
+check "F3 reader missing: no Frame rows, report still made" "! grep -q '^Steam Frame ' <<<\"\$REP\" && grep -q '^## Knobs' <<<\"\$REP\""
+
 # ---------------- B4 issue templates ----------------
 TD=$(dirname "$SARM_INST")/.github/ISSUE_TEMPLATE
 for f in bug_report.yml compatibility_report.yml; do

@@ -37,6 +37,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Setup block for x86 client on CPU without LSE names CPU-class expectation (client window on CPU, high CPU use while window is open), lighter window defaults, three levels (always on CPU, per title, experiments) with commands, `steam-arm --cpu-report`; Raspberry Pi line with host Mesa, Vulkan class and session type. One notice at first start in client home on that class (`STEAM_ARM_SLOW_HINT=0` skips it). Help page Raspberry Pi carries levels and Vulkan class per Raspberry Pi OS release.
 - Per-title memory model: title with `tso=off` whose last two recorded runs (run history on for that title) ended crash or hang (or without verdict under 60 s) runs strict for one start (start record `tso=off:strict`, log and notice; run that ends well re-arms it). End hint on slow emulation class: title that kept all cores busy for 120 s or more while drawing on GPU, without `tso=off`, raises one notice naming per-title emulation settings; nothing applied.
 - Run record reason `vk32-cpu` for 32-bit title that keeps `-vulkan` on forwarding (`vk32=keep`; Vulkan on lavapipe).
+- Steam Frame rating beside Steam Deck hint: settings menu Game header names Frame category and Frame recommended runtime from `steam_frame_compatibility` in client's `appcache/appinfo.vdf` (hint only: other GPU); Rules page adds Steam Frame runtime; run report, Upstream fields, lists Frame category, runtime, test result tokens and test date when known; reader prints Frame runtime, test tokens, `oslist` and test date as added columns, earlier columns unchanged.
 
 ### Changed
 
@@ -193,7 +194,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - x86 client: on RK3588 test device (x86 client chosen by hand) client reaches sign-in and library with private libX11 copy (X errors not fatal); no client exit on X error in 6 starts. 32-bit Windows titles through x86 Proton draw on CPU (llvmpipe): emulator has no 32-bit GL or Vulkan forwarding; 64-bit Windows titles reach GPU. Untested on Armv8.0 hardware: first start, sign-in and GPU use of titles not confirmed there.
 - FEX code cache (`diskcache=on`): setting covers runtime helper scripts of title start too; 2 of 11 starts with empty cache on FEX-2609.1 hung before game start. Off by default.
-- Steam Frame rating of titles not shown: appinfo key (`steam_frame_compatibility`, categories as Steam Deck) known since this release, display not built yet.
 - Linux build of 32-bit Source engine titles stuck at loading screen ignores Stop in Steam; desktop task manager (force quit) ends it.
 - Java (LWJGL 2) titles on Valve FEX tool FEX-2607: about half of first-start map loads still fail; cause lies in FEX.
 - 32-bit Source engine titles, native Linux build: Windows build set automatically only on `mali-csf-v10` with native ARM64 client, Valve FEX tool up to 2609 and `vk-spoof` chosen; other systems get suggestion in Graphics > Route per game.

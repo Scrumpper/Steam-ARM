@@ -247,7 +247,9 @@ Sections:
    remove-all only, with note to use Steam launch options; profiles reach Linux titles
    only. Header names Steam Deck category of game (Verified, Playable, Unsupported or
    unknown) from client's `appcache/appinfo.vdf`, as hint only, since Steam Deck has other
-   GPU; "Rules used at last start" adds Steam Deck runtime (`native` or Proton).
+   GPU; "Rules used at last start" adds Steam Deck runtime (`native` or Proton). Same header
+   names Steam Frame category and Frame runtime from Valve's Frame rating, hint only; run
+   report lists Frame category, runtime, test results and test date when known.
 6. Controllers: connected pads and their rules; `pad-xbox` on or off.
 7. Remote Play: settings state, how pairing works, apply settings now.
 8. Maintenance: Update / Repair (setup again with same parts), view logs, hardware
