@@ -116,6 +116,9 @@ steam-arm (launcher, desktop account only, refuses root)
 +- before client start, client closed: automatic Windows build rule
 |    (steam-arm-autobuild.py) sets Proton ARM64 for matching titles through
 |    steam-arm-compatmap.py, once per title
++- then, FRAME_RUNTIME=auto only: Valve Frame runtime (steam-arm-frameruntime.py)
+|    sets tool of titles with no tool chosen from Steam Frame recommended
+|    runtime in appinfo cache, once per title
 +- own fixes: drop signal of each read at start (steam-arm-entry.py patches,
 |    logged; --detect prints same lines): FEX tool version (thunk paths, code
 |    cache), launch wrapper stand-in (FEX tool edit), private GLX copy built

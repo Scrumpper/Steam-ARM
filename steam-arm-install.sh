@@ -1288,6 +1288,7 @@ SA_LAUNCHER=/usr/local/bin/steam-arm
 SA_COMPATMAP=/usr/local/bin/steam-arm-compatmap
 SA_COMPATMAP_PY=/usr/local/lib/steam-arm-compatmap.py
 SA_AUTOBUILD_PY=/usr/local/lib/steam-arm-autobuild.py
+SA_FRAMERT_PY=/usr/local/lib/steam-arm-frameruntime.py
 SA_APPINFO_PY=/usr/local/lib/steam-arm-appinfo.py
 SA_GE_PY=/usr/local/lib/steam-arm-geproton.py
 SA_AUTOTUNE_PY=/usr/local/lib/steam-arm-autotune.py
@@ -1886,6 +1887,7 @@ pi_summary(){
 still_notice(){ case "$(conf_get STILL_NOTICE)" in on) echo on;; off) echo off;; *) echo auto;; esac; }
 client_type(){ case "$(conf_get CLIENT)" in x86) echo x86;; *) echo arm64;; esac; }
 auto_build(){ case "$(conf_get AUTO_BUILD)" in off) echo off;; *) echo on;; esac; }
+frame_runtime(){ case "$(conf_get FRAME_RUNTIME)" in auto) echo auto;; *) echo off;; esac; }
 cpu_notice(){ case "$(conf_get CPU_NOTICE)" in on) echo on;; *) echo off;; esac; }
 x87_client(){ case "$(conf_get X87_CLIENT)" in on) echo on;; *) echo off;; esac; }
 client_light(){ case "$(conf_get CLIENT_LIGHT)" in off) echo off;; *) echo on;; esac; }
@@ -1923,6 +1925,9 @@ ab_app(){ ab_list | awk -F'\t' -v id="$1" -v f="${2:-3}" '$1 == "app" && $2 == i
 # Title class of a rule id, for example "32-bit Source engine".
 ab_what(){ ab_list | awk -F'\t' -v r="$1" '$1 == "rule" && $2 == r { print $6; exit }'; }
 ab_drop(){ [ -f "$SA_AUTOBUILD_PY" ] && acct_run "$(game_user)" python3 "$SA_AUTOBUILD_PY" drop "$(steam_dir)" "$1" </dev/null; }
+# Valve Frame runtime set by launcher for one title: "<runtime>\t<tool>\t<label>"; empty when not applied.
+fr_applied(){ [ -f "$SA_FRAMERT_PY" ] && game_read timeout 15 python3 "$SA_FRAMERT_PY" applied "$(steam_dir)" "$1" 2>/dev/null </dev/null; return 0; }
+fr_drop(){ [ -f "$SA_FRAMERT_PY" ] && acct_run "$(game_user)" python3 "$SA_FRAMERT_PY" drop "$(steam_dir)" "$1" </dev/null; }
 SA_NO_ROUTE_B="Route B (Mali drivers in emulation) needs a Mali GPU or a custom driver archive."
 SA_NO_MALI="Mali drivers in emulation are not installed (Components); games use forwarding until it is."
 # Warning after choosing route B on a Mali GPU without the tree.
@@ -3865,6 +3870,8 @@ Note: the client home file sets this game; it wins over this menu."
     suggest) sug=" (suggested)"; note="$note"$'\n'"Windows build suggested: $(ab_what "$(ab_app "$id" 4)") Linux build fails under emulation ($(ab_app "$id" 5)).";;
     pending) sug=" (suggested)"; note="$note"$'\n'"Windows build set at next start of Steam ARM: $(ab_app "$id" 5).";;
   esac
+  local fr; fr=$(fr_applied "$id")
+  [ -n "$fr" ] && note="$note"$'\n'"Set from Valve Frame recommendation ($(cut -f1 <<<"$fr")). Automatic lets it apply again."
   local -a items=(auto "Automatic (rules decide)$([ -z "$cur$map" ] && echo " *")" a "A: forwarding to host drivers$([ "$cur" = a ] && echo " *")")
   if route_b_ok; then items+=(b "B: Mali drivers in emulation$([ "$cur" = b ] && echo " *")")
   else
@@ -4005,6 +4012,30 @@ for games each second already; off elsewhere (no added cost)."
   [ "$c" = "$st" ] && return
   self_root still-notice "$c" && ui_msg "Graphics" "Still-working notice: $c. Applies at next start of Steam ARM."
 }
+graphics_frame_runtime(){
+  local st t
+  st=$(frame_runtime)
+  t="Valve Frame runtime: $st
+
+Auto: titles with Valve's Steam Frame recommended runtime get
+matching compatibility tool when Steam ARM starts, once per title,
+only when no tool is chosen (GE-Proton and own choices kept):
+  proton-stable: Proton ARM64 stable
+  proton-experimental: Proton ARM64 experimental
+  native: Linux build
+  lepton-stable: unchanged (no Lepton here)
+Off (default): Steam's own choice.
+Route per game shows and undoes each."
+  if [ "$st" = auto ]; then
+    ui_yesno "Valve Frame runtime" "$t
+
+Turning off keeps titles already set." "Turn off" Back defaultno || return
+    self_root frame-runtime off && ui_msg "Graphics" "Valve Frame runtime: off. Titles already set keep their tool; Route per game changes them."
+  else
+    ui_yesno "Valve Frame runtime" "$t" "Turn on" Back || return
+    self_root frame-runtime auto && ui_msg "Graphics" "Valve Frame runtime: auto. Applies at next start of Steam ARM."
+  fi
+}
 menu_graphics(){
   local c=""
   is_installed || { offer_install; return; }
@@ -4013,9 +4044,9 @@ menu_graphics(){
   while c=$(ui_menu "Graphics" "$intro" --default "$c" \
       1 "Default route (now: $(gfx_default_label "$(gfx_default)"))" 2 "Route per game" \
       3 "Automatic Windows build (now: $(auto_build))" 4 "CPU drawing notice (now: $(cpu_notice))" \
-      5 "Still-working notice (now: $(still_notice))"); do
+      5 "Still-working notice (now: $(still_notice))" 6 "Valve Frame runtime (now: $(frame_runtime))"); do
     case "$c" in 1) graphics_default;; 2) graphics_game;; 3) graphics_auto_build;; 4) graphics_cpu_notice;;
-      5) graphics_still_notice;; esac
+      5) graphics_still_notice;; 6) graphics_frame_runtime;; esac
   done
 }
 
@@ -4696,6 +4727,8 @@ rr_upstream(){
   IFS=$'\t' read -r _ _ fc _ frt ftok _ fdate _ <<<"$(appinfo_line "$1")"
   [ -n "$fc" ] && [ "$fc" != unknown ] && printf '%-15s %s\n' "Steam Frame" "$fc (Valve's rating for Steam Frame; hint only on this device)"
   [ -n "$frt" ] && [ "$frt" != unknown ] && printf '%-15s %s\n' "Frame runtime" "$frt"
+  frt=$(fr_applied "$1" | cut -f3)
+  [ -n "$frt" ] && printf '%-15s %s\n' "Runtime applied" "$frt (Valve Frame recommendation)"
   [ -n "$ftok" ] && [ "$ftok" != - ] && printf '%-15s %s\n' "Frame tests" "${ftok//,/, }"
   [ -n "$fdate" ] && [ "$fdate" != unknown ] && printf '%-15s %s\n' "Frame tested" "$fdate"
   return 0
@@ -4988,7 +5021,7 @@ sa_owned_paths(){
     /usr/local/bin/steam-arm-icon /usr/local/bin/steam-arm-tray /usr/local/bin/steam-arm-config \
     /usr/local/lib/steam-arm-handler.py /usr/local/lib/steam-arm-fexpatch.py /usr/local/lib/steam-arm-compatmap.py \
     /usr/local/lib/steam-arm-physx.py /usr/local/lib/steam-arm-kde-input /usr/local/lib/steam-arm-launchopts.py \
-    /usr/local/lib/steam-arm-autobuild.py /usr/local/lib/steam-arm-appinfo.py /usr/local/lib/steam-arm-geproton.py \
+    /usr/local/lib/steam-arm-autobuild.py /usr/local/lib/steam-arm-appinfo.py /usr/local/lib/steam-arm-geproton.py /usr/local/lib/steam-arm-frameruntime.py \
     /usr/local/lib/steam-arm-perf.py \
     /usr/local/lib/steam-arm-x86client.py /usr/local/lib/steam-arm-run.py /usr/local/lib/steam-arm-pv-bwrap \
     /usr/local/lib/steam-arm-python3 /usr/local/lib/steam-arm-entry.py /usr/local/lib/steam-arm-autotune.py \
@@ -6306,7 +6339,7 @@ SA_TUNED_RE='^([0-9]{1,10}( +(gfx=(a|b)|multiblock=(on|off)|gl32=off|glver=3\.3|
 # steam-arm.conf keys restored; every other key is machine state (GPU_FAMILY only when GPU_FAMILY_SET=user).
 SA_BK_KEYS="COMPONENTS_ON COMPONENTS_OFF COMPONENTS_USER_SET GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN X87_CLIENT CLIENT_LIGHT CLIENT_GPU CEF_HANG_KILLS CLIENT_TSO"
 SA_BK_NAME='[A-Za-z0-9_+-][A-Za-z0-9._+-]*'
-SA_BK_KEYS="$SA_BK_KEYS STILL_NOTICE"
+SA_BK_KEYS="$SA_BK_KEYS STILL_NOTICE FRAME_RUNTIME"
 part_label(){ case "$1" in
   setup) echo "Setup choices";; system-profiles) echo "System game profiles";;
   personal-profiles) echo "Personal game profiles";; compat-tools) echo "Proton/tool per game";;
@@ -6507,6 +6540,7 @@ rs_valid(){ case "$1" in
   CLIENT_TSO) case "$2" in strict|relaxed|"") return 0;; esac; return 1;;
   SNAPSHOT_KEEP) case "$2" in [1-5]|"") return 0;; esac; return 1;;
   STILL_NOTICE) case "$2" in on|off|auto|"") return 0;; esac; return 1;;
+  FRAME_RUNTIME) case "$2" in auto|off|"") return 0;; esac; return 1;;
   GPU_FAMILY) [[ "$2" =~ ^[a-z0-9-]+$ ]];;
   *) [[ "$2" =~ ^[a-z0-9,-]*$ ]];;
 esac; }
@@ -7463,10 +7497,15 @@ Commands
                             force Linux build or Windows build (Proton;
                             ge: newest installed GE-Proton build),
                             clear removes it (and record of automatic
-                            Windows build it matches); Steam must be closed
+                            Windows build or Valve Frame runtime it
+                            matches); Steam must be closed
   auto-build [on|off]       automatic Windows build for titles whose
                             Linux build fails under emulation; no value:
                             state, rules and titles set
+  frame-runtime [auto|off]  compatibility tool from Valve's Steam Frame
+                            recommended runtime for titles with no tool
+                            chosen (off by default); no value: state
+                            and titles
   cpu-notice [on|off]       desktop notice when an x86 game draws on CPU
                             (off by default); no value: state
   cpu-report [--quick] [--no-wait]
@@ -7608,7 +7647,9 @@ Files
                             SNAPSHOT_KEEP=1..5; UPDATE_CHECK_ON_OPEN=on|off;
                             X87_CLIENT=on|off; CLIENT_LIGHT=on|off;
                             CLIENT_GPU=on|off; CEF_HANG_KILLS=on|off;
-                            CLIENT_TSO=strict|relaxed; CLIENT=arm64|x86 set by
+                            CLIENT_TSO=strict|relaxed;
+                            FRAME_RUNTIME=auto|off (absent: off);
+                            CLIENT=arm64|x86 set by
                             setup, Maintenance > Client type)
   $SA_LIB/snapshots  earlier versions (Go back)
   $SA_LIB/history.log  version changes
@@ -7701,9 +7742,10 @@ cli_compat(){
              [ -n "$t" ] || { echo "steam-arm-config: no GE-Proton build installed (steam-arm-config ge-proton install)" >&2; return 1; }
              "$SA_COMPATMAP" "$1" "$t";;
     clear)   # record dropped only when mapping was the rule's own (hand-set tool never comes back)
-             local v; v=$(ab_app "$1")
+             local v f; v=$(ab_app "$1"); f=$(fr_applied "$1")
              "$SA_COMPATMAP" "$1" --remove || return
-             if [ "$v" = auto ]; then ab_drop "$1"; fi;;
+             if [ "$v" = auto ]; then ab_drop "$1"; fi
+             if [ -n "$f" ]; then fr_drop "$1"; fi;;
     *) echo "usage: steam-arm-config compat <appid> linux|windows|ge|clear" >&2; return 2;;
   esac
 }
@@ -7720,6 +7762,16 @@ cli_auto_build(){
         $1 == "record" { printf "record app %s %s %s %s\n", $2, $3, $4, $5 }
         $1 == "partial" { printf "library scan stopped after %s s\n", $2 }';;
     *) echo "usage: steam-arm-config auto-build [on|off]" >&2; return 2;;
+  esac
+}
+cli_frame_runtime(){
+  case "${1:-}" in
+    auto|off) conf_set FRAME_RUNTIME "$1" && echo "Valve Frame runtime: $1 (from next start of Steam ARM)";;
+    '') echo "Valve Frame runtime: $(frame_runtime)"
+        [ -f "$SA_FRAMERT_PY" ] || { echo "helper missing: $SA_FRAMERT_PY (run setup again)"; return 0; }
+        game_read timeout 30 python3 "$SA_FRAMERT_PY" list "$(steam_dir)" 2>/dev/null </dev/null \
+          | awk -F'\t' '$1 == "app" { printf "app %s %s: Valve runtime %s, tool %s\n", $2, $3, $4, $5 }';;
+    *) echo "usage: steam-arm-config frame-runtime [auto|off]" >&2; return 2;;
   esac
 }
 cli_run_history(){
@@ -7982,6 +8034,7 @@ main(){
                  shift; cli_tune "$@";;
     still-notice) case "${2:-}" in on|off|auto) cli_root "$@";; esac; shift; cli_still_notice "$@";;
     auto-build)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_auto_build "$@";;
+    frame-runtime) case "${2:-}" in auto|off) cli_root "$@";; esac; shift; cli_frame_runtime "$@";;
     cpu-notice)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_cpu_notice "$@";;
     cpu-report)  shift; cli_cpu_report "$@";;
     x87-client)  case "${2:-}" in on|off) cli_root "$@";; esac; shift; cli_x87_client "$@";;
@@ -8825,7 +8878,7 @@ remove_all(){
         /usr/local/bin/steam-arm-icon /usr/local/bin/steam-arm-tray /usr/local/bin/steam-arm-config \
         /usr/local/lib/steam-arm-handler.py /usr/local/lib/steam-arm-fexpatch.py /usr/local/lib/steam-arm-compatmap.py \
         /usr/local/lib/steam-arm-physx.py /usr/local/lib/steam-arm-kde-input /usr/local/lib/steam-arm-launchopts.py \
-        /usr/local/lib/steam-arm-autobuild.py /usr/local/lib/steam-arm-appinfo.py /usr/local/lib/steam-arm-geproton.py \
+        /usr/local/lib/steam-arm-autobuild.py /usr/local/lib/steam-arm-appinfo.py /usr/local/lib/steam-arm-geproton.py /usr/local/lib/steam-arm-frameruntime.py \
         /usr/local/lib/steam-arm-x86client.py /usr/local/lib/steam-arm-run.py /usr/local/lib/steam-arm-pv-bwrap \
         /usr/local/lib/steam-arm-python3 /usr/local/lib/steam-arm-entry.py \
         /usr/local/lib/steam-arm-autotune.py \
@@ -16131,6 +16184,17 @@ if [ -f "$AB" ] && ! client_running; then
   fi
 fi
 
+# Valve Frame runtime (steam-arm-frameruntime.py): FRAME_RUNTIME=auto only, after automatic Windows build, client closed.
+FR=/usr/local/lib/steam-arm-frameruntime.py
+if [ "${FRAME_RUNTIME:-off}" = auto ] && [ -f "$FR" ] && ! client_running; then
+  fro=$(timeout 30 python3 "$FR" apply "$S" 2>>"$LOG" </dev/null)
+  if [ -n "$fro" ]; then
+    printf '%s\n' "$fro" | while IFS= read -r l; do printf '%s %s\n' "$(date '+%F %T')" "$l" >> "$LOG" 2>/dev/null; done
+    n=$(printf '%s\n' "$fro" | grep -c '^frame-runtime: app [0-9]*: .* set (Valve Frame recommendation ')
+    [ "$n" -gt 0 ] && lnote "Compatibility tool set for $n game(s) from Valve Frame recommendation. Change: Steam ARM Settings > Graphics > Route per game." "Steam ARM: Frame runtime set"
+  fi
+fi
+
 if [ "$CLIENT" = x86 ]; then cd "$S" || exit 1; else cd "$D" || exit 1; fi
 # Client exit after applying its own update: status 42 (restart request), or bootstrap log whose last
 # start ends in "Update complete, launching" with no client left running. Started again, at most twice.
@@ -17793,6 +17857,205 @@ if __name__ == "__main__":
     main(sys.argv[1:])
 ABPY
 chmod 644 /usr/local/lib/steam-arm-autobuild.py
+# Valve Frame recommended runtime per title (FRAME_RUNTIME=auto): launcher sets compatibility tool before client start.
+cat > /usr/local/lib/steam-arm-frameruntime.py <<'FRPY'
+#!/usr/bin/env python3
+"""steam-arm-frameruntime: compatibility tool from Valve's Steam Frame recommended runtime, per installed title.
+
+  apply STEAMDIR          sets tool of titles with no tool chosen (Steam closed); FRAME_RUNTIME=auto only
+  list STEAMDIR           tab-separated "frame-runtime auto|off", "app <appid> <verdict> <runtime> <tool or ->"
+  applied STEAMDIR APPID  "<runtime>\t<tool>\t<label>" when mapping of title is still the one set here, else nothing
+  drop STEAMDIR APPID     forgets record of one title, so recommendation may apply again
+
+Runtimes: proton-stable -> Proton ARM64 stable; proton-experimental, proton-experimental-arm64 -> Proton ARM64
+experimental (stable when its tool name is unknown); native -> Linux build; lepton-stable -> unchanged (no Lepton).
+Mapping set in Steam or settings menu, GE-Proton included, always kept; once per title, record file
+<client folder>/.config/steam-arm/frame-runtime.conf. Verdicts: applied, pending, kept, lepton."""
+import os
+import re
+import runpy
+import subprocess
+import sys
+import tempfile
+import time
+
+CONF = "/etc/steam-arm/steam-arm.conf"
+COMPATMAP = "/usr/local/lib/steam-arm-compatmap.py"
+APPINFO = "/usr/local/lib/steam-arm-appinfo.py"
+AUTOBUILD = "/usr/local/lib/steam-arm-autobuild.py"
+# names Steam lists in Compatibility; None: name not known, stable used
+TOOLS = {"stable": "proton_11-arm64", "experimental": "proton-experimental-arm64", "linux": "steamlinuxruntime"}
+RUNTIMES = {"proton-stable": "stable", "proton-experimental": "experimental",
+            "proton-experimental-arm64": "experimental", "native": "linux"}
+LABEL = {"stable": "Proton ARM64 stable", "experimental": "Proton ARM64 experimental", "linux": "Linux build"}
+UNDO = "Undo: steam-arm-config, Graphics > Route per game"
+_AB = runpy.run_path(AUTOBUILD)
+conf, mapping, manifests, records = _AB["conf"], _AB["mapping"], _AB["manifests"], _AB["records"]
+
+
+def auto_on():
+    return conf("FRAME_RUNTIME") == "auto"
+
+
+def state_path(steam):
+    return os.path.join(os.path.dirname(_AB["state_path"](steam)), "frame-runtime.conf")
+
+
+def target(rt):
+    """(kind, tool, note) for Valve runtime; tool None: unchanged."""
+    kind = RUNTIMES.get(rt)
+    if kind is None:
+        return None, None, None
+    if kind == "experimental" and not TOOLS.get("experimental"):
+        return "stable", TOOLS["stable"], "Proton ARM64 experimental tool name unknown, stable used"
+    return kind, TOOLS[kind], None
+
+
+def frame_runtimes(steam, ids):
+    """appid -> Valve Frame runtime from appinfo reader (column 5); empty when cache unread."""
+    vdf = os.path.join(steam, "appcache", "appinfo.vdf")
+    if not ids or not os.path.isfile(vdf):
+        return {}
+    try:
+        p = subprocess.run([sys.executable, APPINFO, vdf] + ids, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    out = {}
+    for line in p.stdout.splitlines():
+        c = line.split("\t")
+        if len(c) >= 5 and c[0] in ids and c[4] not in ("", "unknown"):
+            out[c[0]] = c[4]
+    return out
+
+
+def write_records(path, recs):
+    d = os.path.dirname(path)
+    os.makedirs(d, exist_ok=True)
+    fd, t = tempfile.mkstemp(prefix=".frame-runtime-", dir=d)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("# Steam ARM Valve Frame runtime, one title per line: <appid> <runtime> <tool> <date>\n")
+            for a in sorted(recs, key=int):
+                f.write(" ".join([a] + recs[a]) + "\n")
+        os.chmod(t, 0o644)
+        os.replace(t, path)
+    except BaseException:
+        try:
+            os.unlink(t)
+        except OSError:
+            pass
+        raise
+
+
+def scan(steam):
+    """[(appid, verdict, runtime, tool, note)] for installed titles with a known Frame runtime; None: cache unread."""
+    if not os.path.isfile(os.path.join(steam, "appcache", "appinfo.vdf")):
+        return None
+    ids = [a for a, _d, _w in manifests(steam)]
+    rts = frame_runtimes(steam, ids)
+    maps, recs = mapping(steam), records(state_path(steam))
+    out = []
+    for a in ids:
+        rec = recs.get(a)
+        if rec and maps.get(a) == rec[1]:
+            out.append((a, "applied", rec[0], rec[1], None))
+            continue
+        rt = rts.get(a)
+        if not rt:
+            continue
+        if a in maps:
+            out.append((a, "kept", rt, maps[a], "tool chosen in Steam or settings menu"))
+        elif rec:
+            out.append((a, "kept", rt, "-", "automatic choice undone"))
+        elif rt.startswith("lepton"):
+            out.append((a, "lepton", rt, "-", "Lepton not available here"))
+        else:
+            _k, tool, note = target(rt)
+            if tool:
+                out.append((a, "pending", rt, tool, note))
+    return out
+
+
+def label(tool):
+    for k, v in TOOLS.items():
+        if v == tool:
+            return "%s (%s)" % (LABEL[k], tool)
+    return tool
+
+
+def apply(steam):
+    if not auto_on():
+        return
+    if conf("CLIENT") == "x86":
+        print("frame-runtime: x86 client: Valve Frame runtimes name ARM64 tools; nothing set")
+        return
+    res = scan(steam)
+    if res is None:
+        print("frame-runtime: appinfo cache not read yet; nothing set")
+        return
+    path = state_path(steam)
+    for a, v, rt, tool, note in res:
+        if v == "lepton":
+            print("frame-runtime: app %s: Valve Frame runtime %s; Lepton not available here, tool unchanged" % (a, rt))
+        if v != "pending":
+            continue
+        if note:
+            print("frame-runtime: app %s: %s" % (a, note))
+        try:
+            p = subprocess.run([sys.executable, COMPATMAP, os.path.join(steam, "config/config.vdf"), a, tool],
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+            err = (p.stderr or p.stdout).strip().splitlines()[-1:] if p.returncode else None
+        except (OSError, subprocess.TimeoutExpired) as e:
+            err = [str(e)]
+        if err is not None:
+            print("frame-runtime: app %s: tool not set: %s" % (a, err[0] if err else "steam-arm-compatmap failed"))
+            continue
+        recs = records(path)
+        recs[a] = [rt, tool, time.strftime("%Y-%m-%d")]
+        try:
+            write_records(path, recs)
+        except OSError as e:
+            print("frame-runtime: app %s: record not written (%s); may be set again" % (a, e))
+        print("frame-runtime: app %s: %s set (Valve Frame recommendation %s). %s" % (a, label(tool), rt, UNDO))
+
+
+def show(steam):
+    print("frame-runtime\t%s" % ("auto" if auto_on() else "off"))
+    for a, v, rt, tool, _n in scan(steam) or []:
+        print("app\t%s\t%s\t%s\t%s" % (a, v, rt, tool))
+
+
+def applied(steam, appid):
+    rec = records(state_path(steam)).get(appid)
+    if rec and len(rec) >= 2 and mapping(steam).get(appid) == rec[1]:
+        print("%s\t%s\t%s" % (rec[0], rec[1], label(rec[1])))
+
+
+def drop(steam, appid):
+    path = state_path(steam)
+    recs = records(path)
+    if appid not in recs:
+        print("frame-runtime: no record for app %s" % appid)
+        return
+    del recs[appid]
+    write_records(path, recs)
+    print("frame-runtime: record of app %s removed" % appid)
+
+
+def main(a):
+    if len(a) == 2 and a[0] in ("apply", "list"):
+        (apply if a[0] == "apply" else show)(a[1])
+    elif len(a) == 3 and a[0] in ("applied", "drop") and re.fullmatch(r"[0-9]{1,10}", a[2]):
+        (applied if a[0] == "applied" else drop)(a[1], a[2])
+    else:
+        sys.exit("usage: steam-arm-frameruntime.py apply|list STEAMDIR | applied|drop STEAMDIR APPID")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
+FRPY
+chmod 644 /usr/local/lib/steam-arm-frameruntime.py
 # Steam Deck and Steam Frame ratings of a title for the settings menu Games screen and run report (read only).
 cat > /usr/local/lib/steam-arm-appinfo.py <<'AIPY'
 #!/usr/bin/env python3
