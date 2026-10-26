@@ -1773,6 +1773,24 @@ fex_cache_all(){
   local v; v=$(fex_tool_ver); v=${v#FEX-}
   [[ "$v" =~ ^[0-9]{4}(\.[0-9]+)?$ ]] && [ "${v%%.*}" -ge 2610 ]
 }
+# "build N" of app $1 from appmanifest_<appid>.acf in any library (only file read); absent or malformed noted.
+vt_build(){
+  local lib f
+  while IFS= read -r lib; do
+    f=$lib/steamapps/appmanifest_$1.acf; [ -r "$f" ] || continue
+    sed -n 's/^[[:space:]]*"buildid"[[:space:]]*"\([0-9][0-9]*\)".*/build \1/p' "$f" | grep -m1 . || echo "unknown build (no buildid line in manifest)"
+    return
+  done < <(game_libraries)
+  echo "not downloaded yet"
+}
+# Valve's ARM64 tools for the report: FEX tool version and build ids of FEX tool, Proton 11.0, Proton Experimental, runtime 4.0.
+valve_tools(){
+  local v
+  if [ "$(client_type)" = x86 ]; then echo "not used (x86 client runs on system FEX and x86 tools)"; return; fi
+  v=$(fex_tool_ver); [ "$v" = "not downloaded yet" ] && v=""
+  printf '%-23s %s\n' "FEX tool" "${v:+$v, }app 3127680 $(vt_build 3127680)" "Proton 11.0" "app 4628740 $(vt_build 4628740)" \
+    "Proton Experimental" "app 4427310 $(vt_build 4427310)" "Steam Linux Runtime 4.0" "app 4185400 $(vt_build 4185400)"
+}
 mali_tree(){
   local m e="..."
   if [ -f "$SA_MALI/.steam-arm-mali" ]; then
@@ -4447,6 +4465,8 @@ report_text(){
   echo "Installed      $(installed_version) ($(installed_from))"
   state_pending && state_text && echo
   [ -r "$SA_LIB/history.log" ] && tail -5 "$SA_LIB/history.log" | awk '{ print $1, $2 " -> " $3, $4, $5 }'
+  echo
+  echo "== Valve tools"; valve_tools
   echo
   echo "== Notes"; info_notes
   d=$(detect_raw)
