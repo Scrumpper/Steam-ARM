@@ -45,7 +45,7 @@ LIB=$T/lib.sh
 { echo 'warn(){ echo "WARN $*"; }; die(){ echo "DIE $*"; exit 1; }'
   awk '/^conf_get\(\)\{/{f=1} f{print} f && /^conf_del\(\)\{/{g=1} g && /^}$/{exit}' "$INST"
   awk '/^# lepton: host packages and SteamOS tool stand-ins/{f=1} f{print} f && /^lepton_dev_conf\(\)/{exit}' "$INST" \
-    | sed -e "s#^LEP_DIR=.*#LEP_DIR=$T/lepdir#" -e "s#^LEP_GUEST=.*#LEP_GUEST=$T/guestos/android#" -e "s#/usr/share/guestos#$T/guestos#g" -e "s#^LEP_LAYER_JSON=.*#LEP_LAYER_JSON=$T/layer.json#"
+    | sed -e "s#^LEP_DIR=.*#LEP_DIR=$T/lepdir#" -e "s#^LEP_GUEST=.*#LEP_GUEST=$T/guestos/android#" -e "s#/usr/share/guestos#$T/guestos#g" -e "s#^LEP_LAYER_JSON=.*#LEP_LAYER_JSON=$T/layer.json#" -e "s#/etc/containers#$T/containers#g"
 } > "$LIB"
 check "P0 extracted: conf helpers, package helpers, lepton_off, drop-in stub" "grep -q '^conf_del()' $LIB && grep -q '^lepton_pkgs_add()' $LIB && grep -q '^lepton_pkgs_purge()' $LIB && grep -q '^lepton_off()' $LIB && grep -q '^lepton_dev_conf()' $LIB && bash -n $LIB"
 run(){ ( export T; PATH=$T/bin:$PATH; CONF=$T/etc/steam-arm.conf; . "$LIB"; eval "$1" ) 2>&1; }
@@ -78,16 +78,20 @@ check "P7 nothing recorded: no apt-get call" "grep -qx 'rc=0' <<<\"\$OUT\" && ! 
 # lepton_off: stand-ins, own guestos link only, overlay content kept
 mkdir -p "$T/lepdir/bin" "$T/guestos" "$T/lepdir/guestos-android/vendor/vulkan_layers"; touch "$T/lepdir/bin/setpgid" "$T/lepdir/bin/steamvr"
 touch "$T/lepdir/guestos-android/vendor/vulkan_layers/libVkLayer_fossilize.so" "$T/lepdir/vk-fossilize-passthrough.c" "$T/layer.json"
+mkdir -p "$T/containers/containers.conf.d"; touch "$T/containers/containers.conf.d/50-steam-arm-lepton.conf"
 ln -s "$T/lepdir/guestos-android" "$T/guestos/android"
 OUT=$(run lepton_off; ls -A "$T/lepdir" "$T" 2>&1)
-check "O1 off: stand-ins, layer, its source and manifest, own link gone, empty folders removed" "[ ! -e '$T/lepdir' ] && [ ! -e '$T/guestos' ] && [ ! -e '$T/layer.json' ]"
+check "O1 off: stand-ins, layer, its source and manifest, podman drop-in, own link gone, empty folders removed" "[ ! -e '$T/lepdir' ] && [ ! -e '$T/guestos' ] && [ ! -e '$T/layer.json' ] && [ ! -e '$T/containers' ]"
 mkdir -p "$T/lepdir/bin" "$T/lepdir/guestos-android" "$T/guestos"; touch "$T/lepdir/bin/setpgid" "$T/lepdir/guestos-android/x.so"
 ln -s /elsewhere "$T/guestos/android"
 OUT=$(run lepton_off)
 check "O2 off: foreign guestos link and overlay files kept, named" "[ -L '$T/guestos/android' ] && [ -f '$T/lepdir/guestos-android/x.so' ] && [ ! -e '$T/lepdir/bin' ] && grep -q \"kept: $T/lepdir\" <<<\"\$OUT\""
 OUT=$(run 'lepton_dev_conf /dev/dri/renderD130')
-check "D1 drop-in stub: render node passed as device, not applied by setup; node from gpu_detect (best rank), not fixed" \
-  "[ \"\$OUT\" = \$'[containers]\ndevices = [\"/dev/dri/renderD130:/dev/dri/renderD130:rwm\"]' ] && [ \$(grep -c 'lepton_dev_conf' '$INST') = 1 ] && grep -qF 'best=\$rank; GPU_DETECTED=\$fam; GPU_NODE=/dev/dri/\$node' '$INST' && ! grep -q 'renderD1[0-9][0-9]' <(awk '/^# lepton: host packages/,/^lepton_dev_conf/' '$INST')"
+check "D1 podman drop-in: render node as bind mount (volumes, devices= hidden by Lepton's --tmpfs /dev); node from gpu_detect (best rank), not fixed" \
+  "[ \"\$OUT\" = \$'# steam-arm-setup lepton: GPU render node for rootless podman containers\n[containers]\nvolumes = [\"/dev/dri/renderD130:/dev/dri/renderD130:rw\"]' ] && grep -qF 'best=\$rank; GPU_DETECTED=\$fam; GPU_NODE=/dev/dri/\$node' '$INST' && ! grep -q 'renderD1[0-9][0-9]' <(awk '/^# lepton: host packages/,/^lepton_dev_conf/' '$INST')"
+
+check "D2 setup writes drop-in only for an existing character device node, else removes it and warns; purge after own files in lepton_off" \
+  "grep -qF '[ -n \"\${GPU_NODE:-}\" ] || gpu_detect' '$INST' && grep -qF 'if [ -n \"\${GPU_NODE:-}\" ] && [ -c \"\$GPU_NODE\" ]; then' '$INST' && grep -qF 'lepton_dev_conf \"\$GPU_NODE\" > \"\$LEP_PODMAN_CONF\"' '$INST' && grep -qF 'rm -f \"\$LEP_PODMAN_CONF\"; warn \"lepton: no GPU render node found' '$INST' && awk '/^lepton_off\(\)\{/{f=1} f && /rm -f \"\\\$LEP_PODMAN_CONF\"/{a=NR} f && /^  lepton_pkgs_purge\$/{b=NR} f && /^}/{exit} END{exit !(a && b && a < b)}' '$INST'"
 
 # setup block and removal order
 check "S1 setup: part on installs, writes stand-ins, links overlay only when free, clears group write as game user; off runs lepton_off" \

@@ -898,6 +898,7 @@ LEP_GUEST=/usr/share/guestos/android
 LEP_LAYER_C=$LEP_DIR/vk-fossilize-passthrough.c
 LEP_LAYER=$LEP_OVERLAY/vendor/vulkan_layers/libVkLayer_fossilize.so
 LEP_LAYER_JSON=/usr/share/vulkan/explicit_layer.d/steam-arm-lepton-fossilize.json
+LEP_PODMAN_CONF=/etc/containers/containers.conf.d/50-steam-arm-lepton.conf
 pkg_inst(){ dpkg-query -W -f='${db:Status-Abbrev}\n' "$1" 2>/dev/null | grep -q '^ii'; }
 pkg_list(){ dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 2>/dev/null | awk '$1 == "ii" { print $2 }' | sort -u; }
 # Installs missing LEP_PKGS and LEP_BUILD; every package new after the install (dependencies too) joins LEPTON_PKGS_ADDED.
@@ -928,6 +929,9 @@ lepton_pkgs_purge(){
 }
 # Component off: recorded packages, stand-ins, own guestos link; overlay source filled by hand stays.
 lepton_off(){
+  # own files first: package purge then finds its folders empty
+  rm -f "$LEP_PODMAN_CONF"
+  rmdir /etc/containers/containers.conf.d /etc/containers 2>/dev/null
   lepton_pkgs_purge
   rm -f "$LEP_BIN/setpgid" "$LEP_BIN/steamvr" "$LEP_LAYER" "$LEP_LAYER_C" "$LEP_LAYER_JSON"
   rmdir "$LEP_BIN" "$LEP_OVERLAY/vendor/vulkan_layers" "$LEP_OVERLAY/vendor" "$LEP_OVERLAY" 2>/dev/null
@@ -937,8 +941,8 @@ lepton_off(){
   [ -d "$LEP_DIR" ] && echo "  kept: $LEP_DIR (files not written by setup)"
   return 0
 }
-# containers.conf drop-in passing render node $1 into Lepton's podman; not applied yet (Android GPU work decides).
-lepton_dev_conf(){ printf '[containers]\ndevices = ["%s:%s:rwm"]\n' "$1" "$1"; }
+# containers.conf drop-in: render node $1 as bind mount (Lepton's --tmpfs /dev hides devices= entries).
+lepton_dev_conf(){ printf '# steam-arm-setup lepton: GPU render node for rootless podman containers\n[containers]\nvolumes = ["%s:%s:rw"]\n' "$1" "$1"; }
 # Components listed and saved on this system; page-size, kde-input-prompt and pi-governor only where they apply.
 COMPONENTS=$COMPONENTS_ALL
 ps_relevant || COMPONENTS=${COMPONENTS/ page-size/}
@@ -17679,6 +17683,14 @@ elif [ "$(readlink "$LEP_GUEST" 2>/dev/null)" != "$LEP_OVERLAY" ]; then
 fi
 # depot files written under umask 0002: group write off (Android init skips group-writable rc files)
 [ -d "$S/steamapps/common/Lepton" ] && { as_user chmod -R g-w "$S/steamapps/common/Lepton" || warn "lepton: could not clear group write on $S/steamapps/common/Lepton"; }
+# GPU render node of the detected GPU into Lepton's container (access through its keep-groups, render group)
+[ -n "${GPU_NODE:-}" ] || gpu_detect
+if [ -n "${GPU_NODE:-}" ] && [ -c "$GPU_NODE" ]; then
+  { mkdir -p /etc/containers/containers.conf.d && lepton_dev_conf "$GPU_NODE" > "$LEP_PODMAN_CONF" && chmod 644 "$LEP_PODMAN_CONF"; } \
+    || warn "lepton: could not write $LEP_PODMAN_CONF"
+else
+  rm -f "$LEP_PODMAN_CONF"; warn "lepton: no GPU render node found; Lepton titles draw on CPU"
+fi
 grep -qs "^$GAMEUSER:" /etc/subuid \
   || warn "lepton: no subordinate ids for '$GAMEUSER' in /etc/subuid; podman needs them: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $GAMEUSER"
 else
