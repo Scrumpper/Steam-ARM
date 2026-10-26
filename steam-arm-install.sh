@@ -17883,7 +17883,7 @@ CONF = "/etc/steam-arm/steam-arm.conf"
 COMPATMAP = "/usr/local/lib/steam-arm-compatmap.py"
 APPINFO = "/usr/local/lib/steam-arm-appinfo.py"
 AUTOBUILD = "/usr/local/lib/steam-arm-autobuild.py"
-# names Steam lists in Compatibility; None: name not known, stable used
+# names Steam lists in Compatibility; empty: name not known, stable used
 TOOLS = {"stable": "proton_11-arm64", "experimental": "proton-experimental-arm64", "linux": "steamlinuxruntime"}
 RUNTIMES = {"proton-stable": "stable", "proton-experimental": "experimental",
             "proton-experimental-arm64": "experimental", "native": "linux"}
