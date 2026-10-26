@@ -2,7 +2,8 @@
 """Steam ARM 3.1 Steam Frame rating: steam-arm-appinfo.py reads common/steam_frame_compatibility (v41 string table and
 v40 inline keys): category as int (binary appinfo) and digit string (web PICS form), Frame runtime, test result tokens
 without prefix in Valve's order, unknown tokens, oslist, test date, missing or malformed block gives unknown fields with
-exit 0, four-column callers (awk $2 $4) unchanged, fixtures from three real PICS records (app ids only; no names).
+exit 0, four-column callers (awk $2 $4) unchanged, VR column (onlyvrsupport, store categories 53 and 54), fixtures from
+three real PICS records (app ids only; no names).
 Reader extracted from installer under test (SARM_INST picks another installer). Internal; not for release zips."""
 import os
 import shutil
@@ -29,7 +30,8 @@ TOKENS = ["ControllerGlyphsDoNotMatchDevice", "ControllerGlyphsMatchDevice", "De
           "InterfaceTextIsLegible", "InterfaceTextIsNotLegible", "LauncherInteractionIssues", "NativeResolutionNotSupported",
           "SingleplayerGameplayRequiresActiveInternetConnection", "SteamOSDoesNotSupport", "TextInputDoesNotAutomaticallyInvokesKeyboard",
           "UnsupportedAntiCheatConfiguration", "UnsupportedGraphicsPerformance"]
-UNKNOWN8 = "unknown\tunknown\tunknown\tunknown\t-\tunknown\tunknown"
+UNKNOWN8 = "unknown\tunknown\tunknown\tunknown\t-\tunknown\tunknown"  # columns 2 to 8 of a title without data
+NOREC = UNKNOWN8 + "\tunknown"  # plus vr column of a missing record
 
 
 def check(name, cond, detail=""):
@@ -111,24 +113,25 @@ def deck(cat, runtime):
 
 # three real PICS records of October 2026 (app ids only), trimmed to keys reader uses
 REAL = {
-    450390: {"steam_deck_compatibility": {"category": "1", "configuration": {}},
+    450390: {"onlyvrsupport": "1", "category": {"category_2": "1", "category_54": "1"},
+             "steam_deck_compatibility": {"category": "1", "configuration": {}},
              "steam_frame_compatibility": frame("1", "proton-experimental-arm64", [PREFIX + "UnsupportedGraphicsPerformance"],
                                                 ts="1785954215", build="7242747")},
-    1003590: {"oslist": "windows", "steam_deck_compatibility": deck("3", "proton-stable"),
+    1003590: {"oslist": "windows", "category": {"category_2": "1", "category_53": "1"}, "steam_deck_compatibility": deck("3", "proton-stable"),
               "steam_frame_compatibility": frame("2", "proton-stable", [PREFIX + t for t in (
                   "DefaultConfigurationIsNotPerformant", "DefaultControllerConfigFullyFunctional", "ControllerGlyphsMatchDevice",
                   "InterfaceTextIsLegible")], ts="1788270256", build="24070382")},
-    4688290: {"oslist": "android",
+    4688290: {"oslist": "android", "onlyvrsupport": "1", "category": {"category_2": "1", "category_54": "1"},
               "steam_frame_compatibility": frame("3", "lepton-stable", [PREFIX + t for t in (
                   "DefaultControllerConfigFullyFunctional", "ControllerGlyphsMatchDevice", "InterfaceTextIsLegible",
                   "DefaultConfigurationIsPerformant")], ts="1787591620", build="23856283")},
 }
 REAL_OUT = {
-    450390: "450390\tUnsupported\tUnsupported\tunknown\tproton-experimental-arm64\tUnsupportedGraphicsPerformance\tunknown\t2026-08-05",
+    450390: "450390\tUnsupported\tUnsupported\tunknown\tproton-experimental-arm64\tUnsupportedGraphicsPerformance\tunknown\t2026-08-05\tonly",
     1003590: "1003590\tVerified\tPlayable\tproton-stable\tproton-stable\tDefaultConfigurationIsNotPerformant,"
-             "DefaultControllerConfigFullyFunctional,ControllerGlyphsMatchDevice,InterfaceTextIsLegible\twindows\t2026-09-01",
+             "DefaultControllerConfigFullyFunctional,ControllerGlyphsMatchDevice,InterfaceTextIsLegible\twindows\t2026-09-01\tsupported",
     4688290: "4688290\tunknown\tVerified\tunknown\tlepton-stable\tDefaultControllerConfigFullyFunctional,ControllerGlyphsMatchDevice,"
-             "InterfaceTextIsLegible,DefaultConfigurationIsPerformant\tandroid\t2026-08-24",
+             "InterfaceTextIsLegible,DefaultConfigurationIsPerformant\tandroid\t2026-08-24\tonly",
 }
 APPS = {
     # binary form: category ints, oslist three systems, Deck native + Frame proton-stable
@@ -155,6 +158,13 @@ APPS = {
     602: {"name": "D3", "oslist": 3, "steam_frame_compatibility": "Verified", "steam_deck_compatibility": deck("3", "native")},
     # Frame block without configuration or tests, timestamp 0
     700: {"name": "E", "steam_frame_compatibility": {"category": 2, "test_timestamp": 0}},
+    # VR: onlyvrsupport int 1 alone; category_54 alone (string form); category_53; onlyvrsupport 0 with other categories
+    800: {"name": "V1", "onlyvrsupport": 1, "category": {"category_2": 1}},
+    801: {"name": "V2", "category": {"category_2": "1", "category_54": "1"}},
+    802: {"name": "V3", "onlyvrsupport": 0, "category": {"category_2": 1, "category_53": 1}},
+    803: {"name": "V4", "onlyvrsupport": "0", "category": {"category_2": "1", "category_22": "1"}},
+    # VR: category as string, onlyvrsupport text: none
+    804: {"name": "V5", "onlyvrsupport": "yes", "category": "vr"},
 }
 APPS.update(REAL)
 
@@ -178,29 +188,34 @@ for ver in (41, 40):
     ids = sorted(APPS) + [999]
     rc, out, _ = run(p, *ids)
     lines = out.splitlines()
-    check("v%d: exit 0, one line per requested id in order, 8 columns each" % ver,
-          rc == 0 and [l.split("\t")[0] for l in lines] == [str(x) for x in ids] and all(len(l.split("\t")) == 8 for l in lines), out)
+    check("v%d: exit 0, one line per requested id in order, 9 columns each, none empty" % ver,
+          rc == 0 and [l.split("\t")[0] for l in lines] == [str(x) for x in ids] and all(len(l.split("\t")) == 9 and all(l.split("\t")) for l in lines), out)
     check("v%d: binary ints: Deck Verified native, Frame Verified proton-stable, one token, oslist, date" % ver,
-          line(out, 220) == "220\tVerified\tVerified\tnative\tproton-stable\tDefaultConfigurationIsPerformant\twindows,macos,linux\t2026-09-01", out)
+          line(out, 220) == "220\tVerified\tVerified\tnative\tproton-stable\tDefaultConfigurationIsPerformant\twindows,macos,linux\t2026-09-01\tnone", out)
     check("v%d: digit strings (PICS form): Deck Playable, Frame Playable proton-experimental" % ver,
           line(out, 221).startswith("221\tPlayable\tPlayable\tproton-stable\tproton-experimental\t"), out)
     check("v%d: all 18 tokens, prefix removed, Valve's index order kept" % ver,
           line(out, 221).split("\t")[5] == ",".join(TOKENS), out)
     check("v%d: Deck only: Frame unknown, Frame runtime unknown, tokens -, oslist windows, date unknown" % ver,
-          line(out, 400) == "400\tVerified\tunknown\tnative\tunknown\t-\twindows\tunknown", out)
-    check("v%d: no blocks: every field unknown, tokens -" % ver, line(out, 401) == "401\t" + UNKNOWN8, out)
-    check("v%d: appid absent from file: unknown fields" % ver, line(out, 999) == "999\t" + UNKNOWN8, out)
+          line(out, 400) == "400\tVerified\tunknown\tnative\tunknown\t-\twindows\tunknown\tnone", out)
+    check("v%d: no blocks: every field unknown, tokens -, vr none (common section present)" % ver, line(out, 401) == "401\t" + UNKNOWN8 + "\tnone", out)
+    check("v%d: appid absent from file: unknown fields, vr unknown" % ver, line(out, 999) == "999\t" + NOREC, out)
+    check("v%d: vr only: onlyvrsupport int 1 alone; category_54 alone (strings)" % ver,
+          line(out, 800).endswith("\tonly") and line(out, 801).endswith("\tonly"), out)
+    check("v%d: vr supported: category_53 with onlyvrsupport 0" % ver, line(out, 802).endswith("\tsupported"), out)
+    check("v%d: vr none: onlyvrsupport 0, other categories; malformed category and onlyvrsupport text" % ver,
+          line(out, 803).endswith("\tnone") and line(out, 804).endswith("\tnone"), out)
     check("v%d: unknown token passes through stripped; no prefix kept as is; odd characters dropped; numeric key order 0,1,2,10" % ver,
           line(out, 500).split("\t")[5] == "NoPrefix,Oddtokenx,SomeFutureToken,Ten", out)
     check("v%d: timestamp int 1760000000 -> 2025-10-09 UTC" % ver, line(out, 500).split("\t")[7] == "2025-10-09", out)
     check("v%d: malformed block (nested category, string configuration and tests, text timestamp): unknown, exit 0; oslist sanitised" % ver,
-          line(out, 600) == "600\tunknown\tunknown\tunknown\tunknown\t-\twindows,linux\tunknown", out)
+          line(out, 600) == "600\tunknown\tunknown\tunknown\tunknown\t-\twindows,linux\tunknown\tnone", out)
     check("v%d: malformed test entries skipped, category 7 unknown, runtime with shell characters unknown, timestamp too large unknown" % ver,
-          line(out, 601) == "601\tunknown\tunknown\tunknown\tunknown\t-\tunknown\tunknown", out)
+          line(out, 601) == "601\tunknown\tunknown\tunknown\tunknown\t-\tunknown\tunknown\tnone", out)
     check("v%d: Frame block as string, oslist as number: unknown; Deck fields kept" % ver,
-          line(out, 602) == "602\tVerified\tunknown\tnative\tunknown\t-\tunknown\tunknown", out)
+          line(out, 602) == "602\tVerified\tunknown\tnative\tunknown\t-\tunknown\tunknown\tnone", out)
     check("v%d: Frame category without configuration or tests; timestamp 0 unknown" % ver,
-          line(out, 700) == "700\tunknown\tPlayable\tunknown\tunknown\t-\tunknown\tunknown", out)
+          line(out, 700) == "700\tunknown\tPlayable\tunknown\tunknown\t-\tunknown\tunknown\tnone", out)
     for appid, want in REAL_OUT.items():
         check("v%d: real record %d: %s" % (ver, appid, want.split("\t")[2]), line(out, appid) == want, out)
     check("v%d: proton-experimental-arm64 passes through as Frame runtime" % ver, line(out, 450390).split("\t")[4] == "proton-experimental-arm64", out)
@@ -216,9 +231,9 @@ for name, data in {"truncated file": good[:len(good) // 2], "0-byte file": b""}.
     p = os.path.join(TMP, "bad.vdf")
     open(p, "wb").write(data)
     rc, out, _ = run(p, 220)
-    check("damaged: %s -> 8 unknown columns, exit 0" % name, rc == 0 and out == "220\t" + UNKNOWN8 + "\n", out)
+    check("damaged: %s -> 9 unknown columns, exit 0" % name, rc == 0 and out == "220\t" + NOREC + "\n", out)
 rc, out, _ = run(os.path.join(TMP, "missing.vdf"), 220)
-check("missing file -> 8 unknown columns, exit 0", rc == 0 and out == "220\t" + UNKNOWN8 + "\n", out)
+check("missing file -> 9 unknown columns, exit 0", rc == 0 and out == "220\t" + NOREC + "\n", out)
 
 big = os.path.join(TMP, "big.vdf")
 appinfo(big, {1003590: APPS[1003590]}, 41, filler=20000)

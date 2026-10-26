@@ -274,7 +274,7 @@ ablist(){ printf '%s\n' 'auto-build	on' 'rule	source32	proton-stable-arm64	mali-
   'app	400	auto	source32	32-bit Source engine Linux build stops at loading screen under emulation' \
   'app	1036240	suggest	source32	GPU family broadcom-v3d not tested' 'app	312520	kept	source32	build chosen in Steam or settings menu (steamlinuxruntime)' \
   'record	400	source32	proton-stable-arm64	2026-10-06' > "$T/ab-list"; }
-ablist; printf 'Verified\tVerified\tnative\tproton-stable\tDefaultControllerConfigFullyFunctional,InterfaceTextIsLegible\twindows\t2026-09-01\n' > "$T/ai-out"
+ablist; printf 'Verified\tVerified\tnative\tproton-stable\tDefaultControllerConfigFullyFunctional,InterfaceTextIsLegible\twindows\t2026-09-01\tonly\n' > "$T/ai-out"
 echo "SA_AUTOBUILD_PY=$T/ab.py; SA_APPINFO_PY=$T/ai.py" > "$T/rstubs.sh"
 ru(){ local s=$1; shift; rm -f "$T/ab-calls.log"; ui ". $T/rstubs.sh; $s" "$@"; }
 rcli(){ rm -f "$T/ab-calls.log"; OUT=$(bash -c ". $T/harness.sh --help >/dev/null; . $T/rstubs.sh; main $*" 2>&1); RC=$?; }

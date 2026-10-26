@@ -4003,7 +4003,7 @@ menu_graphics(){
 # ===========================================================================
 # 5. Games
 # ===========================================================================
-# Reader line of one title from client's appinfo cache (8 columns, see steam-arm-appinfo.py), read as game account; empty when unread.
+# Reader line of one title from client's appinfo cache (9 columns, see steam-arm-appinfo.py), read as game account; empty when unread.
 appinfo_line(){
   local f o=""; f="$(steam_dir)/appcache/appinfo.vdf"
   [ -f "$SA_APPINFO_PY" ] && o=$(game_read timeout 3 python3 "$SA_APPINFO_PY" "$f" "$1" 2>/dev/null </dev/null)
@@ -4672,7 +4672,7 @@ rr_upstream(){
     "Steam client" "${v:-unknown} ($(client_label), $(client_channel_full))" \
     "FEX tool" "$(fex_tool_row)" "FEX (system)" "$(fex_ver)" "RootFS" "$( [ -d "$SA_RFS" ] && basename "$SA_RFS" || echo none)" \
     "Executable" "${2:-not detected}" "Proton" "$(rr_proton "$1")"
-  IFS=$'\t' read -r _ _ fc _ frt ftok _ fdate <<<"$(appinfo_line "$1")"
+  IFS=$'\t' read -r _ _ fc _ frt ftok _ fdate _ <<<"$(appinfo_line "$1")"
   [ -n "$fc" ] && [ "$fc" != unknown ] && printf '%-15s %s\n' "Steam Frame" "$fc (Valve's rating for Steam Frame; hint only on this device)"
   [ -n "$frt" ] && [ "$frt" != unknown ] && printf '%-15s %s\n' "Frame runtime" "$frt"
   [ -n "$ftok" ] && [ "$ftok" != - ] && printf '%-15s %s\n' "Frame tests" "${ftok//,/, }"
@@ -17759,12 +17759,13 @@ cat > /usr/local/lib/steam-arm-appinfo.py <<'AIPY'
 #!/usr/bin/env python3
 """steam-arm-appinfo APPINFO.VDF APPID...: Steam Deck and Steam Frame ratings of titles from client's appinfo cache.
 
-Prints "<appid>\t<deck>\t<frame>\t<runtime>\t<frame_runtime>\t<frame_tokens>\t<oslist>\t<frame_tested>" per requested
-title. deck, frame: Verified, Playable, Unsupported or unknown; runtime, frame_runtime: recommended_runtime of Steam Deck
-and Steam Frame blocks (native, proton-..., lepton-...) or unknown; frame_tokens: Frame test result tokens without
-"#SteamFrame_TestResult_" prefix, comma-joined in Valve's order, "-" when none; oslist: common/oslist or unknown;
-frame_tested: Frame test_timestamp as UTC date YYYY-MM-DD or unknown.
-Read only; any read or format problem gives unknown, exit status 0."""
+Prints "<appid>\t<deck>\t<frame>\t<runtime>\t<frame_runtime>\t<frame_tokens>\t<oslist>\t<frame_tested>\t<vr>" per
+requested title. deck, frame: Verified, Playable, Unsupported or unknown; runtime, frame_runtime: recommended_runtime of
+Steam Deck and Steam Frame blocks (native, proton-..., lepton-...) or unknown; frame_tokens: Frame test result tokens
+without "#SteamFrame_TestResult_" prefix, comma-joined in Valve's order, "-" when none; oslist: common/oslist or unknown;
+frame_tested: Frame test_timestamp as UTC date YYYY-MM-DD or unknown; vr: only (common/onlyvrsupport 1 or store category
+category_54), supported (category_53), none (common section without those), unknown (no record).
+No column is ever empty. Read only; any read or format problem gives unknown, exit status 0."""
 import os
 import re
 import struct
@@ -17925,15 +17926,26 @@ def tested(block):
         return "unknown"
 
 
+def vr(common):
+    """VR class of a title: only, supported, none; unknown without common section."""
+    if common is None:
+        return "unknown"
+    cats = common.get("category") if isinstance(common.get("category"), dict) else {}
+    if as_int(common.get("onlyvrsupport")) == 1 or "category_54" in cats:
+        return "only"
+    return "supported" if "category_53" in cats else "none"
+
+
 def hint(sec):
     root = sec.get("appinfo") if isinstance(sec.get("appinfo"), dict) else sec
-    common = root.get("common") if isinstance(root.get("common"), dict) else {}
-    cat, rt = rating(common.get("steam_deck_compatibility"))
-    fblock = common.get(FRAME_KEY)
+    common = root.get("common") if isinstance(root.get("common"), dict) else None
+    c = common or {}
+    cat, rt = rating(c.get("steam_deck_compatibility"))
+    fblock = c.get(FRAME_KEY)
     frame, frt = rating(fblock)
-    osl = common.get("oslist")
+    osl = c.get("oslist")
     osl = re.sub(r"[^a-z,]", "", osl.lower()) if isinstance(osl, str) else ""
-    return cat, frame, rt, frt, tokens(fblock), osl or "unknown", tested(fblock)
+    return cat, frame, rt, frt, tokens(fblock), osl or "unknown", tested(fblock), vr(common)
 
 
 def main(a):
@@ -17949,7 +17961,7 @@ def main(a):
         try:
             f = hint(found.get(appid, {}))
         except (AttributeError, TypeError, ValueError):
-            f = ("unknown",) * 4 + ("-", "unknown", "unknown")
+            f = ("unknown",) * 4 + ("-", "unknown", "unknown", "unknown")
         print("\t".join((appid,) + f))
 
 
