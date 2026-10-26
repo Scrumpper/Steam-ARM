@@ -24,10 +24,12 @@ chmod 755 "$T/bin/steamwebhelper" "$T/bin/FEXInterpreter"
 printf 'gpu_compositing: disabled\nGPU process exited\n[1] Loaded GL renderer\n' > "$T/home/.local/share/Steam/logs/webhelper-linux.txt"
 printf 'Startup - updater\n' > "$T/home/steam-arm.log"
 # stand-ins and report in own PID namespace (host Steam and test processes not counted); host run when unavailable
+# stand-ins waited for by command name (exec done), not a fixed delay
+W='for i in $(seq 200); do [ "$(cat /proc/$1/comm /proc/$2/comm 2>/dev/null | paste -sd" ")" = "steamwebhelper FEXInterpreter" ] && break; sleep 0.05; done'
 cat > "$T/c2.sh" <<C2
-"$T/bin/steamwebhelper" > /dev/null 2>&1 &
-"$T/bin/FEXInterpreter" > /dev/null 2>&1 &
-sleep 0.5
+"$T/bin/steamwebhelper" > /dev/null 2>&1 & A=\$!
+"$T/bin/FEXInterpreter" > /dev/null 2>&1 & B=\$!
+bash -c '$W' _ \$A \$B
 cd "$T" && HOME=$T/home timeout 120 bash "$S" --quick --no-wait --out "$T/rep.txt" --client x86
 C2
 ISO=0; unshare --user --map-current-user --pid --fork --mount-proc true 2>/dev/null && ISO=1
@@ -35,7 +37,7 @@ if [ $ISO = 1 ]; then OUT=$(unshare --user --map-current-user --pid --fork --mou
 else
   "$T/bin/steamwebhelper" > /dev/null 2>&1 & P1=$!
   "$T/bin/FEXInterpreter" > /dev/null 2>&1 & P2=$!
-  sleep 0.5
+  bash -c "$W" _ "$P1" "$P2"
   OUT=$(cd "$T" && HOME=$T/home timeout 120 bash "$S" --quick --no-wait --out "$T/rep.txt" --client x86 2>&1); RC=$?
 fi
 check "C2 --quick --no-wait: status 0, file written, mode 600, stderr names file and redaction" "[ $RC = 0 ] && [ -s $T/rep.txt ] && [ \"\$(stat -c %a $T/rep.txt)\" = 600 ] && grep -q 'Report written: .*rep.txt' <<<\"\$OUT\" && grep -q 'home folders are replaced by ~' <<<\"\$OUT\""
@@ -71,10 +73,12 @@ check "C8d reused pid (jiffies below first snapshot) counted whole: game 20" "[ 
 
 # steam_pids: report's own subshells left out even after exec (no report name on command line); others and gone pids
 PF=$T/pids.sh; awk '/^report_pid\(\)\{/{f=1} f{print} f && /^steam_pids\(\)\{/{g=1} g && /^}$/{exit}' "$S" > "$PF"
-bash -c 'sleep 20; :' steam-outside-stand-in > /dev/null 2>&1 & PO=$!
-OUT=$(ME=$(id -un) bash -c '. "$1"; bash -c "sleep 20; :" steam-inside-stand-in > /dev/null 2>&1 & PI=$!; command sleep 0.3
+# stand-ins waited for until exec shows their command line (fork alone carries the parent's)
+upcl(){ local i; for i in $(seq 100); do grep -qa "$2" "/proc/$1/cmdline" 2>/dev/null && return; command sleep 0.05; done; }
+bash -c 'sleep 20; :' steam-outside-stand-in > /dev/null 2>&1 & PO=$!; upcl "$PO" steam-outside
+OUT=$(ME=$(id -un) bash -c '. "$1"; bash -c "sleep 20; :" steam-inside-stand-in > /dev/null 2>&1 & PI=$!; eval "$3"; upcl "$PI" steam-inside
   L=$(steam_pids); grep -qx "$2" <<<"$L" && echo outside=in; grep -qx "$PI" <<<"$L" || echo inside=out
-  report_pid 2147483646 && echo gone=out; pkill -P "$PI"; kill "$PI"' _ "$PF" "$PO" 2>&1)
+  report_pid 2147483646 && echo gone=out; { pkill -P "$PI"; kill "$PI"; } 2>/dev/null' _ "$PF" "$PO" "$(declare -f upcl)" 2>&1)
 pkill -P "$PO"; kill "$PO" 2>/dev/null
 check "C8e steam_pids: other process counted, report child left out, gone pid left out" "[ \"\$(echo \$OUT)\" = 'outside=in inside=out gone=out' ]"
 
