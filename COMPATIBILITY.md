@@ -322,6 +322,23 @@ titles need VR runtime; both are Steam Frame components, not present on this sta
 GPU family. Run report names class in row `Class` (Android-only title, VR-only title, Lepton
 route title); 2D titles get no row.
 
+## Android titles (Lepton)
+
+Component `lepton`, off by default, provides host side Valve's Lepton expects from SteamOS:
+podman stack, `setpgid` and `steamvr` stand-ins, pass-through `VK_LAYER_fossilize` stand-in,
+podman drop-in mounting detected GPU render node, client umask 022. Android Mesa build for
+Mali is not part of package; it goes by hand into overlay source
+`/usr/local/lib/steam-arm-lepton/guestos-android`.
+
+Works (TODO-GO: wording from box evidence): Lepton's Android container starts. GPU path on
+Mali through Android Mesa build placed in overlay source: TODO-GO.
+
+Does not work:
+
+- VR titles: no OpenXR runtime provided. Every Steam Frame Android title is VR or VR-first.
+- Vulkan inside Android on Mali: available PanVK lacks Android hardware buffer extension.
+- Adreno driver payload Lepton carries for Steam Frame: absent; not used on other GPUs.
+
 ## What decides it, in practice
 
 **Which Mali driver OS image includes.** On Rockchip boards two stacks exist: open one,

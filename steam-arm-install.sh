@@ -1,7 +1,7 @@
 #!/bin/bash
 # steam-arm-setup: installs Valve's native ARM64 Steam client (x86 client through FEX on CPUs without Armv8.1 atomics), with host packages, RootFS, launcher, optional components; run as root, then launch via steam-arm. See --help.
 set -u
-SA_VERSION=3.1
+SA_VERSION=3.2
 # Banner: self-contained (no board helper needed); TTY-gated, honours NO_COLOR.
 steam_banner() {
     [ -t 1 ] || return 0
@@ -1341,7 +1341,7 @@ menu_app(){ cat <<'STEAMARMCONFIG'
 # steam-arm-config: menu-driven settings for Steam ARM (built-in screens, dialog, whiptail or plain prompts). See --help.
 set -u
 
-SA_VERSION=3.1
+SA_VERSION=3.2
 SA_DOCS=https://github.com/Scrumpper/Steam-ARM
 SA_CONF=/etc/steam-arm/steam-arm.conf
 SA_TITLES_SHARE=/usr/local/share/steam-arm/titles.conf

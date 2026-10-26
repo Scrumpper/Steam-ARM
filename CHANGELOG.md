@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.2] - Unreleased
+
+### Added
+
+- Component `lepton`, off by default: host packages Valve's Lepton (Android runtime) calls (podman, catatonit, uidmap, passt, attr, inotify-tools, adb, jq; gcc, libc6-dev, libvulkan-dev for layer build), recorded at install, purged on removal only when added by it and when no other package depends on them; `setpgid` and `steamvr` stand-ins first in client `PATH`; pass-through `VK_LAYER_fossilize` stand-in built at setup, in overlay linked to `/usr/share/guestos/android` while that path is free; podman drop-in mounting detected GPU render node into rootless containers of every account, with matching `gralloc.gbm.device` init file in overlay; client umask 022 so depot files are not group-writable; group write cleared on installed Lepton files. TODO-GO: result line (Android container start; Mali GPU path through Android Mesa build placed by hand in overlay source `/usr/local/lib/steam-arm-lepton/guestos-android`). Not working: VR titles (no OpenXR runtime provided; every Steam Frame Android title is VR or VR-first), Vulkan inside Android on Mali (available PanVK lacks Android hardware buffer extension), Adreno driver payload absent.
+
 ## [3.1] - 2026-10-21
 
 ### Added

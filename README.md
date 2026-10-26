@@ -1409,11 +1409,11 @@ no input. Keep game in foreground on host during Remote Play session.
 ### From 2.3.1, 2.3.2 or 3.0
 
 Update / Repair in these versions runs installed copy, so it reinstalls same version.
-Upgrade to 3.1 once by hand:
+Upgrade to 3.2 once by hand:
 
-1. Download `Steam.ARM.3.1.zip` and `Steam.ARM.3.1.zip.sha256` from release page.
-2. Check zip: `sha256sum -c Steam.ARM.3.1.zip.sha256` prints `OK`.
-3. Unpack, open folder `Steam ARM 3.1` in terminal, run `sudo bash steam-arm-install.sh --keep`.
+1. Download `Steam.ARM.3.2.zip` and `Steam.ARM.3.2.zip.sha256` from release page.
+2. Check zip: `sha256sum -c Steam.ARM.3.2.zip.sha256` prints `OK`.
+3. Unpack, open folder `Steam ARM 3.2` in terminal, run `sudo bash steam-arm-install.sh --keep`.
 
 Client, games, sign-in, component choices and settings are kept. Setup saves copy of
 previous version first (Maintenance, Go back to previous version).
