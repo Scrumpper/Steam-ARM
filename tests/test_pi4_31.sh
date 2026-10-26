@@ -391,7 +391,7 @@ cli --help; check "E9 --help names tso=off, x87=reduced" "grep -q 'multiblock, d
 RECIPE=$(dirname "$INST")/tools/build-driver-archive.sh
 if [ -f "$RECIPE" ]; then
   OUT=$(bash "$RECIPE" --family broadcom --dry-run 2>&1); RC=$?
-  if grep -q "missing host tools\|user namespaces are off" <<<"$OUT"; then echo "SKIP A1 recipe dry run: $OUT"
+  if grep -q "missing host tools\|user namespaces are off\|builds run on an x86-64 PC" <<<"$OUT"; then echo "SKIP A1 recipe dry run: $OUT"
   else
     check "A1 --family broadcom --dry-run: v3d,vc4,zink,llvmpipe,softpipe and broadcom,swrast, archive name with -broadcom, no panfrost note" \
       "[ $RC = 0 ] && grep -q '^  family     broadcom$' <<<\"\$OUT\" && grep -q '^  gallium    v3d,vc4,zink,llvmpipe,softpipe$' <<<\"\$OUT\" && grep -q '^  vulkan     broadcom,swrast$' <<<\"\$OUT\" && grep -q 'steam-arm-fex-mesa-26.1.8-broadcom-x86_64-i386.tar.zst' <<<\"\$OUT\" && ! grep -q 'no panfrost driver selected' <<<\"\$OUT\""
