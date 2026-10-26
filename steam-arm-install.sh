@@ -4003,16 +4003,24 @@ menu_graphics(){
 # ===========================================================================
 # 5. Games
 # ===========================================================================
-# Steam Deck category and runtime of one title ("deck<TAB>runtime") from client's appinfo cache; read as game account.
-deck_hint(){
+# Reader line of one title from client's appinfo cache (9 columns, see steam-arm-appinfo.py), read as game account; empty when unread.
+appinfo_line(){
   local f o=""; f="$(steam_dir)/appcache/appinfo.vdf"
   [ -f "$SA_APPINFO_PY" ] && o=$(game_read timeout 3 python3 "$SA_APPINFO_PY" "$f" "$1" 2>/dev/null </dev/null)
-  o=$(awk -F'\t' -v id="$1" '$1 == id { print $2 "\t" $4; exit }' <<<"$o")
-  printf '%s\n' "${o:-unknown	unknown}"
+  awk -F'\t' -v id="$1" '$1 == id { print; exit }' <<<"$o"
 }
-deck_line(){ echo "Steam Deck: $(cut -f1 <<<"$1") (hint only: Steam Deck has other GPU)."; }
+# Steam Deck and Steam Frame hint of one title: "deck<TAB>deck runtime<TAB>frame<TAB>frame runtime"; unknown where unread.
+deck_hint(){
+  local o; o=$(appinfo_line "$1" | awk -F'\t' '{ for (i = 2; i <= 5; i++) if ($i == "") $i = "unknown"; print $2 "\t" $4 "\t" $3 "\t" $5 }')
+  printf '%s\n' "${o:-unknown	unknown	unknown	unknown}"
+}
+deck_line(){
+  local f r; f=$(cut -f3 <<<"$1"); r=$(cut -f4 <<<"$1")
+  [ -n "$r" ] && [ "$r" != unknown ] && r=", runtime $r" || r=""
+  echo "Steam Deck: $(cut -f1 <<<"$1"). Steam Frame: ${f:-unknown}$r (hint only: other GPU, not a promise for this device)."
+}
 game_rules(){
-  local id=$1 f
+  local id=$1 f h
   if f=$(game_fexlog "$id"); then
     echo "Last start of this game ($(date -r "$f" '+%F %H:%M' 2>/dev/null)):"
     echo
@@ -4023,7 +4031,9 @@ game_rules(){
   fi
   echo
   echo "Profile: $(tc_effective "$id" | tr '\n' ' ' | trim)"
-  echo "Steam Deck runtime: $(deck_hint "$id" | cut -f2)"
+  h=$(deck_hint "$id")
+  echo "Steam Deck runtime: $(cut -f2 <<<"$h")"
+  echo "Steam Frame runtime: $(cut -f4 <<<"$h")"
 }
 game_set(){ self_root profile "$1" "$2=$3"; }
 # How a game runs: windows (Proton mapped, Windows build installed, or Proton prefix in compatdata), linux (other tool mapped), unknown.
@@ -4651,9 +4661,9 @@ rr_proton(){
   elif [ -n "$(rr_v steam_route)" ]; then echo "none (Linux build)"
   else echo "unknown (no start line in Steam's log)"; fi
 }
-# rr_upstream APPID ENGINE: fields of the FEX, Proton and Steam client issue templates.
+# rr_upstream APPID ENGINE: fields of the FEX, Proton and Steam client issue templates; Steam Frame rating rows when known.
 rr_upstream(){
-  local v
+  local v fc frt ftok fdate
   # shellcheck disable=SC2016
   v=$(rr_read sh -c 'sed -n "s/^[[:space:]]*\"version\"[[:space:]]*\"\([0-9]*\)\".*/\1/p" "$1"/package/steam_client_*.manifest' sh "$(steam_dir)" | head -1)
   printf '%-15s %s\n' OS "$(distro)" Kernel "$(uname -r)" CPU "$(cpu_info)" GPU "$(gpu_name) ($(gpu_family))" \
@@ -4662,6 +4672,25 @@ rr_upstream(){
     "Steam client" "${v:-unknown} ($(client_label), $(client_channel_full))" \
     "FEX tool" "$(fex_tool_row)" "FEX (system)" "$(fex_ver)" "RootFS" "$( [ -d "$SA_RFS" ] && basename "$SA_RFS" || echo none)" \
     "Executable" "${2:-not detected}" "Proton" "$(rr_proton "$1")"
+  IFS=$'\t' read -r _ _ fc _ frt ftok _ fdate _ <<<"$(appinfo_line "$1")"
+  [ -n "$fc" ] && [ "$fc" != unknown ] && printf '%-15s %s\n' "Steam Frame" "$fc (Valve's rating for Steam Frame; hint only on this device)"
+  [ -n "$frt" ] && [ "$frt" != unknown ] && printf '%-15s %s\n' "Frame runtime" "$frt"
+  [ -n "$ftok" ] && [ "$ftok" != - ] && printf '%-15s %s\n' "Frame tests" "${ftok//,/, }"
+  [ -n "$fdate" ] && [ "$fdate" != unknown ] && printf '%-15s %s\n' "Frame tested" "$fdate"
+  return 0
+}
+# rr_class APPID: title class from appinfo reader (Frame runtime, oslist, vr columns); no row for 2D titles or unread cache.
+rr_class(){
+  local rt os vr
+  IFS=$'\t' read -r _ _ _ _ rt _ os _ vr <<<"$(appinfo_line "$1")"
+  if [ "$os" = android ]; then
+    rr_row Class "Android-only title: needs Lepton runtime, not available outside Steam Frame; no Linux or Windows build to run"
+  elif [ "$vr" = only ]; then
+    rr_row Class "VR-only title: needs VR runtime (Steam Frame or SteamVR component), not present on this stack"
+  elif [ "$rt" = lepton-stable ]; then
+    rr_row Class "Lepton route title: Steam Frame runs its Android build through Lepton, not present here; Windows or Linux build starts instead"
+  fi
+  return 0
 }
 # rr_outcome START END: kernel lines, core dump lines, resources (read-only; never signals a process).
 rr_outcome(){
@@ -4789,6 +4818,7 @@ rr_make(){
     [ -n "$(rr_v handler)" ] && [ "$(rr_v handler)" != none ] && printf '%-15s %s\n' Handler "$(rr_v handler)"
     echo; echo "## Upstream fields"; echo
     rr_upstream "$app" "$eng"
+    rr_class "$app"
     echo; echo "## Knobs"; echo
     sed -n 's/^K //p' <<<"$raw" | grep . || echo "(no handler lines for this start)"
     echo; echo "## Outcome"; echo
@@ -17738,23 +17768,29 @@ if __name__ == "__main__":
     main(sys.argv[1:])
 ABPY
 chmod 644 /usr/local/lib/steam-arm-autobuild.py
-# Steam Deck category of a title for the settings menu Games screen (read only).
+# Steam Deck and Steam Frame ratings of a title for the settings menu Games screen and run report (read only).
 cat > /usr/local/lib/steam-arm-appinfo.py <<'AIPY'
 #!/usr/bin/env python3
-"""steam-arm-appinfo APPINFO.VDF APPID...: Steam Deck category and runtime of titles from client's appinfo cache.
+"""steam-arm-appinfo APPINFO.VDF APPID...: Steam Deck and Steam Frame ratings of titles from client's appinfo cache.
 
-Prints "<appid>\t<deck>\t<frame>\t<runtime>" per requested title; deck: Verified, Playable, Unsupported or unknown;
-runtime: Steam Deck recommended_runtime (native, proton-...) or unknown. Frame: unknown until its key is known.
-Read only; any read or format problem gives unknown, exit status 0."""
+Prints "<appid>\t<deck>\t<frame>\t<runtime>\t<frame_runtime>\t<frame_tokens>\t<oslist>\t<frame_tested>\t<vr>" per
+requested title. deck, frame: Verified, Playable, Unsupported or unknown; runtime, frame_runtime: recommended_runtime of
+Steam Deck and Steam Frame blocks (native, proton-..., lepton-...) or unknown; frame_tokens: Frame test result tokens
+without "#SteamFrame_TestResult_" prefix, comma-joined in Valve's order, "-" when none; oslist: common/oslist or unknown;
+frame_tested: Frame test_timestamp as UTC date YYYY-MM-DD or unknown; vr: only (common/onlyvrsupport 1 or store category
+category_54), supported (category_53), none (common section without those), unknown (no record).
+No column is ever empty. Read only; any read or format problem gives unknown, exit status 0."""
 import os
+import re
 import struct
 import sys
 import time
 
 MAGIC = {0x07564428: 40, 0x07564429: 41}
 CATEGORY = {1: "Unsupported", 2: "Playable", 3: "Verified"}
-# appinfo key of Steam Frame rating; None until confirmed, Frame then stays unknown
-FRAME_KEY = None
+# appinfo key of Steam Frame rating (same category values as Steam Deck)
+FRAME_KEY = "steam_frame_compatibility"
+TOKEN_PREFIX = "#SteamFrame_TestResult_"
 MAX_SIZE = 512 << 20
 MAX_TIME = 2.0
 FIXED = 60
@@ -17857,22 +17893,73 @@ def lookup(path, want):
     return found
 
 
-def hint(sec):
-    root = sec.get("appinfo") if isinstance(sec.get("appinfo"), dict) else sec
-    common = root.get("common") if isinstance(root.get("common"), dict) else {}
-    deck = common.get("steam_deck_compatibility")
-    cat, rt, frame = "unknown", "unknown", "unknown"
-    if isinstance(deck, dict):
-        c = deck.get("category")
-        cat = CATEGORY.get(c, "unknown") if isinstance(c, int) else "unknown"
-        cfg = deck.get("configuration")
+def as_int(v):
+    """int of binary int or digit string (web PICS form), else None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    return int(v) if isinstance(v, str) and v.isdigit() else None
+
+
+def rating(block):
+    """(category, recommended_runtime) of one compatibility block; unknown where absent or malformed."""
+    cat, rt = "unknown", "unknown"
+    if isinstance(block, dict):
+        cat = CATEGORY.get(as_int(block.get("category")), "unknown")
+        cfg = block.get("configuration")
         r = cfg.get("recommended_runtime") if isinstance(cfg, dict) else None
         if isinstance(r, str) and r and r.replace("-", "").replace("_", "").replace(".", "").isalnum():
             rt = r
-    if FRAME_KEY and isinstance(common.get(FRAME_KEY), dict):
-        c = common[FRAME_KEY].get("category")
-        frame = CATEGORY.get(c, "unknown") if isinstance(c, int) else "unknown"
-    return cat, frame, rt
+    return cat, rt
+
+
+def tokens(block):
+    """Frame test result tokens in index order, prefix removed, letters, digits and _ kept; "-" when none."""
+    tests = block.get("tests") if isinstance(block, dict) else None
+    if not isinstance(tests, dict):
+        return "-"
+    out = []
+    for k in sorted(tests, key=lambda x: (as_int(x) is None, as_int(x) or 0, x)):
+        t = tests[k].get("token") if isinstance(tests[k], dict) else None
+        if isinstance(t, str):
+            t = re.sub(r"[^A-Za-z0-9_]", "", t[len(TOKEN_PREFIX):] if t.startswith(TOKEN_PREFIX) else t)
+            if t:
+                out.append(t)
+    return ",".join(out) or "-"
+
+
+def tested(block):
+    """Frame test_timestamp as UTC date, unknown when absent or out of range."""
+    ts = as_int(block.get("test_timestamp")) if isinstance(block, dict) else None
+    if ts is None or not 0 < ts < 1 << 40:
+        return "unknown"
+    try:
+        return time.strftime("%Y-%m-%d", time.gmtime(ts))
+    except (OverflowError, ValueError, OSError):
+        return "unknown"
+
+
+def vr(common):
+    """VR class of a title: only, supported, none; unknown without common section."""
+    if common is None:
+        return "unknown"
+    cats = common.get("category") if isinstance(common.get("category"), dict) else {}
+    if as_int(common.get("onlyvrsupport")) == 1 or "category_54" in cats:
+        return "only"
+    return "supported" if "category_53" in cats else "none"
+
+
+def hint(sec):
+    root = sec.get("appinfo") if isinstance(sec.get("appinfo"), dict) else sec
+    common = root.get("common") if isinstance(root.get("common"), dict) else None
+    c = common or {}
+    cat, rt = rating(c.get("steam_deck_compatibility"))
+    fblock = c.get(FRAME_KEY)
+    frame, frt = rating(fblock)
+    osl = c.get("oslist")
+    osl = re.sub(r"[^a-z,]", "", osl.lower()) if isinstance(osl, str) else ""
+    return cat, frame, rt, frt, tokens(fblock), osl or "unknown", tested(fblock), vr(common)
 
 
 def main(a):
@@ -17885,7 +17972,11 @@ def main(a):
     except (OSError, Bad, struct.error, ValueError, IndexError, MemoryError):
         found = {}
     for appid in want:
-        print("%s\t%s\t%s\t%s" % ((appid,) + hint(found.get(appid, {}))))
+        try:
+            f = hint(found.get(appid, {}))
+        except (AttributeError, TypeError, ValueError):
+            f = ("unknown",) * 4 + ("-", "unknown", "unknown", "unknown")
+        print("\t".join((appid,) + f))
 
 
 if __name__ == "__main__":

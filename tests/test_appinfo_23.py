@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Steam ARM 2.3 Steam Deck hint: steam-arm-appinfo.py on generated appinfo.vdf files (v41 with string table, v40
-with inline keys): category, runtime, Frame key unread, damaged files give unknown with exit 0, large file speed.
+with inline keys): category, runtime, damaged files give unknown with exit 0, large file speed. First four columns only;
+3.1 adds Steam Frame columns behind them (tests/test_frame_31.py).
 Reader extracted from installer under test (SARM_INST picks another installer). Internal; not for release zips."""
 import os
 import shutil
@@ -95,9 +96,11 @@ APPS = {
 
 
 def run(path, *ids):
+    """(exit status, output cut to its first four columns, seconds)."""
     t = time.monotonic()
     r = subprocess.run([sys.executable, AI, path] + [str(x) for x in ids], capture_output=True, text=True, timeout=30)
-    return r.returncode, r.stdout, time.monotonic() - t
+    out = "".join("\t".join(l.split("\t")[:4]) + "\n" for l in r.stdout.splitlines())
+    return r.returncode, out, time.monotonic() - t
 
 
 for ver in (41, 40):
@@ -105,7 +108,7 @@ for ver in (41, 40):
     appinfo(p, APPS, ver)
     rc, out, _ = run(p, 220, 400, 500, 600, 700, 999)
     lines = out.splitlines()
-    check("v%d: Verified + runtime native; Frame not shown (key unconfirmed)" % ver, rc == 0 and "220\tVerified\tunknown\tnative" in lines, out)
+    check("v%d: Verified + runtime native; Frame unknown under 2.3 key name" % ver, rc == 0 and "220\tVerified\tunknown\tnative" in lines, out)
     check("v%d: title without Deck section: unknown" % ver, "400\tunknown\tunknown\tunknown" in lines, out)
     check("v%d: Playable + proton runtime" % ver, "500\tPlayable\tunknown\tproton-stable" in lines, out)
     check("v%d: Unsupported, runtime absent: unknown" % ver, "600\tUnsupported\tunknown\tunknown" in lines, out)

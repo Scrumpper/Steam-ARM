@@ -268,13 +268,13 @@ EOF
 cat > "$T/ai.py" <<EOF
 import sys
 for a in sys.argv[2:]:
-    print(a + "\t" + open("$T/ai-out").read().strip() if a == "400" else a + "\tunknown\tunknown\tunknown")
+    print(a + "\t" + open("$T/ai-out").read().strip() if a == "400" else a + "\tunknown\tunknown\tunknown\tunknown\t-\tunknown\tunknown")
 EOF
 ablist(){ printf '%s\n' 'auto-build	on' 'rule	source32	proton-stable-arm64	mali-csf-v10	2607	32-bit Source engine' "gate	source32	${1:--}" \
   'app	400	auto	source32	32-bit Source engine Linux build stops at loading screen under emulation' \
   'app	1036240	suggest	source32	GPU family broadcom-v3d not tested' 'app	312520	kept	source32	build chosen in Steam or settings menu (steamlinuxruntime)' \
   'record	400	source32	proton-stable-arm64	2026-10-06' > "$T/ab-list"; }
-ablist; printf 'Verified\tunknown\tnative\n' > "$T/ai-out"
+ablist; printf 'Verified\tVerified\tnative\tproton-stable\tDefaultControllerConfigFullyFunctional,InterfaceTextIsLegible\twindows\t2026-09-01\tonly\n' > "$T/ai-out"
 echo "SA_AUTOBUILD_PY=$T/ab.py; SA_APPINFO_PY=$T/ai.py" > "$T/rstubs.sh"
 ru(){ local s=$1; shift; rm -f "$T/ab-calls.log"; ui ". $T/rstubs.sh; $s" "$@"; }
 rcli(){ rm -f "$T/ab-calls.log"; OUT=$(bash -c ". $T/harness.sh --help >/dev/null; . $T/rstubs.sh; main $*" 2>&1); RC=$?; }
@@ -334,14 +334,20 @@ check "R9 hardware report: one line, counts only" "[ \"\$OUT\" = 'Automatic buil
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; echo \"\$SA_BK_KEYS\"; for v in on off '' maybe; do rs_valid AUTO_BUILD \"\$v\" && echo \"ok:\$v\" || echo \"bad:\$v\"; done" 2>&1)
 check "R10 backup keys carry AUTO_BUILD; restore accepts on, off, empty only" "grep -q 'GFX_DEFAULT AUTO_BUILD' <<<\"\$OUT\" && [ \"\$(grep -c '^ok:' <<<\"\$OUT\")\" = 3 ] && grep -qx 'bad:maybe' <<<\"\$OUT\""
 fresh; ru "game_menu 400" BACK
-check "R11 Windows game header: Steam Deck line, hint only" "grep -q '^MENU Game: Portal|App 400. Windows game (Proton): ' <<<\"\$OUT\" && grep -q '^Steam Deck: Verified (hint only: Steam Deck has other GPU).|' <<<\"\$OUT\""
-check "R11 Frame value not shown (key unconfirmed)" "! grep -qi 'frame' <<<\"\$OUT\""
+check "R11 Windows game header: Steam Deck and Steam Frame line with runtime, hint only" "grep -q '^MENU Game: Portal|App 400. Windows game (Proton): ' <<<\"\$OUT\" && grep -q '^Steam Deck: Verified. Steam Frame: Verified, runtime proton-stable (hint only: other GPU, not a promise for this device).|' <<<\"\$OUT\""
+printf 'Verified\tPlayable\tnative\tunknown\t-\tunknown\tunknown\n' > "$T/ai-out"; ru "game_menu 400" BACK
+check "R11 Frame runtime unknown: category without runtime part" "grep -q '^Steam Deck: Verified. Steam Frame: Playable (hint only: other GPU, not a promise for this device).|' <<<\"\$OUT\""
+printf 'Verified\tVerified\tnative\tproton-stable\tDefaultControllerConfigFullyFunctional,InterfaceTextIsLegible\twindows\t2026-09-01\n' > "$T/ai-out"
 ru "game_menu 312520" BACK
-check "R11 Linux game header: Steam Deck line (unknown)" "grep -q '^MENU Game: Rain World|App 312520. Settings apply from the next start of the game.\$' <<<\"\$OUT\" && grep -q '^Steam Deck: unknown (hint only: Steam Deck has other GPU).|' <<<\"\$OUT\""
+check "R11 Linux game header: Steam Deck line (unknown)" "grep -q '^MENU Game: Rain World|App 312520. Settings apply from the next start of the game.\$' <<<\"\$OUT\" && grep -q '^Steam Deck: unknown. Steam Frame: unknown (hint only: other GPU, not a promise for this device).|' <<<\"\$OUT\""
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; SA_APPINFO_PY=$T/none.py; deck_hint 400" 2>&1)
-check "R11 reader missing: unknown" "[ \"\$OUT\" = \$'unknown\\tunknown' ]"
+check "R11 reader missing: four unknown columns (deck, deck runtime, frame, frame runtime)" "[ \"\$OUT\" = \$'unknown\\tunknown\\tunknown\\tunknown' ]"
+OUT=$(bash -c ". $T/harness.sh --help >/dev/null; . $T/rstubs.sh; deck_hint 400; deck_hint 312520" 2>&1)
+check "R11 deck_hint columns: deck, Deck runtime, Frame, Frame runtime; other title all unknown" "[ \"\$OUT\" = \$'Verified\\tnative\\tVerified\\tproton-stable\\nunknown\\tunknown\\tunknown\\tunknown' ]"
+OUT=$(bash -c ". $T/harness.sh --help >/dev/null; deck_line \$'Playable\\tnative'" 2>&1)
+check "R11 deck_line on two-column input (older stub): Frame unknown" "[ \"\$OUT\" = 'Steam Deck: Playable. Steam Frame: unknown (hint only: other GPU, not a promise for this device).' ]"
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; . $T/rstubs.sh; game_rules 400" 2>&1)
-check "R12 Rules page: Steam Deck runtime line" "grep -qx 'Steam Deck runtime: native' <<<\"\$OUT\""
+check "R12 Rules page: Steam Deck runtime and Steam Frame runtime lines" "grep -qx 'Steam Deck runtime: native' <<<\"\$OUT\" && grep -qx 'Steam Frame runtime: proton-stable' <<<\"\$OUT\""
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; fixing_text")
 check "R13 Fixing a game: switched-by-itself bullet" "grep -q '^- Title switched to Windows build by itself: automatic\$' <<<\"\$OUT\""
 OUT=$(python3 "$T0/ptydrive.py" ". $T/harness.sh --help >/dev/null; . $T/rstubs.sh; DIALOG=builtin; menu_graphics; echo MENU-DONE" '3' '\r' @2 '\x1b' @1 '\x1b' @1 '\x1b' 2>&1)
