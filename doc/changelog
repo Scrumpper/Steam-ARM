@@ -69,6 +69,12 @@ steam-arm-setup (3.1) stable; urgency=low
     kernel without per-process GPU time and readout off: no notice.
   * Display mode restore after game also covers KDE Plasma Wayland
     sessions (kscreen-doctor).
+  * Hardware report block Valve tools: FEX tool version and build ids
+    of FEX tool, Proton 11.0, Proton Experimental and Steam Linux
+    Runtime 4.0 from appmanifest files; x86 client: not used.
+  * Setup warns when FEX PPA candidate for host release is behind newest
+    FEX build there (2610); host FEX serves Remote Play and thunks,
+    titles use Valve's FEX tool; package choice unchanged.
   * Setup stopped during version change prints recovery command
     installed menu offers; restore of unfinished change recorded as
     restore.

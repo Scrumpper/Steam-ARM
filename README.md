@@ -135,6 +135,10 @@ replaced, and only when it is missing or damaged.
     Debian 12 has no SDL3 packages and no `libgtk2.0-0t64`. Upgrade to Debian 13.
   - Debian 11 and older: host package check halts setup before any change (no SDL3
     packages). Upgrade to Debian 13.
+  - Setup warns when PPA offers older FEX build for host Ubuntu release than for other
+    releases (apt candidate of chosen `fex-emu-armv8.x` package below 2610; Ubuntu 25.10
+    series at 2607-1 as of 2026-10-24): host FEX serves Remote Play and thunk libraries,
+    titles use Valve's FEX tool from Steam; package choice unchanged, setup continues.
   - FEX from `fex-emu` package already installed: setup adds no package source.
   - FEX from another source (`FEX` command not owned by `fex-emu` package, for example
     build installed under `/usr/local`): setup adds no package source and installs no FEX
@@ -256,7 +260,9 @@ Sections:
    and run history (see Run report and run history), upgrade to newest release, show what
    is new, go back to previous version, previous versions kept and check when menu opens
    (see Updating). Hardware report holds
-   system, status, notes, detection, profiles, renderer lines, last game start, last 20
+   system, status, Valve tools (FEX tool version, build ids of FEX tool, Proton 11.0,
+   Proton Experimental and Steam Linux Runtime 4.0), notes, detection, profiles, renderer
+   lines, last game start, last 20
    launcher log lines, start, update and error lines of client's bootstrap log, closing
    block of newest setup log, and groups of game account next to groups of its running
    processes (`Not active yet` names groups that need new login). Report leaves out home
