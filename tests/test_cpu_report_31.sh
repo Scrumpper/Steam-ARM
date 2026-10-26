@@ -1,12 +1,13 @@
 #!/bin/bash
 # 3.1 CPU report (steam-arm --cpu-report): script extracted from the installer under test (SARM_INST picks another);
-# stand-in processes named steamwebhelper (busy) and FEXInterpreter; --quick --no-wait run checked for every section
-# header and numeric profile columns; cpu_delta arithmetic on a recorded /proc/stat pair; static sections only
+# stand-in processes named steamwebhelper (busy) and FEXInterpreter, in own PID namespace when unshare allows;
+# --quick --no-wait run checked for every section header and numeric profile columns; cpu_delta arithmetic on
+# recorded /proc/stat pairs (per pid: exited, new, reused); static sections only
 # (--sections); redaction of home folders; launcher option, removal list, owned paths, menu item and CLI; verdict
 # section on fixture client logs (both laptop line formats, restart loop, throttle bits) and the Information row. Internal.
 . "$(dirname "$0")/paths.sh"; INST=$SARM_INST; CFG=$SARM_CFG
 T=$(mktemp -d /tmp/sarm31-cpurep.XXXXXX)
-cleanup(){ [ -n "${P1:-}" ] && kill "$P1" 2>/dev/null; [ -n "${P2:-}" ] && kill "$P2" 2>/dev/null; rm -rf "$T"; }
+cleanup(){ [ -n "${P1:-}" ] && kill "$P1" 2>/dev/null; [ -n "${P2:-}" ] && { pkill -P "$P2"; kill "$P2"; } 2>/dev/null; rm -rf "$T"; }
 trap cleanup EXIT
 pass=0; fail=0
 check(){ if eval "$2"; then echo "PASS $1"; pass=$((pass + 1)); else echo "FAIL $1"; printf '     %s\n' "$OUT" | tail -8; fail=$((fail + 1)); fi; }
@@ -20,12 +21,23 @@ check "C1b installer chmods it, removal list and owned paths name it, menu const
 mkdir -p "$T/bin" "$T/home/.local/share/Steam/logs"
 printf '#!/bin/bash\nwhile :; do :; done\n' > "$T/bin/steamwebhelper"; printf '#!/bin/bash\nsleep 300 & wait\n' > "$T/bin/FEXInterpreter"
 chmod 755 "$T/bin/steamwebhelper" "$T/bin/FEXInterpreter"
-"$T/bin/steamwebhelper" > /dev/null 2>&1 & P1=$!
-"$T/bin/FEXInterpreter" & P2=$!
 printf 'gpu_compositing: disabled\nGPU process exited\n[1] Loaded GL renderer\n' > "$T/home/.local/share/Steam/logs/webhelper-linux.txt"
 printf 'Startup - updater\n' > "$T/home/steam-arm.log"
+# stand-ins and report in own PID namespace (host Steam and test processes not counted); host run when unavailable
+cat > "$T/c2.sh" <<C2
+"$T/bin/steamwebhelper" > /dev/null 2>&1 &
+"$T/bin/FEXInterpreter" > /dev/null 2>&1 &
 sleep 0.5
-OUT=$(cd "$T" && HOME=$T/home timeout 120 bash "$S" --quick --no-wait --out "$T/rep.txt" --client x86 2>&1); RC=$?
+cd "$T" && HOME=$T/home timeout 120 bash "$S" --quick --no-wait --out "$T/rep.txt" --client x86
+C2
+ISO=0; unshare --user --map-current-user --pid --fork --mount-proc true 2>/dev/null && ISO=1
+if [ $ISO = 1 ]; then OUT=$(unshare --user --map-current-user --pid --fork --mount-proc bash "$T/c2.sh" 2>&1); RC=$?
+else
+  "$T/bin/steamwebhelper" > /dev/null 2>&1 & P1=$!
+  "$T/bin/FEXInterpreter" > /dev/null 2>&1 & P2=$!
+  sleep 0.5
+  OUT=$(cd "$T" && HOME=$T/home timeout 120 bash "$S" --quick --no-wait --out "$T/rep.txt" --client x86 2>&1); RC=$?
+fi
 check "C2 --quick --no-wait: status 0, file written, mode 600, stderr names file and redaction" "[ $RC = 0 ] && [ -s $T/rep.txt ] && [ \"\$(stat -c %a $T/rep.txt)\" = 600 ] && grep -q 'Report written: .*rep.txt' <<<\"\$OUT\" && grep -q 'home folders are replaced by ~' <<<\"\$OUT\""
 OUT=$(grep '^==== ' "$T/rep.txt")
 for h in system "firmware (vcgencmd)" session "graphics stack (host)" "emulator (FEX)" "Steam processes" "profile: idle on Library page (5 s, 1 s samples)" "profile: browsing Library and Store (5 s, 1 s samples)" "end state"; do
@@ -36,6 +48,8 @@ check "C4 profile rows: 5 samples, 7 numeric columns (total, steam, swh, fex, ga
   "[ \$(grep -c . <<<\"\$OUT\") = 10 ] && ! awk '{ for (i = 2; i <= 8; i++) if (\$i !~ /^[0-9]+\$/) bad = 1 } END { exit bad }' <<<\"\$OUT\" || false; awk '{ for (i = 2; i <= 8; i++) if (\$i !~ /^[0-9]+\$/) exit 1 }' <<<\"\$OUT\""
 check "C4b busy steamwebhelper stand-in shows in swh% column (above 50), total% at most 100, swh_cnt 1" \
   "awk '\$4 + 0 > 50 && \$2 + 0 <= 100 && \$9 == 1 { ok++ } END { exit ok < 5 }' <<<\"\$OUT\""
+if [ $ISO = 1 ]; then check "C4c isolated run: pids column 2 in every row (both stand-ins, no host process)" "awk '\$8 != 2 { bad = 1 } END { exit bad }' <<<\"\$OUT\""
+else echo "SKIP C4c isolated run: no unprivileged PID namespace (unshare), report ran against host processes"; fi
 check "C5 processes section lists both stand-ins with their groups" "grep -q 'steamwebhelper processes: 1' $T/rep.txt && grep -qE '^fex +[0-9]+ +FEXInterpreter' $T/rep.txt || grep -q 'FEXInterpreter' $T/rep.txt"
 check "C6 client log lines (gpu_compositing, GPU process, Loaded GL) and launcher log tail included" "grep -q 'gpu_compositing: disabled' $T/rep.txt && grep -q 'GPU process exited' $T/rep.txt && grep -q 'Loaded GL renderer' $T/rep.txt && grep -q 'launcher log, last 30 lines' $T/rep.txt"
 check "C7 home folder redacted, no host name, no account name, no serial read" \
@@ -49,6 +63,11 @@ OUT=$( . "$FN"; printf 'total 10000 5000\nsteamwebhelper 100\ngame 50\nfex 7\nto
 check "C8 cpu_delta arithmetic: total 75, steam 0, swh 120, fex 0, game 40, runtime 0" "[ \"\$OUT\" = '75 0 120 0 40 0' ]"
 OUT=$( . "$FN"; printf 'total 10000 5000\ntotal 10000 5000\n' | cpu_delta 4 )
 check "C8b no time elapsed: zeros, no division error" "[ \"\$OUT\" = '0 0 0 0 0 0' ]"
+# per pid: game pid 12 exits (dropped, not subtracted), game pid 14 starts (400 counted whole)
+OUT=$( . "$FN"; printf 'total 10000 5000\nsteamwebhelper 100 11\ngame 900 12\nfex 7 13\ntotal 14000 6000\nsteamwebhelper 1300 11\nfex 7 13\ngame 400 14\n' | cpu_delta 4 )
+check "C8c exited pid dropped, new pid counted whole: no negative share (swh 120, game 40)" "[ \"\$OUT\" = '75 0 120 0 40 0' ]"
+OUT=$( . "$FN"; printf 'total 10000 5000\ngame 900 12\ntotal 14000 6000\ngame 200 12\n' | cpu_delta 4 )
+check "C8d reused pid (jiffies below first snapshot) counted whole: game 20" "[ \"\$OUT\" = '75 0 0 0 20 0' ]"
 
 # static sections only (hardware report): no profile, no FEXBash probe, exit 0
 OUT=$(cd "$T" && HOME=$T/home timeout 60 bash "$S" --sections system,processes --user "$(id -un)" --home "$T/home" 2>&1); RC=$?

@@ -16689,23 +16689,23 @@ pid_group(){
     *) echo game;;
   esac
 }
-# one "total <jiffies> <idle+iowait>" line, then "<group> <jiffies>" per pid
+# one "total <jiffies> <idle+iowait>" line, then "<group> <jiffies> <pid>" per pid
 cpu_snapshot(){
   awk '/^cpu /{s=0; for(i=2;i<=NF;i++) s+=$i; print "total", s, $5+$6; exit}' /proc/stat
   local p g; for p in $(steam_pids); do
-    g=$(pid_group "$p"); awk -v g="$g" '{print g, $14+$15}' "/proc/$p/stat" 2>/dev/null
+    g=$(pid_group "$p"); awk -v g="$g" -v p="$p" '{print g, $14+$15, p}' "/proc/$p/stat" 2>/dev/null
   done
 }
 # two snapshots on stdin (first, then second), core count $1: "total steam swh fex game runtime" in percent
-# (total = whole system; groups = share of one core)
+# (total = whole system; groups = share of one core); per-pid delta: exited pids drop out, new or reused pids count whole
 cpu_delta(){
   awk -v ncpu="$1" '
     $1=="total"{ if(n==0){t0=$2; i0=$3} else {t1=$2; i1=$3}; n++; next }
-    { if(n==1) a[$1]+=$2; else b[$1]+=$2 }
-    END{ dt=(t1-t0)/ncpu; if(dt<=0) dt=1; busy=100*(1-(i1-i0)/(t1-t0)); if(t1-t0<=0) busy=0
+    { k=$1 SUBSEP $3; if(n==1) a[k]+=$2; else b[k]+=$2 }
+    END{ for(k in b){ d=b[k]-a[k]; if(d<0) d=b[k]; split(k, kp, SUBSEP); s[kp[1]]+=d }
+         dt=(t1-t0)/ncpu; if(dt<=0) dt=1; busy=100*(1-(i1-i0)/(t1-t0)); if(t1-t0<=0) busy=0
          printf "%.0f %.0f %.0f %.0f %.0f %.0f\n", busy,
-           100*(b["steam"]-a["steam"])/dt, 100*(b["steamwebhelper"]-a["steamwebhelper"])/dt, 100*(b["fex"]-a["fex"])/dt,
-           100*(b["game"]-a["game"])/dt, 100*(b["runtime"]-a["runtime"])/dt }'
+           100*s["steam"]/dt, 100*s["steamwebhelper"]/dt, 100*s["fex"]/dt, 100*s["game"]/dt, 100*s["runtime"]/dt }'
 }
 # v3d sysfs stats: queue timestamp runtime (kernel 6.8 and newer)
 GPU_STATS=$(ls /sys/bus/platform/drivers/v3d/*/gpu_stats 2>/dev/null | head -n1)
