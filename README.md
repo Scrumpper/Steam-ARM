@@ -691,7 +691,10 @@ upgrade from 1.2, which saved no family record, only turns such parts off.
   pass-through `VK_LAYER_fossilize` stand-in (built at setup) in overlay linked to
   `/usr/share/guestos/android` while that path is free, podman drop-in
   `/etc/containers/containers.conf.d/50-steam-arm-lepton.conf` mounting GPU render node
-  into rootless containers of every account, client umask 022. Android titles still need Steam Frame parts (Adreno driver payload, VR
+  into rootless containers of every account, client umask 022. Panthor GPUs: Mali Android
+  Mesa 25.1.4 from Waydroid's LineageOS 18.1 vendor image (download about 134 MB, pinned
+  SHA-256, each file checked) in same overlay; licences Mesa and libdrm MIT, minigbm
+  BSD-3-Clause, LLVM Apache-2.0 WITH LLVM-exception. Android titles still need Steam Frame parts (Adreno driver payload, VR
   runtime). Off by default. (scope: generic)
 
 ## Graphics route per title

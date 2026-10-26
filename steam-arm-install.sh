@@ -890,7 +890,7 @@ gov_relevant(){ case "$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null)"
 # lepton: host packages and SteamOS tool stand-ins for Valve's Lepton (Android runtime, app 3029110).
 LEP_PKGS="podman catatonit uidmap passt attr inotify-tools adb jq"
 # compiler and headers for the fossilize stand-in layer; recorded like LEP_PKGS
-LEP_BUILD="gcc libc6-dev libvulkan-dev"
+LEP_BUILD="gcc libc6-dev libvulkan-dev e2fsprogs"
 LEP_DIR=/usr/local/lib/steam-arm-lepton
 LEP_BIN=$LEP_DIR/bin
 LEP_OVERLAY=$LEP_DIR/guestos-android
@@ -934,6 +934,7 @@ lepton_off(){
   rm -f "$LEP_PODMAN_CONF"
   rmdir /etc/containers/containers.conf.d /etc/containers 2>/dev/null
   lepton_pkgs_purge
+  lepton_mesa_drop
   rm -f "$LEP_BIN/setpgid" "$LEP_BIN/steamvr" "$LEP_LAYER" "$LEP_LAYER_C" "$LEP_LAYER_JSON" "$LEP_GPU_RC"
   rmdir "$LEP_BIN" "$LEP_OVERLAY/vendor/vulkan_layers" "$LEP_OVERLAY/vendor/etc/init" "$LEP_OVERLAY/vendor/etc" \
     "$LEP_OVERLAY/vendor" "$LEP_OVERLAY" 2>/dev/null
@@ -941,6 +942,67 @@ lepton_off(){
   rmdir /usr/share/guestos 2>/dev/null
   rmdir "$LEP_DIR" 2>/dev/null
   [ -d "$LEP_DIR" ] && echo "  kept: $LEP_DIR (files not written by setup)"
+  return 0
+}
+# Mali Android Mesa 25.1.4 from Waydroid's LineageOS 18.1 vendor image (Panthor GPUs): pinned zip, files checked by sha256.
+LEP_WD_URL=https://sourceforge.net/projects/waydroid/files/images/vendor/waydroid_arm64/lineage-18.1-20250628-MAINLINE-waydroid_arm64-vendor.zip/download
+LEP_WD_SHA=e3b81b0c7f86d316350081a5d43622dd5dc2f9e028f10a715422133853ba886c
+# "sha256 image-path overlay-path" (overlay path below vendor/); gralloc and Vulkan names are the lookup keys Lepton fixes
+LEP_MESA_LIST="83813914c7ec64cb1428ece436d62e279a347b492586c78db1d4975397adc7e2 lib64/libgallium_dri.so lib64/libgallium_dri.so
+f47ef5742cd3ac5523725488ac0578ef7615b7c6967cb6c2933a0389105fadb9 lib64/dri_gbm.so lib64/dri_gbm.so
+a2cf73f62fc475232b4e196db09e1398c0092d933a8ec22f7986d3cee3a0381a lib64/libLLVM18.so lib64/libLLVM18.so
+45525f79df91aee43b348319a4b5ce39d1f5210c9258c1c4c7ffdab38fe1abbe lib64/libgbm_mesa.so lib64/libgbm_mesa.so
+2b8003414865fc4e5ebbf1886752424582f8879f8e29c990e937f76907a5f08b lib64/libgbm_mesa_wrapper.so lib64/libgbm_mesa_wrapper.so
+6ba1afbef99cffc4e5aeec834966c3359dd116603f6da335ecee77b60c911e95 lib64/libdrm.so lib64/libdrm.so
+3a22de14028c1c6867a5d46f97801e1e62c9ccd23e240afccb3ea48d2dbe2320 lib64/libdrm_amdgpu.so lib64/libdrm_amdgpu.so
+bc4a89b2b75b6ec9738914bed64da50a23c6bd2a32fb2ab908bcf421b061b559 lib64/libdrm_radeon.so lib64/libdrm_radeon.so
+a431957ceb188974f627612379d96a1ae4d3532d49014d526f32fb0ff1b6924e lib64/libminigbm_gralloc_gbm_mesa.so lib64/libminigbm_gralloc_gbm_mesa.so
+107e2202da6608eaf70e80f308aeb0cd99739c4d6854edd887fc8e12e5c160e5 lib64/egl/libEGL_mesa.so lib64/egl/libEGL_mesa.so
+326e3512b4ffb70fa475b6919e3a1edc48715c5f0247787489f2639b72521b84 lib64/egl/libGLESv1_CM_mesa.so lib64/egl/libGLESv1_CM_mesa.so
+b7c4b0b3a793c9695d3c2757020ea2a42bdb81ad356e57ff26f2c51c2958e2d7 lib64/egl/libGLESv2_mesa.so lib64/egl/libGLESv2_mesa.so
+34878b51ab4f037421351af76e716ae1a1dd57fa6dc2a3682b31f702fcdb475b lib64/hw/vulkan.panfrost.so lib64/hw/vulkan.waydroid.so
+04f2cc82d51257aec73260490cab57a329040c91f5292f597b0dd1cde91a1e01 lib64/hw/gralloc.minigbm_gbm_mesa.so lib64/hw/gralloc.minigbm_msm.so"
+# written by setup beside them: blank allocator 4.0 service and manifests (gralloc0 path), Mesa device filter
+LEP_MESA_GEN="etc/init/android.hardware.graphics.allocator@4.0-service.minigbm_msm.rc etc/vintf/manifest/android.hardware.graphics.allocator@4.0.xml etc/vintf/manifest/android.hardware.graphics.mapper@4.0.xml etc/init/zz-steam-arm-lepton-mali.rc"
+# Status 0 when every listed Mesa file is in the overlay with its sha256.
+lepton_mesa_ok(){
+  local sum src dst
+  while read -r sum src dst; do
+    [ "$(sha256sum < "$LEP_OVERLAY/vendor/$dst" 2>/dev/null | cut -c1-64)" = "$sum" ] || return 1
+  done <<< "$LEP_MESA_LIST"
+}
+# Listed files from vendor image $1 into the overlay, each checked by sha256, plus the generated files; status 1 on any miss.
+lepton_mesa_extract(){
+  local v=$LEP_OVERLAY/vendor sum src dst t
+  t=$(mktemp -d) || return 1
+  while read -r sum src dst; do
+    if ! debugfs -R "dump /$src $t/f" "$1" >/dev/null 2>&1 || [ "$(sha256sum < "$t/f" | cut -c1-64)" != "$sum" ]; then
+      rm -rf "$t"; warn "lepton: $src missing or changed in vendor image"; return 1
+    fi
+    mkdir -p "$(dirname "$v/$dst")" && mv -f "$t/f" "$v/$dst" && chmod 644 "$v/$dst" || { rm -rf "$t"; return 1; }
+  done <<< "$LEP_MESA_LIST"
+  rm -rf "$t"
+  mkdir -p "$v/etc/init" "$v/etc/vintf/manifest" || return 1
+  : > "$v/etc/init/android.hardware.graphics.allocator@4.0-service.minigbm_msm.rc"
+  printf '<manifest version="1.0" type="device">\n</manifest>\n' > "$v/etc/vintf/manifest/android.hardware.graphics.allocator@4.0.xml"
+  printf '<manifest version="1.0" type="device">\n</manifest>\n' > "$v/etc/vintf/manifest/android.hardware.graphics.mapper@4.0.xml"
+  printf '# steam-arm-setup lepton: Mesa device filter, native Panfrost driver\non early-init\n    setprop drm.gpu.vendor_name panthor\n    setprop mesa.loader.driver.override panfrost\n' \
+    > "$v/etc/init/zz-steam-arm-lepton-mali.rc"
+  chmod 644 "$v/etc/init/android.hardware.graphics.allocator@4.0-service.minigbm_msm.rc" "$v/etc/vintf/manifest/"*.xml "$v/etc/init/zz-steam-arm-lepton-mali.rc"
+}
+# Pinned zip into folder $1, sha256 checked, vendor.img unpacked there.
+lepton_mesa_fetch(){
+  curl -fL --retry 2 --max-filesize 200000000 -o "$1/vendor.zip" "$LEP_WD_URL" || return 1
+  [ "$(sha256sum < "$1/vendor.zip" | cut -c1-64)" = "$LEP_WD_SHA" ] || { warn "lepton: vendor image download has another sha256"; return 1; }
+  python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extract("vendor.img", sys.argv[2])' "$1/vendor.zip" "$1" && rm -f "$1/vendor.zip"
+}
+# Mesa files and generated files out of the overlay, empty folders with them.
+lepton_mesa_drop(){
+  local sum src dst f
+  while read -r sum src dst; do rm -f "$LEP_OVERLAY/vendor/$dst"; done <<< "$LEP_MESA_LIST"
+  for f in $LEP_MESA_GEN; do rm -f "$LEP_OVERLAY/vendor/$f"; done
+  rmdir "$LEP_OVERLAY/vendor/lib64/egl" "$LEP_OVERLAY/vendor/lib64/hw" "$LEP_OVERLAY/vendor/lib64" "$LEP_OVERLAY/vendor/etc/vintf/manifest" \
+    "$LEP_OVERLAY/vendor/etc/vintf" 2>/dev/null
   return 0
 }
 # containers.conf drop-in: render node $1 as bind mount (Lepton's --tmpfs /dev hides devices= entries).
@@ -970,7 +1032,7 @@ desc_of(){ case "$1" in
   kde-input-prompt) echo "KDE Plasma (Wayland): no \"Remote control requested\" prompt; any X11 program may then send input";;
   page-size)  echo "Raspberry Pi 5: boot firmware's 4K page kernel (no effect elsewhere)";;
   pi-governor) echo "Raspberry Pi: CPU governor performance while Steam runs (more heat and power); off by default";;
-  lepton)     echo "Host tools for Valve's Lepton (Android titles): podman stack, adb, setpgid and steamvr stand-ins, umask 022; off by default";;
+  lepton)     echo "Host tools for Valve's Lepton (Android titles): podman stack, adb, setpgid and steamvr stand-ins, umask 022; Panthor GPUs: Mali Android Mesa (downloads about 134 MB); off by default";;
 esac; }
 var_of(){ echo "OPT_$(echo "$1" | tr 'a-z-' 'A-Z_')"; }
 for c in $COMPONENTS_ALL; do eval "$(var_of "$c")=1"; done
@@ -17696,6 +17758,21 @@ if [ -n "${GPU_NODE:-}" ] && [ -c "$GPU_NODE" ]; then
     || warn "lepton: could not write $LEP_GPU_RC"
 else
   rm -f "$LEP_PODMAN_CONF" "$LEP_GPU_RC"; warn "lepton: no GPU render node found; Lepton titles draw on CPU"
+fi
+# Mali Android drivers: Panthor GPUs only (tested path); about 134 MB download, 358 MB unpacked while extracting.
+if [ "${GPU_DRV:-}" = panthor ]; then
+  if lepton_mesa_ok; then echo "  Mali Android drivers (Mesa 25.1.4) in place"
+  elif [ "$(df -Pk /var/tmp 2>/dev/null | awk 'NR == 2 { print $4 }')" -lt 600000 ] 2>/dev/null; then
+    warn "lepton: under 600 MB free in /var/tmp; Mali Android drivers not downloaded"
+  else
+    LW=$(mktemp -d /var/tmp/steam-arm-lepton.XXXXXX) && CLEANUP+=("$LW")
+    echo "  downloading Mali Android drivers: Waydroid LineageOS 18.1 vendor image, about 134 MB"
+    if [ -n "$LW" ] && lepton_mesa_fetch "$LW" && lepton_mesa_extract "$LW/vendor.img"; then echo "  Mali Android drivers (Mesa 25.1.4) installed"
+    else lepton_mesa_drop; warn "lepton: Mali Android drivers not installed; Lepton titles draw on CPU. $NETHINT"; fi
+    rm -rf "$LW"
+  fi
+else
+  lepton_mesa_drop
 fi
 grep -qs "^$GAMEUSER:" /etc/subuid \
   || warn "lepton: no subordinate ids for '$GAMEUSER' in /etc/subuid; podman needs them: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $GAMEUSER"

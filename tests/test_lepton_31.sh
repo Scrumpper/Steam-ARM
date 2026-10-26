@@ -49,7 +49,7 @@ LIB=$T/lib.sh
 } > "$LIB"
 check "P0 extracted: conf helpers, package helpers, lepton_off, drop-in stub" "grep -q '^conf_del()' $LIB && grep -q '^lepton_pkgs_add()' $LIB && grep -q '^lepton_pkgs_purge()' $LIB && grep -q '^lepton_off()' $LIB && grep -q '^lepton_dev_conf()' $LIB && bash -n $LIB"
 run(){ ( export T; PATH=$T/bin:$PATH; CONF=$T/etc/steam-arm.conf; . "$LIB"; eval "$1" ) 2>&1; }
-printf 'attr\ngcc\njq\nlibc6\nlibc6-dev\n' > "$T/state"; printf 'podman conmon crun\nadb android-libbase\n' > "$T/deps"; : > "$T/rdeps"; : > "$T/etc/steam-arm.conf"
+printf 'attr\ne2fsprogs\ngcc\njq\nlibc6\nlibc6-dev\n' > "$T/state"; printf 'podman conmon crun\nadb android-libbase\n' > "$T/deps"; : > "$T/rdeps"; : > "$T/etc/steam-arm.conf"
 cp "$T/state" "$T/state.before"
 OUT=$(run lepton_pkgs_add; cat "$T/apt.log"; echo "REC=$(sed -n 's/^LEPTON_PKGS_ADDED=//p' "$T/etc/steam-arm.conf")")
 check "P1 install: apt-get gets only missing packages; record = every new package (deps too), not those already there" \
@@ -95,6 +95,26 @@ check "D3 Android init file: minigbm on the same node, written and removed with 
 check "D2 setup writes drop-in only for an existing character device node, else removes it and warns; purge after own files in lepton_off" \
   "grep -qF '[ -n \"\${GPU_NODE:-}\" ] || gpu_detect' '$INST' && grep -qF 'if [ -n \"\${GPU_NODE:-}\" ] && [ -c \"\$GPU_NODE\" ]; then' '$INST' && grep -qF 'lepton_dev_conf \"\$GPU_NODE\" > \"\$LEP_PODMAN_CONF\"' '$INST' && grep -qF 'rm -f \"\$LEP_PODMAN_CONF\" \"\$LEP_GPU_RC\"; warn \"lepton: no GPU render node found' '$INST' && awk '/^lepton_off\(\)\{/{f=1} f && /rm -f \"\\\$LEP_PODMAN_CONF\"/{a=NR} f && /^  lepton_pkgs_purge\$/{b=NR} f && /^}/{exit} END{exit !(a && b && a < b)}' '$INST'"
 
+# Mali Android Mesa from vendor image: fake ext4 image (mke2fs -d), real paths, test sha256 list
+export PATH="$PATH:/usr/sbin:/sbin"
+if command -v mke2fs >/dev/null && command -v debugfs >/dev/null; then
+  IMGT=$T/imgtree; L2L=$T/list; : > "$L2L"
+  awk '/^LEP_MESA_LIST="/{f=1; sub(/^LEP_MESA_LIST="/, "")} f{ l=$0; e=sub(/"$/, "", l); print l; if (e) exit }' "$INST" > "$T/reallist"
+  while read -r sum src dst; do mkdir -p "$IMGT/$(dirname "$src")"; echo "fake $src" > "$IMGT/$src"; echo "$(sha256sum < "$IMGT/$src" | cut -c1-64) $src $dst" >> "$L2L"; done < "$T/reallist"
+  mke2fs -q -t ext4 -d "$IMGT" "$T/v.img" 8M >/dev/null 2>&1
+  mrun(){ run "LEP_MESA_LIST=\$(cat '$L2L'); $1"; }
+  rm -rf "$T/lepdir"; OUT=$(mrun 'lepton_mesa_extract '"$T/v.img"'; echo rc=$?; lepton_mesa_ok && echo ok')
+  V2=$T/lepdir/guestos-android/vendor
+  check "M1 extract: 14 files at overlay names (vulkan.waydroid, gralloc.minigbm_msm), mode 644, generated rc and blank manifests, check passes" \
+    "[ \$(wc -l < '$T/reallist') = 14 ] && grep -qx rc=0 <<<\"\$OUT\" && grep -qx ok <<<\"\$OUT\" && [ \$(find '$V2/lib64' -type f | wc -l) = 14 ] && grep -qx 'fake lib64/hw/vulkan.panfrost.so' '$V2/lib64/hw/vulkan.waydroid.so' && grep -qx 'fake lib64/hw/gralloc.minigbm_gbm_mesa.so' '$V2/lib64/hw/gralloc.minigbm_msm.so' && [ \"\$(stat -c %a '$V2/lib64/libdrm.so')\" = 644 ] && [ ! -s '$V2/etc/init/android.hardware.graphics.allocator@4.0-service.minigbm_msm.rc' ] && grep -qx '    setprop mesa.loader.driver.override panfrost' '$V2/etc/init/zz-steam-arm-lepton-mali.rc' && grep -q '^<manifest version=\"1.0\" type=\"device\">' '$V2/etc/vintf/manifest/android.hardware.graphics.mapper@4.0.xml' && ! find '$V2' -type l | grep -q ."
+  touch "$V2/lib64/other.so"; OUT=$(mrun 'lepton_mesa_drop'; find "$V2" -type f)
+  check "M2 drop: every listed and generated file gone, foreign file kept" "[ \"\$OUT\" = '$V2/lib64/other.so' ]"
+  rm -rf "$T/lepdir"; sed -i '1s/^./0/' "$L2L"; OUT=$(mrun 'lepton_mesa_extract '"$T/v.img"'; echo rc=$?')
+  check "M3 file with other sha256 in image: status 1, warning names it" "grep -qx rc=1 <<<\"\$OUT\" && grep -q '^WARN lepton: lib64/libgallium_dri.so missing or changed in vendor image' <<<\"\$OUT\""
+else echo "SKIP M1-M3 vendor image extract: mke2fs or debugfs missing"; fi
+check "M4 pinned zip URL and sha256 (Waydroid OTA id), Panthor only, size note, lepton_off drops files, e2fsprogs recorded" \
+  "grep -qx 'LEP_WD_URL=https://sourceforge.net/projects/waydroid/files/images/vendor/waydroid_arm64/lineage-18.1-20250628-MAINLINE-waydroid_arm64-vendor.zip/download' '$INST' && grep -qx 'LEP_WD_SHA=e3b81b0c7f86d316350081a5d43622dd5dc2f9e028f10a715422133853ba886c' '$INST' && grep -qF 'if [ \"\${GPU_DRV:-}\" = panthor ]; then' '$INST' && grep -q 'about 134 MB' '$INST' && awk '/^lepton_off\(\)\{/{f=1} f && /^  lepton_mesa_drop\$/{ok=1} f && /^}/{exit} END{exit !ok}' '$INST' && grep -q '^LEP_BUILD=\".*e2fsprogs' '$INST'"
+
 # setup block and removal order
 check "S1 setup: part on installs, writes stand-ins, links overlay only when free, clears group write as game user; off runs lepton_off" \
   "awk '/^if opt lepton; then\$/{f=1} f' '$INST' | head -260 > '$T/blk' && grep -q '^lepton_pkgs_add\$' '$T/blk' && grep -qF 'cat > \"\$LEP_BIN/setpgid\" <<'\"'\"'LEPSETPGID'\"'\"'' '$T/blk' && grep -qF '[ ! -e \"\$LEP_GUEST\" ] && [ ! -L \"\$LEP_GUEST\" ]' '$T/blk' && grep -qF 'as_user chmod -R g-w \"\$S/steamapps/common/Lepton\"' '$T/blk' && grep -A1 -x 'else' '$T/blk' | grep -qx 'lepton_off'"
@@ -114,7 +134,7 @@ else echo "SKIP Y1 layer build: $CC or Vulkan headers missing"; fi
 OUT=$(awk '/^  cat > "\$LEP_LAYER_JSON" <<JSON$/{f=1;next} /^JSON$/{f=0} f' "$INST" | LEP_LAYER=/x/libVkLayer_fossilize.so envsubst 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin)["layer"]; print(d["name"], d["library_path"])')
 check "Y2 manifest names VK_LAYER_fossilize with library path ending libVkLayer_fossilize.so (Lepton's id lookup)" "[ \"\$OUT\" = 'VK_LAYER_fossilize /x/libVkLayer_fossilize.so' ]"
 check "Y3 setup builds layer into overlay, manifest only on success; compiler and headers in LEP_BUILD (recorded, purged with the part), not BUILDPKGS" \
-  "grep -qF 'LEP_LAYER=\$LEP_OVERLAY/vendor/vulkan_layers/libVkLayer_fossilize.so' '$INST' && grep -qF 'rm -f \"\$LEP_LAYER\" \"\$LEP_LAYER_JSON\"; warn \"lepton: fossilize stand-in layer did not build' '$INST' && grep -qx 'LEP_BUILD=\"gcc libc6-dev libvulkan-dev\"' '$INST' && grep -qF 'for p in \$LEP_PKGS \$LEP_BUILD; do' '$INST' && ! grep -q 'opt lepton && BUILDPKGS' '$INST'"
+  "grep -qF 'LEP_LAYER=\$LEP_OVERLAY/vendor/vulkan_layers/libVkLayer_fossilize.so' '$INST' && grep -qF 'rm -f \"\$LEP_LAYER\" \"\$LEP_LAYER_JSON\"; warn \"lepton: fossilize stand-in layer did not build' '$INST' && grep -qx 'LEP_BUILD=\"gcc libc6-dev libvulkan-dev e2fsprogs\"' '$INST' && grep -qF 'for p in \$LEP_PKGS \$LEP_BUILD; do' '$INST' && ! grep -q 'opt lepton && BUILDPKGS' '$INST'"
 
 # setpgid stand-in
 P=$T/setpgid; awk "/^cat > \"\\\$LEP_BIN\\/setpgid\" <<'LEPSETPGID'\$/{f=1;next} /^LEPSETPGID\$/{f=0} f" "$INST" > "$P"; chmod 755 "$P"

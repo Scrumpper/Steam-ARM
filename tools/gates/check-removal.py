@@ -19,7 +19,7 @@ from sarm_paths import P  # noqa: E402
 HD = re.compile(r"""<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1""")
 # removal-side functions: their bodies count as removal text
 REMOVERS = ("remove_all", "retire_other", "mali_tree_remove", "legacy_mesa_restore", "rfs_unguard", "mc_restore",
-            "kwin_rule_remove", "ps_remove", "fstab_edit", "kde_input", "lepton_off")
+            "kwin_rule_remove", "ps_remove", "fstab_edit", "kde_input", "lepton_off", "lepton_mesa_drop")
 # parents other packages share; mkdir -p of these is no own write
 SHARED_DIRS = (r"^/(etc|usr|usr/local|usr/share|usr/local/share|usr/local/lib|opt)(/(bin|sbin|lib|apt|apt/keyrings|"
                r"apt/sources\.list\.d|apt/preferences\.d|apt/apt\.conf\.d|applications|icons|icons/hicolor(/[^/]+(/apps)?)?|"
@@ -50,6 +50,8 @@ FUNC_KEEP = {
     "rfs_guard": "package tool guards inside the RootFS; rfs_unguard puts the real tools back",
     "fex_source_debian": "foreign Debian-codename FEX source renamed .disabled, named in its warning",
     "mali_tree_build": "second RootFS tree staged by hard-link copy; mali_tree_remove deletes it",
+    "lepton_mesa_extract": "overlay files of LEP_MESA_LIST and LEP_MESA_GEN; lepton_mesa_drop deletes the same lists",
+    "lepton_mesa_fetch": "download into temporary folder of its caller, removed there and by CLEANUP",
 }
 # single lines whose target is a positional argument of sh -c
 LINE_KEEP = [(r'mv "\$1/steamrtarm64" "\$2"', "client program folder ($D) inside client folder")]
