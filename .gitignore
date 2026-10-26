@@ -1,2 +1,4 @@
 *.deb
+*.deb.sha256
 /build/
+__pycache__/

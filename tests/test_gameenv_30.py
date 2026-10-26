@@ -167,7 +167,7 @@ check("G12 launcher: no direct export of vk-spoof or fossilize switch",
 check("G12 launcher: settings launch options may override stay exports (D3D8, Raspberry Pi WineD3D)",
       'export PROTON_DXVK_D3D8="${PROTON_DXVK_D3D8:-1}"' in L and "export PROTON_USE_WINED3D=1 STEAM_ARM_D3D_DEFAULT=wined3d" in L)
 check("G12 removal: entry restore (block out) as game account", 'as_user python3 /usr/local/lib/steam-arm-entry.py restore' in SRC)
-check("G12 own names list matches launcher lines", re.search(r'GFX_NAMES = \("DISABLE_VK_LAYER_VALVE_steam_fossilize_1", "STEAM_ARM_VK_SPOOF"\)', E)
+check("G12 own names list matches launcher lines", re.search(r'GFX_NAMES = \("DISABLE_VK_LAYER_VALVE_steam_fossilize_1", "STEAM_ARM_VK_SPOOF"[,)]', E)
       and "GAMEENV=DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1" in L and "STEAM_ARM_VK_SPOOF=1\"" in L)
 
 # launcher fragment with stubbed helper: native client written / not written, x86 client

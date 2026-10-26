@@ -5,7 +5,7 @@
 Confirmed by inspection of installer:
 
 - ARM64 system.
-- Debian or Ubuntu family distribution, since installer uses `apt`. Setup stops before any
+- Debian or Ubuntu family distribution, since installer uses `apt`. Setup halts before any
   change without `apt-get`, `apt-cache`, `dpkg` or package architecture `arm64`.
 - Ubuntu 25.10 or newer, Debian 13 or newer, or distribution built on them: Ubuntu 24.04
   and Debian 12 lack SDL3 packages client needs. Setup checks host packages with
@@ -13,6 +13,8 @@ Confirmed by inspection of installer:
 - Mesa graphics stack.
 
 FEX, emulation tool used for x86 game code, installs from FEX's Ubuntu PPA `ppa:fex-emu/fex`. Ubuntu family distribution is tested path for that step. On Debian 13 and Raspberry Pi OS built on it, setup adds same PPA as plain apt source with its Ubuntu 24.04 build (see Debian systems).
+
+PPA series as of 2026-10-24: FEX 2610 for Ubuntu 24.04 and 26.04 series (Debian 13 hosts get Ubuntu 24.04 build), FEX 2607 for Ubuntu 25.10. Host FEX serves Remote Play, thunk libraries, binfmt registration and x86 client path; games run on Valve's FEX tool from Steam, so title compatibility does not depend on PPA series. Setup warns when PPA offers older FEX build for host Ubuntu release than for other releases: host packages step compares apt candidate of chosen `fex-emu-armv8.x` package with 2610 and prints one line, `[warn] FEX package source offers FEX 2607-1 for this distribution release; FEX 2610 builds exist there for other Ubuntu releases. Host FEX serves Remote Play and thunk libraries; titles use Valve's FEX tool from Steam and are unaffected.` Package choice is unchanged and no other series is pinned; `--detect` prints no such line.
 
 Installer has no hardcoded GPU render node and no hardcoded card index. GPU family detection reads every render node and sets component defaults per family (see GPU families). Page size check names fix for Raspberry Pi; on Apple Silicon it stops (16K page kernel not supported).
 
@@ -46,7 +48,7 @@ Output on test device, RK3588 board with Mali-G610 GPU (family `mali-csf-v10`):
 | OpenGL renderer | `Mali-G610 MC4 (Panfrost)`, Mesa 26.1.4      | `llvmpipe`: no GPU acceleration; titles run on CPU or not at all      |
 | Vulkan driver   | `panvk`, device `Mali-G610 MC4`, Mesa 26.1.4 | no Vulkan device: titles built for Linux only, no Windows titles      |
 | Distribution    | `ubuntu`, `resolute`                         | `debian`, `trixie`: PPA added as apt source; older Debian, see below  |
-| Page size       | `4096`                                       | `16384` or `65536`: setup stops and names fix, see Raspberry Pi below |
+| Page size       | `4096`                                       | `16384` or `65536`: setup halts and names fix, see Raspberry Pi below |
 
 Mesa on tested device comes from `kisak-mesa` PPA. Older Mesa releases carry earlier
 PanVK; when `vulkaninfo` lists no `panvk` device on Mali-G610, newer Mesa from that PPA
@@ -72,7 +74,7 @@ device. On Armbian, three choices at download time decide result:
   has Panthor depends on build, so check with `lsmod` above.
 - **Userland.** Ubuntu based images fit installer's tested path. Debian 13 (trixie) based
   images get FEX PPA as plain apt source (see Debian systems); Debian 12 based images lack
-  SDL3 packages client needs, and setup stops there before any change.
+  SDL3 packages client needs, and setup halts there before any change.
 - **Mesa.** Image's stock Mesa may predate PanVK support in use here; `vulkaninfo` check
   above shows it.
 
@@ -83,7 +85,7 @@ Reports from these boards are welcome.
 Installer picks GPU family from kernel driver, Mali GPU id, device tree and PCI vendor;
 `--detect` prints it, `GPU_FAMILY=id` sets it by hand (kept for later runs,
 `GPU_FAMILY=auto` detects again). Family sets default state of three components; all
-other components keep their own defaults. Detection method and family notes: `README.md`,
+other components retain their own defaults. Detection method and family notes: `README.md`,
 GPU detection.
 
 | Family                                                | GPU                             | `vk-spoof` | `gpu-in-emulation` | `glx-lax` | Status   | Note                                                                                            |
@@ -103,7 +105,7 @@ GPU detection.
 | `adreno-a702`                                         | Adreno 702                      | off        | off                | on        | untested | Vulkan too limited for most Windows titles                                                      |
 | `adreno-legacy`                                       | Adreno 5xx and older            | off        | off                | on        | untested | no Vulkan driver; native OpenGL titles only                                                     |
 | `apple-agx`                                           | Apple GPU (Asahi)               | off        | off                | on        | untested | not supported on 16K page kernel; setup does not set up `muvm`                                  |
-| `broadcom-v3d71`, `broadcom-v3d42`                    | Raspberry Pi 5, 4               | off        | off                | on        | untested | OpenGL 3.1; Windows titles through WineD3D, not DXVK; Pi 4: x86 client through emulation        |
+| `broadcom-v3d71`, `broadcom-v3d42`                    | Raspberry Pi 5, 4               | off        | off                | on        | untested | OpenGL 3.1; Windows titles through WineD3D, not DXVK; Pi 4: x86 client through emulation, `PLATFORM=pi4` |
 | `broadcom-vc4`                                        | Raspberry Pi 0 to 3             | off        | off                | on        | untested | not supported                                                                                   |
 | `vivante`                                             | Vivante (etnaviv)               | off        | off                | on        | untested | no Vulkan driver; most titles do not run                                                        |
 | `img-powervr`                                         | PowerVR                         | off        | off                | off       | untested | Vulkan driver in development; OpenGL through Zink                                               |
@@ -121,6 +123,12 @@ excluded; 32-bit Vulkan titles switch to it on `mali-csf-v10` only, since PanVK 
 default only there <https://docs.mesa3d.org/drivers/panfrost.html>. On other families
 those titles lose `-vulkan` unless profile says `vk32=keep`.
 
+**Panthor GPU job timeouts with Windows titles.** Windows titles (Proton, DXVK) on Panthor
+kernel driver with Mesa PanVK log GPU job timeouts in kernel log. X11 session: no visible
+effect, title keeps running. Wayland session: compositor loses GPU context and resets it,
+screen freezes for short periods while title runs. Play Windows titles in X11 session on
+Panthor GPUs. Titles built for Linux not affected. Cause open.
+
 ## Component scope
 
 | Component                                                 | Scope         | Note                                                                                                       |
@@ -132,7 +140,7 @@ those titles lose `-vulkan` unless profile says `vk32=keep`.
 | `physx-skip`                                              | Generic       | On by default. Marks PhysX install step of Windows titles done; off removes no files.                      |
 | `map-count`                                               | Generic       | Raises `vm.max_map_count`; applies to any Linux system running Proton.                                     |
 | `xpad-dedup`                                              | Generic       | Applies to any system where kernel exposes duplicate joystick node for pad.                                |
-| `pad-hidraw`                                              | Generic       | Valve's `steam-devices` rules plus pads from kernel `xpad` list; any udev system.                          |
+| `pad-hidraw`                                              | Generic       | Valve's `steam-devices` rules and pads from kernel `xpad` list; any udev system.                           |
 | `pad-xbox`                                                | Generic       | Applies to any XInput pad from maker other than Microsoft.                                                 |
 | `desktop`                                                 | Generic       | Application menu entry and window rule (KDE Plasma 6 or 5); no hardware dependency.                        |
 | `desktop-mode`, `icon-bigpicture`, `icon-desktop`, `tray` | Generic       | Menu entry, desktop icons and tray icon; no hardware dependency.                                           |
@@ -189,11 +197,11 @@ fail.
 | Debian release              | glibc | PPA series (FEX build needs)     | Result                                                             |
 |-----------------------------|-------|----------------------------------|--------------------------------------------------------------------|
 | 13 trixie (Raspberry Pi OS) | 2.41  | noble, Ubuntu 24.04 (glibc 2.38) | FEX and every host package resolve for arm64 (container test)      |
-| 12 bookworm                 | 2.36  | jammy, Ubuntu 22.04 (glibc 2.34) | setup stops before any change: no `libsdl3-0`, `libgtk2.0-0t64`    |
+| 12 bookworm                 | 2.36  | jammy, Ubuntu 22.04 (glibc 2.34) | setup halts before any change: no `libsdl3-0`, `libgtk2.0-0t64`    |
 | testing, unstable           | 2.41+ | noble                            | untested                                                           |
-| 11 bullseye and older       | 2.31  | none                             | setup stops before any change: no SDL3 packages; upgrade to 13     |
+| 11 bullseye and older       | 2.31  | none                             | setup halts before any change: no SDL3 packages; upgrade to 13     |
 
-Signing key comes from `keyserver.ubuntu.com` by fingerprint `EDB98BFE8A2310DC9C4A376E76DBFEBEA206F5AC` (Launchpad's `signing_key_fingerprint` for `~fex-emu/+archive/ubuntu/fex`); setup checks that download holds this one key only, then writes `/etc/apt/keyrings/steam-arm-fex.gpg`. Existing FEX source is kept; one naming Debian release (left by `add-apt-repository` on Debian) is renamed to `.disabled`, since apt cannot update it. With `FEX` command already present, setup adds no source. To build FEX instead: FEX's `InstallFEX.py` or build guide, <https://github.com/FEX-Emu/FEX>. FEX from another source (`FEX` command not owned by `fex-emu` package) needs its x86 binfmt entries registered; setup then installs no FEX packages and reads thunk folders from FEX's own prefix, `/usr` or `/usr/local` (see `README.md`, Requirements). Tested with stubs only.
+Signing key is fetched from `keyserver.ubuntu.com` by fingerprint `EDB98BFE8A2310DC9C4A376E76DBFEBEA206F5AC` (Launchpad's `signing_key_fingerprint` for `~fex-emu/+archive/ubuntu/fex`); setup checks that download holds this one key only, then writes `/etc/apt/keyrings/steam-arm-fex.gpg`. Existing FEX source is kept; one naming Debian release (left by `add-apt-repository` on Debian) is renamed to `.disabled`, since apt cannot update it. With `FEX` command already present, setup adds no source. To build FEX instead: FEX's `InstallFEX.py` or build guide, <https://github.com/FEX-Emu/FEX>. FEX from another source (`FEX` command not owned by `fex-emu` package) needs its x86 binfmt entries registered; setup then installs no FEX packages and reads thunk folders from FEX's own prefix, `/usr` or `/usr/local` (see `README.md`, Requirements). Tested with stubs only.
 
 ## Non-Mali GPUs
 
@@ -203,7 +211,7 @@ Published driver archive of `gpu-in-emulation` carries Mali drivers only; on non
 
 Automatic Windows build applies on `mali-csf-v10` only; other families show it as suggestion.
 
-`glx-lax` addresses Mesa client library limit and applies to any Mesa based driver, not only Mali's, so it remains relevant on non-Mali GPUs that use Mesa.
+`glx-lax` addresses Mesa client library limit and applies to any Mesa based driver, not only Mali's, so it stays useful on non-Mali GPUs that use Mesa.
 
 ## Other ARM64 systems
 
@@ -301,12 +309,17 @@ is no display stack to speak of.
 system service manager, which several components require.
 
 **Apple Silicon under Asahi.** Honeykrisp is functional at Vulkan 1.3, but kernel runs 16K
-pages and setup stops. Emulation half needs 4K page guest such as `muvm`, which this package
+pages and setup halts. Emulation half needs 4K page guest such as `muvm`, which this package
 does not set up. `STEAM_ARM_IGNORE_PAGESIZE=1` skips check on non-4K host kernel; use it only
 when x86 side runs inside separate 4K page guest that check cannot see. On 16K host without
 such guest, emulation fails. Untested.
 
 **Hardware with no 64-bit ARM support**, which is excluded by architecture itself.
+
+**Android-only Steam titles and VR titles.** Android builds run through Lepton runtime and VR
+titles need VR runtime; both are Steam Frame components, not present on this stack, on any
+GPU family. Run report names class in row `Class` (Android-only title, VR-only title, Lepton
+route title); 2D titles get no row.
 
 ## What decides it, in practice
 
@@ -363,7 +376,7 @@ kernel is there for performance, so change costs several percent on other worklo
 **Distribution.** Raspberry Pi OS is Debian based (`ID=debian` in `/etc/os-release`). On
 Raspberry Pi OS built on Debian 13 (trixie), setup adds FEX PPA as apt source with its
 Ubuntu 24.04 build (see Debian systems). Raspberry Pi OS built on Debian 12 (bookworm)
-lacks SDL3 packages client needs; host package check stops setup there before any change. Ubuntu for Raspberry
+lacks SDL3 packages client needs; host package check halts setup there before any change. Ubuntu for Raspberry
 Pi fits installer's tested path.
 
 **Graphics.** Mesa drives Pi GPU with v3d (OpenGL) and V3DV (Vulkan). GPU family detection
@@ -426,6 +439,81 @@ Status: Raspberry Pi behaviour above is untested on Raspberry Pi hardware (no Pi
 it follows from Mesa source and community reports. Reports welcome; table in `GAMES.md`,
 Raspberry Pi 5.
 
+### Raspberry Pi 4
+
+Cortex-A72 (Armv8.0, no LSE atomics), VideoCore VI (`broadcom-v3d42`), Mesa v3d (OpenGL
+3.1) and V3DV (Vulkan 1.3 on Raspberry Pi OS trixie, Mesa 25 and 26). Raspberry Pi OS
+bookworm (Mesa 24.2, Vulkan 1.2) cannot run setup: host package check halts on Debian 12
+(see Debian systems); trixie is required. Setup writes `PLATFORM=pi4`, `CPU_LSE=0` and `MESA_HOST`, picks FEX
+package `fex-emu-armv8.0` and Valve's x86 client (native client stops with SIGILL on this
+CPU; setup checks each new native build and moves back by itself).
+
+What runs where:
+
+- Client window: x86 client through emulation, drawn on CPU. Expected, not fault; native
+  client is blocked by Valve issue 13288. 3.1 lowers its work: desktop interface by
+  default (Deck interface is one animated page), no friends view, site isolation off, FEX
+  code cache and logging off for client processes, optional reduced x87 precision for
+  client program, Multiblock off after repeated client window restarts. Magnitude is
+  unmeasured; `steam-arm --cpu-report` names processes and threads and ends with verdict.
+  Window size follows desktop resolution: 1920x1080 output draws one quarter of pixels of
+  3840x2160.
+- Three levels: always on CPU (client window, emulator's translated code); per title
+  (`tso=off`, `x87=reduced`, `glver`, Zink; correctness trades named on each screen);
+  experiments (`lab-cef-gpu vulkan`, kept with `client-gpu on`; `client-tso relaxed`;
+  `x87-client on`), each off by default and each with guard or watcher. Vulkan class:
+  V3DV 1.3 on Raspberry Pi OS trixie (Mesa 25 and 26); setup stores it as `VK_HOST`
+  (1.2 below Mesa 24.3; no release setup accepts carries that Mesa).
+- Client window through GPU: only ANGLE on Vulkan thunk can reach host GPU (GL thunk
+  breaks on Chromium's GLX pattern, EGL thunk lacks entry Chromium's loader uses);
+  unverified on V3DV, black window possible, so opt-in.
+- Games: x86 Linux titles reach v3d and V3DV through FEX GL and Vulkan forwarding when
+  FEX's thunk libraries are present (package `fex-emu-armv8.0` includes
+  `HostThunks/libGL-host.so`, `libvulkan-host.so`, `GuestThunks/libGL-guest.so`,
+  `libvulkan-guest.so`, `ThunksDB.json`; checked by project's container test). Without
+  them every game draws on CPU and launcher raises notice at every start. 32-bit titles
+  are worst case: no 32-bit Vulkan thunk, GL thunk only.
+- Windows titles: x86 Proton through emulation, WineD3D on OpenGL 3.1 (Direct3D 9 class,
+  feature level 9_3); Direct3D 10 and 11 titles need `glver=3.3` and may misrender.
+  `d3d=dxvk` is kept but not applied: DXVK needs `shaderInt64`, `robustBufferAccess2`,
+  `textureCompressionBC`, `multiViewport` and `tessellationShader`, V3DV reports none.
+- 32-bit titles with Vulkan: no 32-bit Vulkan forwarding, so `-vulkan` is removed (GL
+  path); `vk32=keep` keeps it on lavapipe (CPU) and records reason `vk32-cpu`.
+- Per-title levers (opt-in): `tso=off`, `x87=reduced` (Emulation keys), `glver`, Zink,
+  automatic tuning order on Pi families (OpenGL version 3.3, Zink, Multiblock; no
+  `gl32`), `pi-governor` component.
+- Session: Raspberry Pi OS desktop runs labwc (Wayland), client and titles draw through
+  XWayland; launcher logs session type once per start, setup names it in Raspberry Pi
+  line of x86 client block.
+- Power and heat: under-voltage and 80 C capping lower clocks; `steam-arm --cpu-report`
+  decodes `vcgencmd get_throttled` bits per sample.
+
+Not movable to GPU by any setting: emulator's translated code (client, Proton, game
+logic), memory model barriers, translation time, per-call marshalling of forwarded GL,
+software video decode.
+
+Untested on Raspberry Pi 4 hardware; report with two `steam-arm --cpu-report` files
+(before and after change) at project's issues:
+
+| Item                                              | State                                    |
+|---------------------------------------------------|------------------------------------------|
+| Thunk libraries load on v3d and V3DV under FEX     | untested, report with `steam-arm --cpu-report` |
+| Idle CPU split (client, client window, emulator)   | untested, report with `steam-arm --cpu-report` |
+| Desktop interface and no friends view: CPU change  | untested, report with `steam-arm --cpu-report` |
+| Code cache off: client window restart loop absent  | untested, report with `steam-arm --cpu-report` |
+| Reduced x87 precision: start time                  | untested, report with `steam-arm --cpu-report` |
+| Multiblock restart counter ever fires              | untested, report with `steam-arm --cpu-report` |
+| `tso=off`, `x87=reduced`: frame rate and stability | untested, per title                      |
+| `glver=3.3` starts title that stopped on GL 3.1    | untested, per title                      |
+| Client window through GPU experiment               | untested, low odds                       |
+| `client-gpu on` after `cef-gpu=ok`: CPU change     | untested, report with `steam-arm --cpu-report` |
+| Site isolation off: process count and CPU change   | untested, report with `steam-arm --cpu-report` |
+| `client-tso relaxed`: 30 min browse without guard  | untested, report with `steam-arm --cpu-report` |
+| Verdict `restart loop` ever fires                  | untested, report with `steam-arm --cpu-report` |
+| `VK_HOST` matches `vulkaninfo` per release          | untested, verdict line `vulkan host` (needs `vulkan-tools`: `sudo apt install vulkan-tools`) |
+| `pi-governor`: frame rate and throttle bits        | untested, report with `steam-arm --cpu-report` |
+| Thermal capping under load                         | untested, report with `steam-arm --cpu-report` |
+
 ### Raspberry Pi 5 performance tips
 
 Gains below are unmeasured on Raspberry Pi 5. Settings that cost heat or power are opt-in
@@ -437,7 +525,7 @@ and stay off unless set by hand.
 2. **CPU or GPU limit.** MangoHud on x86 Linux title, launch option
    `MANGOHUD_CONFIG=fps,frametime,frame_timing,cpu_stats,core_load mangohud %command%`.
    One core near 100% while frame rate stays low: CPU limit. Lower in-game resolution:
-   frame rate rises with GPU limit, stays with CPU limit. `vcgencmd get_throttled` prints
+   frame rate goes up with GPU limit, stays with CPU limit. `vcgencmd get_throttled` prints
    `throttled=0x0` when board has not throttled; other values mean power or heat limit.
 3. **Vsync steps.** At 60 Hz with vsync and double buffering, frame times fall on 16.7 ms
    or 33.3 ms. Frame time graph alternating between these two bands means title misses
@@ -452,11 +540,14 @@ and stay off unless set by hand.
    <https://www.raspberrypi.com/news/a-new-release-of-raspberry-pi-os/>.
 6. **CPU governor (opt-in).** Raspberry Pi kernel default is `ondemand`
    (`CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND=y` in `bcm2712_defconfig`,
-   <https://github.com/raspberrypi/linux>). `performance` keeps cores at top clock, with
-   more heat and power. Until next reboot:
+   <https://github.com/raspberrypi/linux>). `performance` holds cores at top clock, with
+   more heat and power. Component `pi-governor` (off by default; Maintenance, CPU governor
+   while Steam runs) sets it while Steam ARM runs and puts saved governor back at exit.
+   By hand until next reboot:
    `echo performance | sudo tee /sys/devices/system/cpu/cpufreq/policy0/scaling_governor`;
    back with `ondemand` in same command. `steam-arm-config` Information shows governor in
-   use (`CPU governor` line).
+   use (`CPU governor` line); `steam-arm --cpu-report` shows governor and throttle bits
+   per sample.
 7. **FEX Multiblock per title (opt-in).** `steam-arm-config profile <appid> multiblock=on`;
    `multiblock=` removes it. Valve sets this per title in its own data; profile replaces
    that default for one title. Unmeasured on Pi 5; on RK3588 test device one 32-bit Unity

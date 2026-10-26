@@ -1,5 +1,7 @@
 # Steam ARM: how it works
 
+Client: Steam Frame's Steam client, Valve's native ARM64 build, set up on host.
+
 Overview of what runs where: setup command, GPU detection, component defaults,
 launcher, per-title launch handler and graphics routes. Details per step: `README.md`.
 
@@ -25,6 +27,9 @@ sudo bash steam-arm-install.sh [options]          (package: sudo steam-arm-setup
 |    --purge: x86 root filesystem too, only when setup downloaded it
 |             and other variant of this installer is not installed
 |
++- older than installed version (3.1 and later) -> stop before any change,
+|    unless --allow-older
++- --snapshot -> save installed version to /var/lib/steam-arm/snapshots, exit
 +- install, update, repair
    |
    +- 0 checks: single setup run (lock), account and folder names (no root
@@ -32,6 +37,10 @@ sudo bash steam-arm-install.sh [options]          (package: sudo steam-arm-setup
    |            client folder holding steamapps or ubuntu12_32 refused;
    |            CPU: Armv8.1 (LSE atomics) -> native client, Armv8.0 -> x86 client
    |            (--client= or saved hand choice wins; x86: 2 GB memory or more)
+   +- version change (installed VERSION differs): snapshot of installed version
+   |    to /var/lib/steam-arm/snapshots (installer and menu copies, /etc/steam-arm,
+   |    owned files with SHA-256, settings backup), upgrade.state written;
+   |    snapshot failure stops setup before any change
    +- 1 GPU detection
    |    render node -> kernel driver name (panthor, panfrost, msm, v3d, ...)
    |    Mali: GPU id; fallback: sysfs driver link and device tree
@@ -67,12 +76,49 @@ sudo bash steam-arm-install.sh [options]          (package: sudo steam-arm-setup
    |    marker .steam-arm-client written into client folder when folder was
    |    new, empty, already marked or earlier Steam ARM client folder
    +- 6 launcher steam-arm, settings menu, helpers;
-        settings in /etc/steam-arm/steam-arm.conf
+   |    settings in /etc/steam-arm/steam-arm.conf
+   +- 7 version change finished: upgrade.state removed, history.log line,
+        snapshots beyond installed version plus SNAPSHOT_KEEP earlier
+        versions deleted (unfinished change and rollback target kept)
+
+steam-arm-config upgrade (Maintenance, Upgrade to newest release)
++- refused: unfinished change, setup running, Steam running
++- GitHub releases/latest -> Steam.ARM.<version>.zip, .sha256, size, digest
++- same or older release -> nothing to do (--allow-older: older with warning)
++- package install (INSTALLED_FROM, else dpkg owns packaged setup):
+|    release lists steam-arm-setup_<version>_arm64.deb (3.1 on) ->
+|      digest required, download deb + .sha256 into staging folder,
+|      size, sidecar form, SHA-256 (sidecar and GitHub digest), control
+|      fields (steam-arm-setup, version, arm64), plan shown,
+|      setup lock, snapshot, upgrade.state, apt-get install of checked file
+|      (--allow-downgrades only with --allow-older), steam-arm-setup --keep;
+|      apt or setup failure -> restore offered (upgrade --rollback)
+|    release without package asset -> package steps, nothing downloads
++- free space, download (HTTPS only, 32 MB cap) into /var/cache/steam-arm/upgrade
++- size, sidecar form, SHA-256 (sidecar and GitHub digest), safe unpack
++- runs setup of new version with --keep (snapshot, install, new installed copy);
+|    older setup before 3.1: snapshot saved here, run without --allow-older
++- failure after snapshot -> restore offered (upgrade --rollback)
+
+setup stopped after its change began (upgrade.state left)
++- installed menu 3.1+ -> restore named (upgrade --rollback)
++- menu before 3.1 (no upgrade command) -> same setup again with --keep named
+
+steam-arm-config upgrade --rollback (Maintenance, Go back to previous version)
++- unfinished change without snapshot (--no-snapshot) -> no automatic pick,
+|    snapshots listed, version named by hand
++- snapshot verified (manifest and member SHA-256, file list)
++- current version saved, files and /etc/steam-arm restored, installer and menu
+|    copies put back, restored setup run with --keep
++- success -> history.log line, snapshots and staging folders pruned
 
 steam-arm (launcher, desktop account only, refuses root)
 +- before client start, client closed: automatic Windows build rule
 |    (steam-arm-autobuild.py) sets Proton ARM64 for matching titles through
 |    steam-arm-compatmap.py, once per title
++- then, FRAME_RUNTIME=auto only: Valve Frame runtime (steam-arm-frameruntime.py)
+|    sets tool of titles with no tool chosen from Steam Frame recommended
+|    runtime in appinfo cache, once per title
 +- own fixes: drop signal of each read at start (steam-arm-entry.py patches,
 |    logged; --detect prints same lines): FEX tool version (thunk paths, code
 |    cache), launch wrapper stand-in (FEX tool edit), private GLX copy built
@@ -99,9 +145,48 @@ steam-arm (launcher, desktop account only, refuses root)
 |    bubblewrap for runtime containers (steam-arm-pv-bwrap), client browser on
 |    CPU, webhelper flag, launch wrapper stand-in and private libX11 copy (X
 |    errors not fatal) set again at each start; first start checks files once;
+|    client window processes: FEX app settings steamwebhelper.json and exe.json
+|      (thunks off, code cache off; own keys merged, other keys kept);
+|      steam.json X87ReducedPrecision while X87_CLIENT=on or STEAM_ARM_X87=reduced
+|    CPU without LSE atomics (CPU_LSE=0, slow emulation class): desktop interface
+|      (SA_UI_SLOW), -nofriendsui; CLIENT_LIGHT=off, --bigpicture,
+|      STEAM_ARM_UI=bigpicture, STEAM_ARM_FRIENDS=1 change it; third restart of
+|      oldest steamwebhelper after 5 min -> Multiblock 0 for client files, once
+|    PLATFORM pi4|pi5|pi-other with ThunksDB GL or Vulkan 0 in FEX config
+|      -> notice that stays at every start (games draw on CPU)
+|    experiment STEAM_ARM_LAB_CEF_GPU=vulkan|gl (or one-shot file from
+|      steam-arm-config lab-cef-gpu; CLIENT_GPU=on arms vulkan every start):
+|      Vulkan thunk on (GL thunk on for gl variant only), -cef-force-gpu
+|      -cef-disable-gpu-sandbox, ANGLE flags in webhelper script; watcher
+|      records cef-gpu=ok|failed:<reason> in client home .config/steam-arm/state
+|    client window path: software by default (-cef-disable-gpu); ANGLE on
+|      Vulkan thunk is only path to host GPU (GL thunk breaks on Chromium's
+|      GLX pattern, EGL thunk has no entry for Chromium's loader); CLIENT_TSO
+|      relaxed writes TSOEnabled 0 for client programs (guard tso_watch),
+|      SilentLog 1 always, -cef-disable-site-isolation on slow class,
+|      CEF_HANG_KILLS=off adds hang-timeout and renderer-restart flags
+|    pi-governor part on: steam-arm-governor performance through sudo at start,
+|      restore at exit
 |    launch wrapper stand-in -> steam-arm-run.py -> launch handler per title
 |    (forwarding route only) -> Valve's launch wrapper
++- steam-arm --cpu-report: steam-arm-cpu-report.sh, system, firmware, session,
+|    graphics, emulator and Steam process sections, then two 60 s profiles
+|    (CPU per process group, v3d gpu_stats, drm fdinfo, threads, throttle bits),
+|    end state and verdict (client window state, restart loop, GPU process
+|    exits, top group, fex client settings, clock floor, Vulkan class, next step);
+|    hardware report takes its static sections
 +- kde-input-prompt: sets or puts back KDE input permission in desktop session
++- --perf-stats (off by default): Mesa overlay layer (Vulkan) and Gallium HUD dump
+|    (OpenGL) set hidden in game environment; steam-arm-perf.py watch prints frame
+|    interval p50/p95/p99/max and counts over 25 and 50 ms every 5 s, perf.log;
+|    Steam already running: foreground for games started from then on
++- still-working notice (1 s watcher, auto: where display mode restore runs):
+|    game start without frame 20 s -> one notice: compiling shaders (cache
+|    growth, fossilize_replay), loading, idle (no CPU or disk wait 10 s:
+|    launcher window or not responding); frame = GPU engine time in fdinfo
+|    rising, or readout files growing (none in 120 s: readout counts as off);
+|    closed on first frame; no per-process GPU lines in fdinfo, readout off ->
+|    silent end before any notice
 |
 +- Play: Windows title -> Proton ARM64 -> DXVK -> system Vulkan (PanVK)
 |                                         vk-spoof reports features DXVK needs
@@ -124,6 +209,10 @@ steam-arm (launcher, desktop account only, refuses root)
      32-bit Source title not yet switched by automatic Windows build: start
        skipped once, desktop notice (STEAM_ARM_AUTO_BUILD=0 starts it)
      profile multiblock=on|off sets FEX Multiblock for title
+     profile tso=off sets FEX TSOEnabled 0, x87=reduced sets X87ReducedPrecision 1
+       for title (same precedence as multiblock; run record carries both)
+     forwarding with GL or Vulkan thunk off in account's FEX config: reason
+       thunks-missing in run record, cause line beside CPU verdict
      profile diskcache=on|off sets FEX code cache for title (FEX tool 2609.1+);
        cache deleted once when FEX tool or game build changed; FEX tool 2610+
        turns cache on for every title (1 GB cap): diskcache=on adds nothing,

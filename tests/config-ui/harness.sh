@@ -22,6 +22,13 @@ SA_RULE_HIDRAW=$R/rules/60-steam-arm-gamepad-hidraw.rules
 SA_RULE_DEDUP=$R/rules/71-steam-arm-xpad-dedup.rules
 SA_PADXBOX_UNIT=$R/rules/steam-arm-pad-xbox.service
 SA_FEXLOG_GLOB="$R/tmp/fex-compat-tool-*.log"
+SA_LIB=$R/lib
+SA_UPCACHE=$R/cache-up
+SA_LOCK=$R/run/steam-arm-setup.lock
+SA_MENU_BIN=$R/bin/steam-arm-config
+SA_SHARE_INSTALLER=$R/share/steam-arm-install.sh
+SA_PKG_INST=$R/pkg/install.sh
+SA_RELEASE_API=http://127.0.0.1:9/repos/Scrumpper/Steam-ARM/releases/latest
 export STEAM_ARM_INSTALLER=$R/bin/fake-installer.sh
 [ "${HARNESS_REAL_INSTALLER:-0}" = 1 ] && STEAM_ARM_INSTALLER="$SARM_INST"
 [ "${FAKE_NOT_INSTALLED:-0}" = 1 ] && SA_LAUNCHER=$R/bin/missing

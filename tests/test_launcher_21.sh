@@ -1,6 +1,6 @@
 #!/bin/bash
 # 2.1 launcher: display mode restore (mode_get/mode_restore/mode_watch/on_exit) and stop path (stop_client),
-# sourced from the launcher embedded in the installer, against stub xrandr/pgrep/pkill/steam.
+# sourced from the launcher embedded in the installer, against stub xrandr/kscreen-doctor/pgrep/pkill/steam.
 . "$(dirname "$0")/paths.sh"; INST=$SARM_INST
 T=$(mktemp -d /tmp/sarm232-launcher.XXXXXX); trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
@@ -48,6 +48,20 @@ cat > "$T/d/steam" <<'EOF'
 #!/bin/sh
 echo "steam $*" >> "$STUB/steam.log"; [ -f "$STUB/shutdown-ignored" ] || rm -f "$STUB/client"
 EOF
+# stub kscreen-doctor: -j prints $STUB/kstate; else logs the set call
+cat > "$T/bin/kscreen-doctor" <<'EOF'
+#!/bin/sh
+if [ "$1" = -j ]; then cat "$STUB/kstate"; exit 0; fi
+echo "$*" >> "$STUB/kscreen.log"
+EOF
+# kstate MODE DISABLED_MODE: HDMI-A-1 enabled on mode id MODE, DP-1 connected but disabled
+kstate(){ cat > "$STUB/kstate" <<EOF
+{"outputs":[{"name":"HDMI-A-1","connected":true,"enabled":true,"currentModeId":"$1","pos":{"x":0,"y":0},
+"modes":[{"id":"1","size":{"width":1920,"height":1080}},{"id":"2","size":{"width":1280,"height":720}}]},
+{"name":"DP-1","connected":true,"enabled":false,"currentModeId":"$2","pos":{"x":1920,"y":0},"modes":[{"id":"0","size":{"width":800,"height":600}}]}]}
+EOF
+}
+mkdir -p "$T/nokscreen"; for c in pgrep pkill awk cat rm sleep id python3; do ln -s "$(command -v $c)" "$T/nokscreen/$c"; done
 chmod +x "$T/bin/"* "$T/d/steam"
 export STUB=$T/run PATH="$T/bin:$PATH"
 run(){ (export DISPLAY=:0; unset WAYLAND_DISPLAY; XDG_RUNTIME_DIR=$T/run; D=$T/d; T=$T; sleep(){ :; }; . "$F"; eval "$1"); }
@@ -83,10 +97,23 @@ check "on_exit: no restore while a title runs" "[ ! -f $STUB/xrandr.log ] && [ -
 reset; touch "$STUB/game"; run mode_watch; echo "HDMI-1 0x99 800x600+0+0" > "$STUB/state"; rm -f "$STUB/game"; touch "$STUB/fail"
 run mode_watch
 check "restore failure logged" "grep -q 'display mode could not be put back' $T/steam-arm.log"
-# Wayland session, missing xrandr, opt-out: nothing saved
+# Wayland session without kscreen-doctor, opt-out: nothing saved
 reset; touch "$STUB/game"
+run 'WAYLAND_DISPLAY=wayland-0; PATH=$T/nokscreen; mode_watch'
+check "wayland session without kscreen-doctor: nothing saved" "[ ! -f $STUB/steam-arm-display-mode ]"
+# KDE Wayland: kscreen-doctor -j read, output.NAME.mode/position set
+reset; touch "$STUB/game"; kstate 1 0
 run 'WAYLAND_DISPLAY=wayland-0; mode_watch'
-check "wayland session: nothing saved" "[ ! -f $STUB/steam-arm-display-mode ]"
+check "kscreen: mode saved from kscreen-doctor -j (enabled outputs only)" "[ \"\$(cat $STUB/steam-arm-display-mode)\" = 'HDMI-A-1 1 1920x1080+0+0' ]"
+kstate 2 0; rm -f "$STUB/game"
+run 'WAYLAND_DISPLAY=wayland-0; mode_watch'
+check "kscreen: mode put back after title ends" "grep -qx 'output.HDMI-A-1.mode.1 output.HDMI-A-1.position.0,0' $STUB/kscreen.log && [ ! -f $STUB/steam-arm-display-mode ] && grep -q 'display mode put back after game' $T/steam-arm.log"
+reset; touch "$STUB/game"; kstate 1 0; run 'WAYLAND_DISPLAY=wayland-0; mode_watch'; rm -f "$STUB/game"
+run 'WAYLAND_DISPLAY=wayland-0; mode_watch'
+check "kscreen: no set call when mode unchanged" "[ ! -f $STUB/kscreen.log ]"
+reset; touch "$STUB/game"; echo 'not json' > "$STUB/kstate"; run 'WAYLAND_DISPLAY=wayland-0; mode_watch'
+check "kscreen: unreadable answer saves nothing" "[ ! -s $STUB/steam-arm-display-mode ]"
+rm -f "$T/steam-arm.log"; reset; touch "$STUB/game"
 run 'STEAM_ARM_MODE_RESTORE=0; mode_watch'
 check "STEAM_ARM_MODE_RESTORE=0: nothing saved" "[ ! -f $STUB/steam-arm-display-mode ]"
 # two outputs, second at offset
@@ -112,7 +139,7 @@ run 'stop_client'; rc=$?
 check "stop: no client -> nothing sent" "[ $rc = 0 ] && [ ! -f $STUB/steam.log ]"
 check "launcher: --shutdown handled before watchers start" "awk '/--shutdown\) stop_client/{a=NR} /^FEXWATCH=\\\$!/{b=NR} END{exit !(a && b && a < b)}' $L"
 check "launcher: interface switch uses stop_client" "grep -q 'stop_client || exit 1' $L && ! grep -q 'did not exit within 60 s' $L"
-check "launcher: watcher loop calls mode_watch" "grep -q 'fex_check; mode_watch;' $L"
+check "launcher: watcher loop calls mode_watch" "grep -q '^  mode_watch; still_watch;' $L"
 check "installer: x11-xserver-utils in host packages" "grep -q 'xdotool x11-xserver-utils' $INST"
 echo "passed $pass, failed $fail"
 [ "$fail" = 0 ]

@@ -36,7 +36,8 @@ printf 'VERSION=%s\n' "$OLDV" > "$T/steam-arm.conf"; pi configure
 check "first package install over client set up from zip (conf $OLDV, no old package): upgrade notice" "grep -q 'programs on this system are from $OLDV' <<<\"\$OUT\" && grep -qx '  sudo steam-arm-setup --keep' <<<\"\$OUT\""
 # build-deb.sh: top changelog trailer without a parsable date stops the build (dpkg-deb stubbed, nothing built)
 mkdir -p "$T/q4/bin" "$T/stub"; cp -r "$WORK/steam-arm-install.sh" "$WORK/build-deb.sh" "$WORK/bin" "$WORK/debian" "$WORK/doc" "$T/q4/"
-printf '#!/bin/sh\necho STUB-DPKG-DEB\n' > "$T/stub/dpkg-deb"; chmod +x "$T/stub/dpkg-deb"
+# stub writes empty output file (build-deb.sh hashes it for release sidecar)
+printf '#!/bin/sh\necho STUB-DPKG-DEB\nfor a; do o=$a; done\n: > "$o"\n' > "$T/stub/dpkg-deb"; chmod +x "$T/stub/dpkg-deb"
 sed -i '0,/^ -- \(.*>\)  /s// -- \1 /' "$T/q4/doc/changelog"
 OUT=$(env -u SOURCE_DATE_EPOCH PATH="$T/stub:$PATH" sh "$T/q4/build-deb.sh" 2>&1); RC=$?
 check "build-deb.sh: one-space changelog trailer -> no date, stops before dpkg-deb" "[ $RC != 0 ] && grep -q 'no date in the top doc/changelog entry' <<<\"\$OUT\" && ! grep -q STUB-DPKG-DEB <<<\"\$OUT\""

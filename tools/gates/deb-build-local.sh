@@ -10,5 +10,7 @@ B=$R/build; rm -rf "$B"; mkdir -p "$B"
 for f in steam-arm-install.sh build-deb.sh bin debian doc; do cp -a "$SRC/$f" "$B/"; done
 unshare -r chroot "$R" /bin/sh -c 'cd /build && PATH=/usr/sbin:/usr/bin:/sbin:/bin sh ./build-deb.sh' >/dev/null
 mv -f "$B"/steam-arm-setup_*_arm64.deb "$OUT"
+# release sidecar (build-deb.sh 3.1 and later)
+for f in "$B"/steam-arm-setup_*_arm64.deb.sha256; do if [ -f "$f" ]; then mv -f "$f" "$OUT.sha256"; fi; done
 rm -rf "$B"
 echo "$OUT"

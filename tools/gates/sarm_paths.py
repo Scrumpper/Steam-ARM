@@ -19,7 +19,7 @@ TESTS_SKIP = ("test_tools_22.sh",)
 def internal(rel):
     b = os.path.basename(rel)
     return (rel in INTERNAL_NAMES or b in INTERNAL_NAMES or b.startswith(("REPLY-", "CHANGES.md")) or ".pre-" in b
-            or b.endswith((".deb", "~", ".swp", ".bak", ".pre", ".pyc")) or "__pycache__" in rel
+            or b.endswith((".deb", ".deb.sha256", "~", ".swp", ".bak", ".pre", ".pyc")) or "__pycache__" in rel
             or any(p.lower().startswith("research") or p == "design" for p in rel.split(os.sep)[:-1]))
 
 

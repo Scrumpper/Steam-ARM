@@ -1,3 +1,98 @@
+steam-arm-setup (3.1) stable; urgency=low
+
+  * Upgrade to newest release from settings menu (Maintenance) or
+    steam-arm-config upgrade: zip and .sha256 from GitHub over HTTPS,
+    size, SHA-256 and GitHub digest checked, safe unpack, setup of new
+    version run with --keep; --file ZIP for downloaded zip. Upgrade
+    from zip never writes package files.
+  * Package upgrade in one step: release lists
+    steam-arm-setup_<version>_arm64.deb and .sha256; upgrade on package
+    install downloads both, checks length, .sha256 line and GitHub
+    digest, shows plan, takes setup lock, keeps copy of installed
+    version, then runs
+    apt-get install of checked file and steam-arm-setup --keep; restore
+    offered on failure; --allow-older for older package
+    (--allow-downgrades); --file takes package too. Release without
+    package asset: package build steps.
+  * Rollback protection: setup saves installed version to
+    /var/lib/steam-arm/snapshots before each version change (installer
+    and menu copies, /etc/steam-arm, owned files, settings backup,
+    SHA-256 manifest); snapshot failure stops setup before any change.
+    Maintenance, Go back to previous version, or upgrade --rollback.
+    Unfinished change offered for restore, never restored on its own.
+  * Automatic deletion of snapshots after successful upgrade or rollback:
+    installed version plus 2 earlier versions kept (SNAPSHOT_KEEP 1 to
+    5); damaged and half-written ones deleted.
+  * Downgrade protection: setup over newer install stops before any
+    change unless --allow-older.
+  * Update / Repair runs setup script of installed version (older package
+    no longer runs over newer install).
+  * Optional check for new release at menu start, off by default.
+  * Client channel shown by name (stable, Valve ARM channel of Steam Frame
+    mode, Steam Beta Participation).
+  * --remove deletes /var/lib/steam-arm and /var/cache/steam-arm.
+  * Host facts CPU_LSE, CPU_CORES, PLATFORM (pi4, pi5, pi-other) and
+    MESA_HOST in settings file; --detect prints them.
+  * steam-arm --cpu-report: CPU and GPU profile of client window and
+    games (two 60 s samples); Maintenance item and steam-arm-config
+    cpu-report; hardware report appends static sections.
+  * x86 client: FEX code cache off for client window processes, own
+    keys merged into FEX app settings; reduced x87 precision for client
+    program (x87-client, off by default); Multiblock off for client
+    files after repeated client window restarts on Armv8.0 CPUs.
+  * CPUs without Armv8.1 atomics: desktop interface and no friends view
+    by default (client-light off restores Deck interface).
+  * GPU forwarding notice on Raspberry Pi platforms when thunk libraries
+    were not found; Information row GPU forwarding; run record reason.
+  * Per-title keys tso=off and x87=reduced (Games, Emulation); automatic
+    tuning on Raspberry Pi GPUs tries OpenGL version 3.3 and Zink first.
+  * Experiment: client window through GPU for one start (lab-cef-gpu);
+    CLIENT_GPU=on keeps ANGLE on Vulkan at every start until failure.
+  * CPU report verdict section: client window state, restart loop, GPU
+    process exits, top process group, FEX client settings, clock floor,
+    Vulkan class, one next step. Information row Client window.
+  * x86 client: FEX logging off for client window programs (SilentLog);
+    site isolation off with lighter client window; CEF_HANG_KILLS off
+    and CLIENT_TSO relaxed as opt-in settings (guarded); VK_HOST fact;
+    setup block and first-start notice on CPUs without LSE atomics.
+  * Per-title tso=off goes strict for one start after two failed runs;
+    end hint on slow class; vk32-cpu reason; d3d=dxvk not applied on
+    Raspberry Pi GPUs (five Vulkan features missing), WineD3D used.
+  * Component pi-governor (off by default): governor performance while
+    Steam runs on Raspberry Pi boards.
+  * Frame pacing readout, off by default (steam-arm --perf-stats):
+    frame interval p50, p95, p99 and maximum per frame source every
+    5 s, from Mesa overlay layer (Vulkan) and Gallium HUD dump
+    (OpenGL); steam:// starts included; hardware report section.
+  * Still-working notice: game with no frame 20 s after start gets one
+    notice (compiling shaders, loading or idle), closed on first frame;
+    kernel without per-process GPU time and readout off: no notice.
+  * Display mode restore after game also covers KDE Plasma Wayland
+    sessions (kscreen-doctor).
+  * Hardware report block Valve tools: FEX tool version and build ids
+    of FEX tool, Proton 11.0, Proton Experimental and Steam Linux
+    Runtime 4.0 from appmanifest files; x86 client: not used.
+  * Setup warns when FEX PPA candidate for host release is behind newest
+    FEX build there (2610); host FEX serves Remote Play and thunks,
+    titles use Valve's FEX tool; package choice unchanged.
+  * Setup stopped during version change prints recovery command
+    installed menu offers; restore of unfinished change recorded as
+    restore.
+  * Steam Frame rating beside Steam Deck hint: Games screen header
+    (category, recommended runtime), Rules page (runtime) and run report
+    (category, runtime, test result tokens, test date), from client's
+    appinfo cache.
+  * Run report row Class: Android-only, VR-only or Lepton route title
+    from Steam Frame columns of appinfo cache; 2D titles get no row.
+  * Valve Frame runtime, off by default (FRAME_RUNTIME=auto|off,
+    Graphics menu, steam-arm-config frame-runtime): compatibility tool
+    from Valve's Steam Frame recommended runtime for titles with no tool
+    chosen (proton-stable, proton-experimental, native; lepton-stable
+    unchanged); own choices and GE-Proton kept; run report row Runtime
+    applied.
+
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 00:00:00 +0000
+
 steam-arm-setup (3.0) stable; urgency=low
 
   * Run report: Maintenance, Report how last game ran, or steam-arm-config

@@ -181,7 +181,7 @@ check "R15 sign-in file present but unreadable: report not made" "grep -q 'RC=1'
 
 # ---------------- menu screens ----------------
 ui "menu_maintenance" BACK
-check "M1 Maintenance: items 11 Report how last game ran, 12 Run history (now: off)" "grep -q '^MENU Maintenance|.* 11 Report how last game ran 12 Run history (now: off)\$' <<<\"\$OUT\""
+check "M1 Maintenance: items 11 Report how last game ran, 12 Run history (now: off), version items after them" "grep -q '^MENU Maintenance|.* 11 Report how last game ran 12 Run history (now: off) 14 Show what is new' <<<\"\$OUT\""
 ui "menu_maintenance" 11 BACK BACK
 check "M2 Back from report screen: Maintenance again, cursor on 11" "grep -q '^MENU Report how last game ran|Report of one game start' <<<\"\$OUT\" && [ \$(grep -c '^MENU Maintenance' <<<\"\$OUT\") = 2 ] && grep '^MENU Maintenance' <<<\"\$OUT\" | tail -n 1 | grep -q -- '--default 11 '"
 rm -f "$R"/tmp/steam-arm-report-*.md
@@ -201,7 +201,7 @@ sed -i '/^RUN_HISTORY=/d' "$R/etc/steam-arm/steam-arm.conf"
 ui "maint_runhistory" yes
 check "M7 Run history: turn on (text names file, 200 lines, no backups); setting on" "grep -q '^YESNO Run history|Run history: off' <<<\"\$OUT\" && grep -q 'runs.log' <<<\"\$OUT\" && grep -q 'not part of backups' <<<\"\$OUT\" && grep -q '^RUN_HISTORY=on' \"$R/etc/steam-arm/steam-arm.conf\" && grep -q '^MSG Maintenance|Run history: on' <<<\"\$OUT\""
 ui "menu_maintenance" BACK
-check "M7 label follows: Run history (now: on)" "grep -q '12 Run history (now: on)\$' <<<\"\$OUT\""
+check "M7 label follows: Run history (now: on)" "grep -q '12 Run history (now: on) 14 Show what is new' <<<\"\$OUT\""
 ui "maint_runhistory" no
 check "M8 Back from Run history: unchanged" "grep -q '^RUN_HISTORY=on' \"$R/etc/steam-arm/steam-arm.conf\" && ! grep -q '^MSG' <<<\"\$OUT\""
 cp "$RL" "$T/runs.bak"
@@ -227,6 +227,23 @@ OUT=$(sh_ "rs_valid RUN_HISTORY on && echo V1; rs_valid RUN_HISTORY yes || echo 
 check "C7 backup: RUN_HISTORY a setup key with on/off check" "grep -q V1 <<<\"\$OUT\" && grep -q V2 <<<\"\$OUT\" && grep -q 'CPU_NOTICE RUN_HISTORY' <<<\"\$OUT\""
 OUT=$(sh_ "main report </dev/null | head -3")
 check "C8 plain report unchanged: hardware report" "grep -q '^Steam ARM hardware report' <<<\"\$OUT\""
+
+# ---------------- F Steam Frame rows (3.1): reader stub, rows only when known ----------------
+cat > "$T/ai.py" <<EOF
+import sys
+for a in sys.argv[2:]:
+    print(a + "\t" + open("$T/ai-out").read().strip() if a == "100" else a + "\tunknown\tunknown\tunknown\tunknown\t-\tunknown\tunknown")
+EOF
+printf 'Verified\tPlayable\tnative\tproton-stable\tDefaultConfigurationIsNotPerformant,InterfaceTextIsLegible\twindows,linux\t2026-09-01\tonly\n' > "$T/ai-out"
+OUT=$(sh_ "SA_APPINFO_PY=$T/ai.py; rr_make 100 0 $T/rep.md"); REP=$(cat "$T/rep.md")
+check "F1 Upstream fields: Steam Frame category row with hint note, after Proton row" "grep -q '^Steam Frame  *Playable (Valve.s rating for Steam Frame; hint only on this device)\$' <<<\"\$REP\" && [ \"\$(grep -nE '^(Proton|Steam Frame) ' <<<\"\$REP\" | cut -d: -f1 | tr '\n' ' ')\" = \"\$(grep -nE '^(Proton|Steam Frame) ' <<<\"\$REP\" | cut -d: -f1 | sort -n | tr '\n' ' ')\" ]"
+check "F1 Frame runtime, Frame tests (comma and space), Frame tested rows; ninth column (vr) not in Frame tested" "grep -q '^Frame runtime  *proton-stable\$' <<<\"\$REP\" && grep -q '^Frame tests  *DefaultConfigurationIsNotPerformant, InterfaceTextIsLegible\$' <<<\"\$REP\" && grep -q '^Frame tested  *2026-09-01\$' <<<\"\$REP\""
+check "F1 Frame rows sit in Upstream fields section" "sed -n '/^## Upstream fields/,/^## Knobs/p' <<<\"\$REP\" | grep -q '^Steam Frame '"
+printf 'Verified\tunknown\tnative\tunknown\t-\tunknown\tunknown\n' > "$T/ai-out"
+OUT=$(sh_ "SA_APPINFO_PY=$T/ai.py; rr_make 100 0 $T/rep.md"); REP=$(cat "$T/rep.md")
+check "F2 Frame fields unknown: no Frame rows, Proton row kept" "! grep -qE '^(Steam Frame|Frame runtime|Frame tests|Frame tested) ' <<<\"\$REP\" && grep -q '^Proton ' <<<\"\$REP\""
+OUT=$(sh_ "SA_APPINFO_PY=$T/none.py; rr_make 100 0 $T/rep.md"); REP=$(cat "$T/rep.md")
+check "F3 reader missing: no Frame rows, report still made" "! grep -q '^Steam Frame ' <<<\"\$REP\" && grep -q '^## Knobs' <<<\"\$REP\""
 
 # ---------------- B4 issue templates ----------------
 TD=$(dirname "$SARM_INST")/.github/ISSUE_TEMPLATE

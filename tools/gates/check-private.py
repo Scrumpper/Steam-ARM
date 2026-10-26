@@ -29,7 +29,8 @@ def main():
         for f in fn:
             p = os.path.join(dp, f)
             rel = os.path.relpath(p, ROOT)
-            if os.path.islink(p) or not os.path.isfile(p) or internal(rel):
+            # a worktree checkout keeps .git as a file naming its home path
+            if os.path.islink(p) or not os.path.isfile(p) or internal(rel) or rel == ".git":
                 continue
             files += 1
             data = open(p, "rb").read()

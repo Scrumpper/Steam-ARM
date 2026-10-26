@@ -1,6 +1,6 @@
 #!/bin/bash
 # deb-check.sh [SOURCE_DIR]: build-deb.sh run twice on copies with other file times and modes gives byte-identical
-# packages; package holds only installer, launcher, desktop entry and docs (no test tooling); packaged installer
+# packages and release sidecars (.deb.sha256); package holds only installer, launcher, desktop entry and docs (no test tooling); packaged installer
 # byte-identical to source. Host dpkg-deb, else Debian rootfs chroot (deb-build-local.sh). Exit 1 on any failure.
 G=$(cd "$(dirname "$0")" && pwd)
 SRC=$(cd "${1:-$G/../..}" && pwd)
@@ -10,7 +10,7 @@ ok(){ echo "ok   $1"; }; bad(){ echo "FAIL $1"; fail=1; }
 ROOTFS=${SARM_ROOTFS:-${SARM_TOOLS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/sarm-tools}/trixie-slim-rootfs}
 build(){ # build SRC_COPY OUT
   if command -v dpkg-deb >/dev/null; then
-    (cd "$1" && env -u SOURCE_DATE_EPOCH sh ./build-deb.sh >"$1.log" 2>&1) && mv "$1"/*.deb "$2"
+    (cd "$1" && env -u SOURCE_DATE_EPOCH sh ./build-deb.sh >"$1.log" 2>&1) && mv "$1"/*.deb "$2" && mv "$1"/*.deb.sha256 "$2.sha256"
   elif [ -x "$ROOTFS/usr/bin/dpkg-deb" ]; then
     env -u SOURCE_DATE_EPOCH bash "$G/deb-build-local.sh" 0.0 "$2" "$1" >"$1.log" 2>&1
   else echo "no dpkg-deb on host and no Debian rootfs at $ROOTFS" > "$1.log"; return 1; fi
@@ -22,6 +22,11 @@ touch -d '2001-02-03 04:05:06' "$T/b/doc/README.md" "$T/b/bin/steam-arm-setup"; 
 for x in a b; do build "$T/$x" "$T/$x.deb" || { sed 's/^/       /' "$T/$x.log"; bad "package build ($x) failed"; }; done
 [ -s "$T/a.deb" ] && [ -s "$T/b.deb" ] || { echo "deb-check: FAILED"; exit 1; }
 if cmp -s "$T/a.deb" "$T/b.deb"; then ok "two builds byte-identical ($(sha256sum < "$T/a.deb" | cut -c1-16))"; else bad "two builds differ"; fi
+# release sidecar: one line "<sha256>  steam-arm-setup_<V>_arm64.deb", same for both builds
+DN="steam-arm-setup_$(sed -n 's/^VERSION=//p' "$SRC/build-deb.sh" | head -1)_arm64.deb"
+if [ "$(cat "$T/a.deb.sha256" 2>/dev/null)" = "$(sha256sum < "$T/a.deb" | cut -c1-64)  $DN" ] && cmp -s "$T/a.deb.sha256" "$T/b.deb.sha256" \
+   && [ "$(wc -l < "$T/a.deb.sha256")" = 1 ]; then ok "sidecar $DN.sha256: one line, hash of package, same for both builds"
+else bad "sidecar $DN.sha256 missing or wrong: $(head -c 120 "$T/a.deb.sha256" 2>/dev/null)"; fi
 G=$G python3 - "$T/a.deb" "$SRC/steam-arm-install.sh" <<'EOF' || fail=1
 import os, re, sys
 sys.path.insert(0, os.environ["G"])

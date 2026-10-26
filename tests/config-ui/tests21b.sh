@@ -29,16 +29,17 @@ out=$(drive "$(wiz builtin)" '\r' '\r' '\r' '\x1b' '\x1b' '\x1b')
 check "builtin: Esc walks parts > Vulkan > page size > hardware" "[ \"\$out\" = \"\$WALK\" ]"
 out=$(drive "$(wiz builtin)" '\r' '\r' '\r' '\t\t\r' '\t\t\r' '\t\r')
 check "builtin: Back button walks parts > Vulkan > page size > hardware" "[ \"\$out\" = \"\$WALK\" ]"
-# second Esc 0.1 s / 1 s after the first, while Vulkan screen loads (3 s): dropped, Vulkan screen stays
-SLOWVK="vk_summary(){ sleep 3; echo 'Mali-G610, panvk, API 1.3'; }"
+# second Esc 0.1 s / 1 s into second Vulkan load (3 s; each load writes a line to marker file M): dropped, Vulkan screen stays
+M=$(mktemp); trap 'rm -rf "$UIP" "$M"' EXIT
+slowvk(){ : > "$M"; echo "vk_summary(){ echo x >> $M; sleep 3; echo 'Mali-G610, panvk, API 1.3'; }"; }
 for d in 0.1 1; do
-  out=$(drive "$(wiz builtin "$SLOWVK")" '\r' '\r' @4 '\r' @4 '\x1b' "@$d" '!\x1b' @6)
+  out=$(drive "$(wiz builtin "$(slowvk)")" '\r' '\r' "^$M:1" @3.5 '\r' @4 '\x1b' "^$M:2" "@$d" '!\x1b' @6)
   check "builtin: Esc typed ${d} s into Vulkan load does not skip it" "[ \"\${out#*Install: parts|}\" = 'Install: Vulkan' ]"
 done
 if command -v whiptail >/dev/null; then
   out=$(drive "$(wiz whiptail)" '\r' '\r' '\r' '\t\t\r' '\t\t\r' '\t\r')
   check "whiptail: Back button walks parts > Vulkan > page size > hardware" "[ \"\$out\" = \"\$WALK\" ]"
-  out=$(drive "$(wiz whiptail "$SLOWVK")" '\r' '\r' @4 '\r' @4 '\t\t\r' @0.5 '!\t\t\r' @6)
+  out=$(drive "$(wiz whiptail "$(slowvk)")" '\r' '\r' "^$M:1" @3.5 '\r' @4 '\t\t\r' "^$M:2" @0.5 '!\t\t\r' @6)
   check "whiptail: Back typed into Vulkan load does not skip it" "[ \"\${out#*Install: parts|}\" = 'Install: Vulkan' ]"
 else
   echo "SKIP whiptail not installed"; skip=$((skip + 2))

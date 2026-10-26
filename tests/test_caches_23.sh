@@ -98,7 +98,7 @@ check "profile --clear drops diskcache" "[ $HAD = 1 ] && [ $RC = 0 ] && ! grep -
 # ---------- usage, report, files ----------
 OUT=$(bash "$CFG" --help)
 check "--help lists cache commands" "grep -q '^  cache  ' <<<\"\$OUT\" && grep -q '^  cache clear all|<appid>' <<<\"\$OUT\" && grep -q '^  cache list' <<<\"\$OUT\""
-check "--help lists diskcache profile key" "grep -q 'multiblock, diskcache, autotune=fix|off,' <<<\"\$OUT\""
+check "--help lists diskcache profile key" "grep -q 'multiblock, diskcache, tso=off, x87=reduced,' <<<\"\$OUT\""
 caches; cli profile 100 diskcache=on
 OUT=$(PATH="$T/bin:$PATH" bash -c ". $T/harness.sh --help >/dev/null; detect_raw(){ :; }; report_text" 2>&1 | grep '^FEX code cache')
 check "hardware report: one line, count and total, no names or paths" "grep -qE '^FEX code cache on for 1 game, [0-9.]+M in caches\$' <<<\"\$OUT\""

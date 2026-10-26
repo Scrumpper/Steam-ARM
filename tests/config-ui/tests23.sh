@@ -229,7 +229,7 @@ FAKE_NOT_INSTALLED=1 cu menu_caches
 check "C8 not installed: install offer" "grep -q '^YESNO Steam ARM|Steam ARM is not installed' <<<\"\$OUT\" && ! grep -q '^MENU' <<<\"\$OUT\""
 TC=$R/etc/steam-arm/titles.conf; VT=$S/steamapps/common/FEX-Emu/VERSIONS.txt
 cu "game_menu 312520" diskcache on BACK
-check "C9 Linux game: FEX code cache and automatic tuning rows between args and rules, [off]" "grep -m1 -A1 '^MENU Game: Rain World' <<<\"\$OUT\" | paste -sd ' ' | grep -q 'args Extra arguments      \\[none\\] diskcache FEX code cache       \\[off\\] mesa Mesa, route B        \\[default\\] autotune Automatic tuning     \\[off\\] rules Rules'"
+check "C9 Linux game: FEX code cache and automatic tuning rows between args and rules, [off]" "grep -m1 -A1 '^MENU Game: Rain World' <<<\"\$OUT\" | paste -sd ' ' | grep -q 'args Extra arguments      \\[none\\] diskcache FEX code cache       \\[off\\] emu Emulation            \\[strict, x87 full\\] mesa Mesa, route B        \\[default\\] autotune Automatic tuning     \\[off\\] rules Rules'"
 check "C9 choice screen: text, FEX-2609.1 has no needs-tool note" "grep -q '^MENU FEX code cache|Stores translated code of this game for its next start.' <<<\"\$OUT\" && grep -q '^Now: off. FEX tool: FEX-2609.1.|' <<<\"\$OUT\" && ! grep -q 'Needs FEX-2609.1' <<<\"\$OUT\""
 check "C9 On written to profile, row then shows [on]" "grep -qE '^312520 .*diskcache=on' '$TC' && grep -A1 '^MENU Game: Rain World' <<<\"\$OUT\" | tail -n 2 | paste -sd ' ' | grep -q 'FEX code cache       \\[on\\]'"
 echo "FEX-2607-76-gabc1234" > "$VT"
@@ -268,19 +268,19 @@ EOF
 cat > "$T/ai.py" <<EOF
 import sys
 for a in sys.argv[2:]:
-    print(a + "\t" + open("$T/ai-out").read().strip() if a == "400" else a + "\tunknown\tunknown\tunknown")
+    print(a + "\t" + open("$T/ai-out").read().strip() if a == "400" else a + "\tunknown\tunknown\tunknown\tunknown\t-\tunknown\tunknown")
 EOF
 ablist(){ printf '%s\n' 'auto-build	on' 'rule	source32	proton-stable-arm64	mali-csf-v10	2607	32-bit Source engine' "gate	source32	${1:--}" \
   'app	400	auto	source32	32-bit Source engine Linux build stops at loading screen under emulation' \
   'app	1036240	suggest	source32	GPU family broadcom-v3d not tested' 'app	312520	kept	source32	build chosen in Steam or settings menu (steamlinuxruntime)' \
   'record	400	source32	proton-stable-arm64	2026-10-06' > "$T/ab-list"; }
-ablist; printf 'Verified\tunknown\tnative\n' > "$T/ai-out"
+ablist; printf 'Verified\tVerified\tnative\tproton-stable\tDefaultControllerConfigFullyFunctional,InterfaceTextIsLegible\twindows\t2026-09-01\tonly\n' > "$T/ai-out"
 echo "SA_AUTOBUILD_PY=$T/ab.py; SA_APPINFO_PY=$T/ai.py" > "$T/rstubs.sh"
 ru(){ local s=$1; shift; rm -f "$T/ab-calls.log"; ui ". $T/rstubs.sh; $s" "$@"; }
 rcli(){ rm -f "$T/ab-calls.log"; OUT=$(bash -c ". $T/harness.sh --help >/dev/null; . $T/rstubs.sh; main $*" 2>&1); RC=$?; }
 
 fresh; ru menu_graphics BACK
-check "R1 Graphics: item 3 Automatic Windows build (now: on), absent key = on" "grep -q '^MENU Graphics|.* 2 Route per game 3 Automatic Windows build (now: on) 4 CPU drawing notice (now: off)\$' <<<\"\$OUT\""
+check "R1 Graphics: item 3 Automatic Windows build (now: on), absent key = on" "grep -q '^MENU Graphics|.* 2 Route per game 3 Automatic Windows build (now: on) 4 CPU drawing notice (now: off) 5 Still-working notice (now: auto) 6 Valve Frame runtime (now: off)\$' <<<\"\$OUT\""
 fresh AUTO_BUILD=off; ru menu_graphics BACK
 check "R1 Graphics: AUTO_BUILD=off -> (now: off)" "grep -q '3 Automatic Windows build (now: off) 4 ' <<<\"\$OUT\""
 fresh; ru menu_graphics 3 BACK BACK
@@ -334,14 +334,20 @@ check "R9 hardware report: one line, counts only" "[ \"\$OUT\" = 'Automatic buil
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; echo \"\$SA_BK_KEYS\"; for v in on off '' maybe; do rs_valid AUTO_BUILD \"\$v\" && echo \"ok:\$v\" || echo \"bad:\$v\"; done" 2>&1)
 check "R10 backup keys carry AUTO_BUILD; restore accepts on, off, empty only" "grep -q 'GFX_DEFAULT AUTO_BUILD' <<<\"\$OUT\" && [ \"\$(grep -c '^ok:' <<<\"\$OUT\")\" = 3 ] && grep -qx 'bad:maybe' <<<\"\$OUT\""
 fresh; ru "game_menu 400" BACK
-check "R11 Windows game header: Steam Deck line, hint only" "grep -q '^MENU Game: Portal|App 400. Windows game (Proton): ' <<<\"\$OUT\" && grep -q '^Steam Deck: Verified (hint only: Steam Deck has other GPU).|' <<<\"\$OUT\""
-check "R11 Frame value not shown (key unconfirmed)" "! grep -qi 'frame' <<<\"\$OUT\""
+check "R11 Windows game header: Steam Deck and Steam Frame line with runtime, hint only" "grep -q '^MENU Game: Portal|App 400. Windows game (Proton): ' <<<\"\$OUT\" && grep -q '^Steam Deck: Verified. Steam Frame: Verified, runtime proton-stable (hint only: other GPU, not a promise for this device).|' <<<\"\$OUT\""
+printf 'Verified\tPlayable\tnative\tunknown\t-\tunknown\tunknown\n' > "$T/ai-out"; ru "game_menu 400" BACK
+check "R11 Frame runtime unknown: category without runtime part" "grep -q '^Steam Deck: Verified. Steam Frame: Playable (hint only: other GPU, not a promise for this device).|' <<<\"\$OUT\""
+printf 'Verified\tVerified\tnative\tproton-stable\tDefaultControllerConfigFullyFunctional,InterfaceTextIsLegible\twindows\t2026-09-01\n' > "$T/ai-out"
 ru "game_menu 312520" BACK
-check "R11 Linux game header: Steam Deck line (unknown)" "grep -q '^MENU Game: Rain World|App 312520. Settings apply from the next start of the game.\$' <<<\"\$OUT\" && grep -q '^Steam Deck: unknown (hint only: Steam Deck has other GPU).|' <<<\"\$OUT\""
+check "R11 Linux game header: Steam Deck line (unknown)" "grep -q '^MENU Game: Rain World|App 312520. Settings apply from the next start of the game.\$' <<<\"\$OUT\" && grep -q '^Steam Deck: unknown. Steam Frame: unknown (hint only: other GPU, not a promise for this device).|' <<<\"\$OUT\""
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; SA_APPINFO_PY=$T/none.py; deck_hint 400" 2>&1)
-check "R11 reader missing: unknown" "[ \"\$OUT\" = \$'unknown\\tunknown' ]"
+check "R11 reader missing: four unknown columns (deck, deck runtime, frame, frame runtime)" "[ \"\$OUT\" = \$'unknown\\tunknown\\tunknown\\tunknown' ]"
+OUT=$(bash -c ". $T/harness.sh --help >/dev/null; . $T/rstubs.sh; deck_hint 400; deck_hint 312520" 2>&1)
+check "R11 deck_hint columns: deck, Deck runtime, Frame, Frame runtime; other title all unknown" "[ \"\$OUT\" = \$'Verified\\tnative\\tVerified\\tproton-stable\\nunknown\\tunknown\\tunknown\\tunknown' ]"
+OUT=$(bash -c ". $T/harness.sh --help >/dev/null; deck_line \$'Playable\\tnative'" 2>&1)
+check "R11 deck_line on two-column input (older stub): Frame unknown" "[ \"\$OUT\" = 'Steam Deck: Playable. Steam Frame: unknown (hint only: other GPU, not a promise for this device).' ]"
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; . $T/rstubs.sh; game_rules 400" 2>&1)
-check "R12 Rules page: Steam Deck runtime line" "grep -qx 'Steam Deck runtime: native' <<<\"\$OUT\""
+check "R12 Rules page: Steam Deck runtime and Steam Frame runtime lines" "grep -qx 'Steam Deck runtime: native' <<<\"\$OUT\" && grep -qx 'Steam Frame runtime: proton-stable' <<<\"\$OUT\""
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; fixing_text")
 check "R13 Fixing a game: switched-by-itself bullet" "grep -q '^- Title switched to Windows build by itself: automatic\$' <<<\"\$OUT\""
 OUT=$(python3 "$T0/ptydrive.py" ". $T/harness.sh --help >/dev/null; . $T/rstubs.sh; DIALOG=builtin; menu_graphics; echo MENU-DONE" '3' '\r' @2 '\x1b' @1 '\x1b' @1 '\x1b' 2>&1)
@@ -351,9 +357,9 @@ check "R14 built-in screens: Graphics 3 opens Automatic Windows build screen, Ba
 bash "$T0/mkfake.sh" >/dev/null
 cp "$CONF" "$T/conf.orig"
 fresh; ru menu_graphics BACK
-check "P1 Graphics: item 4 CPU drawing notice (now: off), absent key = off" "grep -q '^MENU Graphics|.* 3 Automatic Windows build (now: on) 4 CPU drawing notice (now: off)\$' <<<\"\$OUT\""
+check "P1 Graphics: item 4 CPU drawing notice (now: off), absent key = off" "grep -q '^MENU Graphics|.* 3 Automatic Windows build (now: on) 4 CPU drawing notice (now: off) 5 ' <<<\"\$OUT\""
 fresh CPU_NOTICE=on; ru menu_graphics BACK
-check "P1 Graphics: CPU_NOTICE=on -> (now: on)" "grep -q ' 4 CPU drawing notice (now: on)\$' <<<\"\$OUT\""
+check "P1 Graphics: CPU_NOTICE=on -> (now: on)" "grep -q ' 4 CPU drawing notice (now: on) 5 ' <<<\"\$OUT\""
 fresh; ru menu_graphics 4 BACK BACK
 check "P2 item 4 opens screen: state off, llvmpipe, scope and GoldSrc lines" "grep -q '^YESNO CPU drawing notice|CPU drawing notice: off' <<<\"\$OUT\" && grep -q 'draws on CPU (llvmpipe)' <<<\"\$OUT\" && grep -q '^Not for Windows games on ARM64 Proton or native ARM64 games.\$' <<<\"\$OUT\" && grep -q '^GoldSrc games get no notice' <<<\"\$OUT\""
 check "P2 Back on screen: key not written, Graphics again" "grep -q '^YESNO CPU drawing notice' <<<\"\$OUT\" && [ -z \"\$(key CPU_NOTICE)\" ] && [ \$(grep -c '^MENU Graphics' <<<\"\$OUT\") = 2 ]"
@@ -373,7 +379,7 @@ check "P4 CLI bad value: usage, exit 2, key unchanged" "[ $RC = 2 ] && grep -q '
 OUT=$(bash "$CFG" --help)
 check "P4 --help lists cpu-notice and CPU_NOTICE key" "grep -q '^  cpu-notice \\[on|off\\]  ' <<<\"\$OUT\" && grep -q 'CPU_NOTICE=on|off' <<<\"\$OUT\""
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; echo \"\$SA_BK_KEYS\"; for v in on off '' maybe; do rs_valid CPU_NOTICE \"\$v\" && echo \"ok:\$v\" || echo \"bad:\$v\"; done" 2>&1)
-check "P5 backup keys carry CPU_NOTICE after AUTO_BUILD (RUN_HISTORY last, 3.0); restore accepts on, off, empty only" "grep -q 'GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY\$' <<<\"\$OUT\" && [ \"\$(grep -c '^ok:' <<<\"\$OUT\")\" = 3 ] && grep -qx 'bad:maybe' <<<\"\$OUT\""
+check "P5 backup keys carry CPU_NOTICE after AUTO_BUILD (then RUN_HISTORY of 3.0, SNAPSHOT_KEEP and UPDATE_CHECK_ON_OPEN of 3.1); restore accepts on, off, empty only" "grep -q 'GFX_DEFAULT AUTO_BUILD CPU_NOTICE RUN_HISTORY SNAPSHOT_KEEP UPDATE_CHECK_ON_OPEN\( \|$\)' <<<\"\$OUT\" && [ \"\$(grep -c '^ok:' <<<\"\$OUT\")\" = 3 ] && grep -qx 'bad:maybe' <<<\"\$OUT\""
 # game logs: 400 newest log CPU, 312520 newest GPU (older CPU log ignored), 219150 CPU log without id line ignored
 L=$R/tmp
 printf 'SteamAppId=312520\nsteam-arm: renderer: warning: GPU forwarding not active: rendering on CPU (llvmpipe); no GPU device in use, process a\n' > "$L/fex-compat-tool-3001.log"
@@ -403,6 +409,33 @@ OUT=$(bash -c ". $T/harness.sh --help >/dev/null; info_system" 2>&1)
 check "P7 Information > System: Vulkan gaps row right after Vulkan" "grep -A1 '^Vulkan  ' <<<\"\$OUT\" | tail -1 | grep -q '^Vulkan gaps    '"
 OUT=$(python3 "$T0/ptydrive.py" ". $T/harness.sh --help >/dev/null; . $T/rstubs.sh; DIALOG=builtin; menu_graphics; echo MENU-DONE" '4' '\r' @2 '\x1b' @1 '\x1b' @1 '\x1b' 2>&1)
 check "P8 built-in screens: Graphics 4 opens CPU drawing notice screen, Back leaves" "grep -q 'CPU drawing notice (now: off)' <<<\"\$OUT\" && grep -q 'Turn on' <<<\"\$OUT\" && grep -q 'GoldSrc' <<<\"\$OUT\" && grep -q MENU-DONE <<<\"\$OUT\""
+
+# ---------- W Still-working notice (Graphics item 5, CLI, backup key, help) ----------
+fresh; ru menu_graphics BACK
+check "W1 Graphics: item 5 Still-working notice (now: auto), absent key = auto" "grep -q '^MENU Graphics|.* 4 CPU drawing notice (now: off) 5 Still-working notice (now: auto) 6 ' <<<\"\$OUT\""
+fresh STILL_NOTICE=off; ru menu_graphics BACK
+check "W1 STILL_NOTICE=off -> (now: off); unknown value -> auto" "grep -q ' 5 Still-working notice (now: off) 6 ' <<<\"\$OUT\" && [ \"\$(bash -c \". $T/harness.sh --help >/dev/null; conf_get(){ echo maybe; }; still_notice\")\" = auto ]"
+fresh; ru menu_graphics 5 BACK BACK
+check "W2 item 5 opens choice screen: state, three states named, Back writes nothing" "grep -q '^MENU Still-working notice|Still-working notice: auto' <<<\"\$OUT\" && grep -q 'compiling shaders, loading, or idle (own launcher window waiting' <<<\"\$OUT\" && grep -q '1 Auto 2 On 3 Off' <<<\"\$OUT\" && [ -z \"\$(key STILL_NOTICE)\" ] && [ \$(grep -c '^MENU Graphics' <<<\"\$OUT\") = 2 ]"
+check "W2 screen text fits 66 columns" "! sed -n '/^MENU Still-working notice/,/^MENU Graphics/p' <<<\"\$OUT\" | grep -v '^MENU' | sed 's/|1 Auto 2 On 3 Off\$//' | awk 'length > 66' | grep -q ."
+fresh; ru graphics_still_notice 3
+check "W3 choice Off: STILL_NOTICE=off written, message" "[ \"\$(key STILL_NOTICE)\" = off ] && grep -q '^MSG Graphics|Still-working notice: off. Applies at next start of Steam ARM.' <<<\"\$OUT\""
+fresh STILL_NOTICE=off; ru graphics_still_notice 1
+check "W3 choice Auto: key removed" "[ -z \"\$(key STILL_NOTICE)\" ] && ! grep -q '^STILL_NOTICE=' $CONF && grep -q 'Still-working notice: auto.' <<<\"\$OUT\""
+fresh; ru graphics_still_notice 1
+check "W3 same state chosen: no write, no message" "! grep -q '^STILL_NOTICE=' $CONF && ! grep -q '^MSG' <<<\"\$OUT\""
+fresh; rcli still-notice on
+check "W4 CLI still-notice on: key on" "[ $RC = 0 ] && [ \"\$(key STILL_NOTICE)\" = on ] && grep -q '^Still-working notice: on' <<<\"\$OUT\""
+rcli still-notice auto
+check "W4 CLI still-notice auto: key removed" "[ $RC = 0 ] && ! grep -q '^STILL_NOTICE=' $CONF"
+rcli still-notice
+check "W4 CLI no value: state auto" "[ $RC = 0 ] && grep -qx 'Still-working notice: auto' <<<\"\$OUT\""
+rcli still-notice maybe
+check "W4 CLI bad value: usage, exit 2" "[ $RC = 2 ] && grep -q 'usage: steam-arm-config still-notice \\[on|off|auto\\]' <<<\"\$OUT\""
+OUT=$(bash "$CFG" --help)
+check "W5 --help lists still-notice and STILL_NOTICE key" "grep -q '^  still-notice \\[on|off|auto\\]' <<<\"\$OUT\" && grep -q 'STILL_NOTICE=on|off (absent: auto)' <<<\"\$OUT\""
+OUT=$(bash -c ". $T/harness.sh --help >/dev/null; echo \"\$SA_BK_KEYS\"; for v in on off auto '' maybe; do rs_valid STILL_NOTICE \"\$v\" && echo \"ok:\$v\" || echo \"bad:\$v\"; done" 2>&1)
+check "W5 backup keys carry STILL_NOTICE; restore accepts on, off, auto, empty only" "grep -qE ' STILL_NOTICE( |\$)' <<<\"\$OUT\" && [ \"\$(grep -c '^ok:' <<<\"\$OUT\")\" = 4 ] && grep -qx 'bad:maybe' <<<\"\$OUT\""
 
 # ---------- G GE-Proton (Maintenance item 9, screen, file install, remove, Route per game, labels, CLI) ----------
 bash "$T0/mkfake.sh" >/dev/null
@@ -454,7 +487,7 @@ vdfmap(){ printf '"InstallConfigStore"\n{\n\t"Software"\n\t{\n\t\t"Valve"\n\t\t{
 vdfmap
 
 fresh; gu menu_maintenance BACK
-check "G1 Maintenance: item 9 GE-Proton (ARM64), optional (now: none) after item 8" "grep -q '^MENU Maintenance|.*8 Caches (sizes, clear FEX code caches) 9 GE-Proton (ARM64), optional (now: none) 10 Client type (now: native ARM64) 11 Report how last game ran 12 Run history (now: off)\$' <<<\"\$OUT\""
+check "G1 Maintenance: item 9 GE-Proton (ARM64), optional (now: none) after item 8" "grep -q '^MENU Maintenance|.*8 Caches (sizes, clear FEX code caches) 9 GE-Proton (ARM64), optional (now: none) 10 Client type (now: native ARM64) 11 Report how last game ran 12 Run history (now: off) 14 Show what is new' <<<\"\$OUT\""
 fresh; ui "SA_GE_PY=$T/none.py; menu_maintenance" 9 BACK
 check "G1 helper missing (2.2 setup): label (now: helper missing), screen says Update / Repair" "grep -q '9 GE-Proton (ARM64), optional (now: helper missing)' <<<\"\$OUT\" && grep -q '^MSG GE-Proton (ARM64)|Helper is missing. Run Maintenance > Update / Repair.' <<<\"\$OUT\""
 fresh; gu menu_maintenance 9 BACK BACK
@@ -505,14 +538,14 @@ fresh; gu ge_install_file "$T/gedl/GE-Proton11-6-aarch64.tar.gz" yes
 check "G7 file install 11-6: folder and marker in compatibilitytools.d, restart + per-game message, SLR line" "[ -f '$GC/GE-Proton11-6-aarch64/.steam-arm-ge' ] && grep -q '^MSG GE-Proton (ARM64)|GE-Proton11-6 installed. Restart Steam ARM to list it. Pick it per game: Graphics > Route per game > ge, or game Properties > Compatibility in Steam.' <<<\"\$OUT\" && grep -q '^First start of game set to it downloads Steam Linux Runtime 4.0 (Arm64).' <<<\"\$OUT\""
 check "G7 install log in menu cache folder" "ls '$R'/tmp/cache/geproton-*.log >/dev/null 2>&1"
 fresh; gu menu_maintenance BACK
-check "G8 label after install: (now: GE-Proton11-6)" "grep -q '9 GE-Proton (ARM64), optional (now: GE-Proton11-6) 10 Client type (now: native ARM64) 11 Report how last game ran 12 Run history (now: off)\$' <<<\"\$OUT\""
+check "G8 label after install: (now: GE-Proton11-6)" "grep -q '9 GE-Proton (ARM64), optional (now: GE-Proton11-6) 10 Client type (now: native ARM64) 11 Report how last game ran 12 Run history (now: off) 14 Show what is new' <<<\"\$OUT\""
 vdfmap 400:GE-Proton11-6-aarch64 312520:steamlinuxruntime
 fresh; gu ge_install_file "$T/gedl/GE-Proton11-7-aarch64.tar.gz" yes yes
 check "G9 newer file install: move offer names 1 game, default Keep both" "grep -q '^YESNO GE-Proton (ARM64)|Move 1 game from GE-Proton11-6 to GE-Proton11-7 and remove GE-Proton11-6?' <<<\"\$OUT\""
 check "G9 Move and remove: game on 11-7, 11-6 gone, other mapping kept" "grep -A1 '\"400\"' '$GS/config/config.vdf' | tail -1 | grep -q . && grep -A3 '\"400\"' '$GS/config/config.vdf' | grep -q GE-Proton11-7-aarch64 && grep -A3 '\"312520\"' '$GS/config/config.vdf' | grep -q steamlinuxruntime && [ ! -e '$GC/GE-Proton11-6-aarch64' ] && grep -q '^MSG GE-Proton (ARM64)|GE-Proton11-6 removed; 1 game moved to GE-Proton11-7.' <<<\"\$OUT\""
 mkdir -p "$GC/GE-Proton10-34"; echo '"compat_tools" { "GE-Proton10-34" {} }' > "$GC/GE-Proton10-34/compatibilitytool.vdf"
 fresh; gu menu_maintenance BACK
-check "G8 label with hand copy: newest first, 1 more" "grep -q '9 GE-Proton (ARM64), optional (now: GE-Proton11-7, 1 more) 10 Client type (now: native ARM64) 11 Report how last game ran 12 Run history (now: off)\$' <<<\"\$OUT\""
+check "G8 label with hand copy: newest first, 1 more" "grep -q '9 GE-Proton (ARM64), optional (now: GE-Proton11-7, 1 more) 10 Client type (now: native ARM64) 11 Report how last game ran 12 Run history (now: off) 14 Show what is new' <<<\"\$OUT\""
 fresh; gu menu_geproton BACK
 check "G2 screen: installed here with size and games, other copy left alone" "grep -q '^Installed here: GE-Proton11-7 ([0-9]* MB, 1 game)\$' <<<\"\$OUT\" && grep -q '^Other copies:   GE-Proton10-34 (not installed here, left alone)\$' <<<\"\$OUT\""
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; . $T/gstubs.sh; info_status" 2>&1)
@@ -558,7 +591,7 @@ CPUF=$R/proc/cpuinfo; mkdir -p "$R/proc"
 v80(){ printf 'processor\t: 0\nFeatures\t: fp asimd evtstrm crc32 cpuid\nCPU part\t: 0xd08\n' > "$CPUF"; }
 v82(){ printf 'processor\t: 0\nFeatures\t: fp asimd evtstrm crc32 atomics cpuid\nCPU part\t: 0xd0b\n' > "$CPUF"; }
 XS="need_root(){ :; }; close_steam(){ :; }"
-v80; fresh CLIENT=x86 CLIENT_SET=auto CLIENT_PROBE=1788652215:lse; ui "info_status | sed -n '1,6p' >> \$LOG"
+v80; fresh CLIENT=x86 CLIENT_SET=auto CLIENT_PROBE=1788652215:lse; ui "info_status | sed -n '1,8p' >> \$LOG"
 check "XM1 status: Client type row after Installed (x86 by CPU rule); FEX tool row says system FEX" "sed -n 2p <<<\"\$OUT\" | grep -qx 'Client type    x86 through emulation (CPU without Armv8.1 atomics)' && grep -qx 'FEX tool       not used (x86 client runs on system FEX)' <<<\"\$OUT\""
 fresh CLIENT=x86 CLIENT_SET=user; ui "info_status >> \$LOG"
 check "XM2 status: x86 chosen by hand" "grep -qx 'Client type    x86 through emulation (chosen by hand)' <<<\"\$OUT\""
@@ -581,7 +614,7 @@ check "XM7 Notes: x86 client line names #13288 and Maintenance > Client type" "g
 fresh CLIENT=arm64; ui "info_notes >> \$LOG"
 check "XM7b Notes: no x86 line on native client" "! grep -q 'x86 client:' <<<\"\$OUT\""
 fresh CLIENT=x86 CLIENT_SET=auto CLIENT_PROBE=1788652215:lse; ui "$XS; menu_maintenance" 10 BACK BACK
-check "XM8 Maintenance: item 10 Client type (now: x86) opens type screen with state and four entries" "grep -q '^MENU Maintenance|.* 10 Client type (now: x86) 11 Report how last game ran 12 Run history (now: off)\$' <<<\"\$OUT\" && grep -q '^MENU Client type|Now: x86 through emulation (CPU without Armv8.1 atomics)' <<<\"\$OUT\" && grep -q '^Native client last checked: client 1788652215, lse\$' <<<\"\$OUT\" && grep -q 'auto Automatic (recommended) arm64 Native ARM64 client x86 x86 client through emulation check Check native client now\$' <<<\"\$OUT\""
+check "XM8 Maintenance: item 10 Client type (now: x86) opens type screen with state and four entries" "grep -q '^MENU Maintenance|.* 10 Client type (now: x86) 11 Report how last game ran 12 Run history (now: off) 14 Show what is new' <<<\"\$OUT\" && grep -q '^MENU Client type|Now: x86 through emulation (CPU without Armv8.1 atomics)' <<<\"\$OUT\" && grep -q '^Native client last checked: client 1788652215, lse\$' <<<\"\$OUT\" && grep -q 'auto Automatic (recommended) arm64 Native ARM64 client x86 x86 client through emulation check Check native client now\$' <<<\"\$OUT\""
 check "XM8b Back from type screen: Maintenance again, cursor on 10" "[ \$(grep -c '^MENU Maintenance' <<<\"\$OUT\") = 2 ] && grep '^MENU Maintenance' <<<\"\$OUT\" | tail -n 1 | grep -q -- '--default 10 '"
 fresh CLIENT=x86; ui "$XS; maint_client" auto BACK
 check "XM9 Automatic: setup --keep --client=auto, no question" "grep -qx 'RUN Client type||--keep --client=auto' <<<\"\$OUT\" && ! grep -q '^YESNO' <<<\"\$OUT\""
