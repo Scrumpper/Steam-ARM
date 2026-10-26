@@ -343,8 +343,8 @@ Android title started from Steam (free VR title in flat mode):
 
 - Vulkan path: game loop starts, window stays black. PanVK 25.1.4 has no Android swapchain or
   AHardwareBuffer support (swapchain connect fails with -22).
-- OpenGL ES path: window opens with Unity hardware requirements warning; after CONTINUE Unity
-  graphics setup fails and app exits. Unity 6 VR build needs Vulkan or OpenGL ES newer than 3.1.
+- OpenGL ES path: window opens with Unity hardware requirements warning; Unity then reports
+  graphics API initialization failure and app exits about 8 s after start.
 
 Does not work:
 

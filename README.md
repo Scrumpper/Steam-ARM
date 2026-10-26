@@ -696,7 +696,7 @@ upgrade from 1.2, which saved no family record, only turns such parts off.
   SHA-256, each file checked) in same overlay; licences Mesa and libdrm MIT, minigbm
   BSD-3-Clause, LLVM Apache-2.0 WITH LLVM-exception. Android 11 container boots with
   SurfaceFlinger on Mali-G610; no Android title draws frame on Mali yet (Vulkan window stays
-  black, OpenGL ES 3.1 too old for Unity 6 VR builds). Not working: VR titles (no OpenXR
+  black, OpenGL ES: Unity graphics initialization fails). Not working: VR titles (no OpenXR
   session), Vulkan inside Android on Mali, Adreno driver payload (COMPATIBILITY.md, Android
   titles). Removal keeps group write cleared on Lepton files. Off by default.
   (scope: generic)

@@ -7,7 +7,7 @@ steam-arm-setup (3.2) stable; urgency=low
     pinned Waydroid vendor image. Android 11 container boots with
     SurfaceFlinger on Mali-G610. No Android title draws frame on Mali
     yet: Vulkan path stays black (PanVK has no Android swapchain),
-    OpenGL ES 3.1 too old for Unity 6 VR build; no OpenXR session.
+    OpenGL ES: Unity graphics initialization fails; no OpenXR session.
 
  -- Scrumpper <Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 00:00:00 +0000
 
