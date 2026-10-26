@@ -223,8 +223,9 @@ check "menu steam_running: no account resolved -> any account (conservative)" "[
 TP=$T/tray.py
 awk '/^cat > \/usr\/local\/bin\/steam-arm-tray <<.TRAYPY.$/{f=1;next} /^TRAYPY$/{f=0} f' "$INST" \
   | awk '/^def proc_uid/{f=1} /^def signal_processes/{f=0} f' > "$TP"
-cp "$(command -v sleep)" "$T/steam"; "$T/steam" 5 & SP=$!
-command sleep 0.2
+# script stand-in: comm is its file name (multicall coreutils refuse a copied binary named steam)
+printf '#!/bin/bash\nsleep 30 & wait\n' > "$T/steam"; chmod 755 "$T/steam"; "$T/steam" & SP=$!
+for _ in $(seq 50); do [ "$(cat /proc/$SP/comm 2>/dev/null)" = steam ] && break; command sleep 0.1; done
 OUT=$(python3 - "$TP" "$SP" <<'PY'
 import os, sys
 ns = {"os": os}
@@ -236,7 +237,7 @@ b = pid in ns["pids_by_comm"]("steam")
 print("own=%s other=%s" % (a, b))
 PY
 )
-kill "$SP" 2>/dev/null; wait "$SP" 2>/dev/null
+pkill -P "$SP" 2>/dev/null; kill "$SP" 2>/dev/null; wait "$SP" 2>/dev/null
 check "tray: own steam counted, same process under other uid not" "[ \"\$OUT\" = 'own=True other=False' ]"
 
 # ---------- setup hints only outside menu ----------
