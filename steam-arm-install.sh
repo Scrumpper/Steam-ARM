@@ -16779,7 +16779,7 @@ cpu_delta(){
     $1=="total"{ if(n==0){t0=$2; i0=$3} else {t1=$2; i1=$3}; n++; next }
     { k=$1 SUBSEP $3; if(n==1) a[k]+=$2; else b[k]+=$2 }
     END{ for(k in b){ d=b[k]-a[k]; if(d<0) d=b[k]; split(k, kp, SUBSEP); s[kp[1]]+=d }
-         dt=(t1-t0)/ncpu; if(dt<=0) dt=1; busy=100*(1-(i1-i0)/(t1-t0)); if(t1-t0<=0) busy=0
+         dt=(t1-t0)/ncpu; if(dt<=0) dt=1; busy=0; if(t1-t0>0) busy=100*(1-(i1-i0)/(t1-t0))
          printf "%.0f %.0f %.0f %.0f %.0f %.0f\n", busy,
            100*s["steam"]/dt, 100*s["steamwebhelper"]/dt, 100*s["fex"]/dt, 100*s["game"]/dt, 100*s["runtime"]/dt }'
 }
