@@ -889,6 +889,8 @@ GOV_SUDO=/etc/sudoers.d/steam-arm-governor
 gov_relevant(){ case "$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null)" in "Raspberry Pi"*) return 0;; esac; [ -e "$GOV_SUDO" ]; }
 # lepton: host packages and SteamOS tool stand-ins for Valve's Lepton (Android runtime, app 3029110).
 LEP_PKGS="podman catatonit uidmap passt attr inotify-tools adb jq"
+# compiler and headers for the fossilize stand-in layer; recorded like LEP_PKGS
+LEP_BUILD="gcc libc6-dev libvulkan-dev"
 LEP_DIR=/usr/local/lib/steam-arm-lepton
 LEP_BIN=$LEP_DIR/bin
 LEP_OVERLAY=$LEP_DIR/guestos-android
@@ -898,10 +900,10 @@ LEP_LAYER=$LEP_OVERLAY/vendor/vulkan_layers/libVkLayer_fossilize.so
 LEP_LAYER_JSON=/usr/share/vulkan/explicit_layer.d/steam-arm-lepton-fossilize.json
 pkg_inst(){ dpkg-query -W -f='${db:Status-Abbrev}\n' "$1" 2>/dev/null | grep -q '^ii'; }
 pkg_list(){ dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 2>/dev/null | awk '$1 == "ii" { print $2 }' | sort -u; }
-# Installs missing LEP_PKGS; every package new after the install (dependencies too) joins LEPTON_PKGS_ADDED.
+# Installs missing LEP_PKGS and LEP_BUILD; every package new after the install (dependencies too) joins LEPTON_PKGS_ADDED.
 lepton_pkgs_add(){
   local miss p before after add
-  miss=$(for p in $LEP_PKGS; do pkg_inst "$p" || printf '%s ' "$p"; done)
+  miss=$(for p in $LEP_PKGS $LEP_BUILD; do pkg_inst "$p" || printf '%s ' "$p"; done)
   [ -n "$miss" ] || return 0
   before=$(pkg_list)
   # shellcheck disable=SC2086
@@ -9107,7 +9109,6 @@ if [ "$MODE" = remove ]; then remove_all; exit 0; fi
 # --- host package preflight (read-only), before any package or package source change ---
 BUILDPKGS=""; opt vk-spoof && BUILDPKGS="gcc libc6-dev libvulkan-dev"
 opt glx-lax && BUILDPKGS="$BUILDPKGS patchelf"
-opt lepton && BUILDPKGS="$BUILDPKGS gcc libc6-dev libvulkan-dev"                     # Lepton fossilize stand-in layer
 opt gpu-in-emulation && BUILDPKGS="$BUILDPKGS zstd"                                  # driver archive
 want_icons(){ opt desktop || opt desktop-mode || opt icon-bigpicture || opt icon-desktop; }
 want_icons && BUILDPKGS="$BUILDPKGS python3-pil"                                     # menu and desktop icons

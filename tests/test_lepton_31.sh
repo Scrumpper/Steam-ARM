@@ -49,13 +49,13 @@ LIB=$T/lib.sh
 } > "$LIB"
 check "P0 extracted: conf helpers, package helpers, lepton_off, drop-in stub" "grep -q '^conf_del()' $LIB && grep -q '^lepton_pkgs_add()' $LIB && grep -q '^lepton_pkgs_purge()' $LIB && grep -q '^lepton_off()' $LIB && grep -q '^lepton_dev_conf()' $LIB && bash -n $LIB"
 run(){ ( export T; PATH=$T/bin:$PATH; CONF=$T/etc/steam-arm.conf; . "$LIB"; eval "$1" ) 2>&1; }
-printf 'attr\njq\nlibc6\n' > "$T/state"; printf 'podman conmon crun\nadb android-libbase\n' > "$T/deps"; : > "$T/rdeps"; : > "$T/etc/steam-arm.conf"
+printf 'attr\ngcc\njq\nlibc6\nlibc6-dev\n' > "$T/state"; printf 'podman conmon crun\nadb android-libbase\n' > "$T/deps"; : > "$T/rdeps"; : > "$T/etc/steam-arm.conf"
 cp "$T/state" "$T/state.before"
 OUT=$(run lepton_pkgs_add; cat "$T/apt.log"; echo "REC=$(sed -n 's/^LEPTON_PKGS_ADDED=//p' "$T/etc/steam-arm.conf")")
 check "P1 install: apt-get gets only missing packages; record = every new package (deps too), not those already there" \
-  "grep -qx 'apt-get install -y -o DPkg::Lock::Timeout=120 podman catatonit uidmap passt inotify-tools adb' <<<\"\$OUT\" && grep -qx 'REC=adb,android-libbase,catatonit,conmon,crun,inotify-tools,passt,podman,uidmap' <<<\"\$OUT\""
+  "grep -qx 'apt-get install -y -o DPkg::Lock::Timeout=120 podman catatonit uidmap passt inotify-tools adb libvulkan-dev' <<<\"\$OUT\" && grep -qx 'REC=adb,android-libbase,catatonit,conmon,crun,inotify-tools,libvulkan-dev,passt,podman,uidmap' <<<\"\$OUT\""
 rm -f "$T/apt.log"; OUT=$(run lepton_pkgs_add; cat "$T/apt.log" 2>/dev/null; echo "REC=$(sed -n 's/^LEPTON_PKGS_ADDED=//p' "$T/etc/steam-arm.conf")")
-check "P2 second run, nothing missing: no apt-get call, record kept" "! grep -q '^apt-get' <<<\"\$OUT\" && grep -qx 'REC=adb,android-libbase,catatonit,conmon,crun,inotify-tools,passt,podman,uidmap' <<<\"\$OUT\""
+check "P2 second run, nothing missing: no apt-get call, record kept" "! grep -q '^apt-get' <<<\"\$OUT\" && grep -qx 'REC=adb,android-libbase,catatonit,conmon,crun,inotify-tools,libvulkan-dev,passt,podman,uidmap' <<<\"\$OUT\""
 cp "$T/state" "$T/state.on"; cp "$T/etc/steam-arm.conf" "$T/conf.on"
 echo "crun foo" > "$T/rdeps"; rm -f "$T/apt.log"
 OUT=$(run lepton_pkgs_purge; echo "rc=$?"; cat "$T/apt.log"; echo "REC=$(sed -n 's/^LEPTON_PKGS_ADDED=//p' "$T/etc/steam-arm.conf")")
@@ -64,7 +64,7 @@ check "P3 purge would take another package: nothing purged, warning names it, re
 : > "$T/rdeps"; rm -f "$T/apt.log"
 OUT=$(run lepton_pkgs_purge; cat "$T/apt.log"; echo "KEY=$(grep -c '^LEPTON_PKGS_ADDED=' "$T/etc/steam-arm.conf")")
 check "P4 purge: exactly the recorded set, packages from before stay, state equals before, record removed" \
-  "grep -qx 'apt-get purge -y -o DPkg::Lock::Timeout=120 adb android-libbase catatonit conmon crun inotify-tools passt podman uidmap' <<<\"\$OUT\" && cmp -s '$T/state' '$T/state.before' && grep -qx 'KEY=0' <<<\"\$OUT\""
+  "grep -qx 'apt-get purge -y -o DPkg::Lock::Timeout=120 adb android-libbase catatonit conmon crun inotify-tools libvulkan-dev passt podman uidmap' <<<\"\$OUT\" && cmp -s '$T/state' '$T/state.before' && grep -qx 'KEY=0' <<<\"\$OUT\""
 cp "$T/state.on" "$T/state"; cp "$T/conf.on" "$T/etc/steam-arm.conf"; echo libc6 >> "$T/state"; rm -f "$T/apt.log"
 OUT=$(run 'HOSTPKGS="curl crun"; lepton_pkgs_purge'; cat "$T/apt.log")
 check "P5 setup's own packages (HOSTPKGS) never purged" "grep -q '^apt-get purge -y' <<<\"\$OUT\" && ! grep -q '^apt-get purge -y.* crun' <<<\"\$OUT\" && grep -qx crun '$T/state'"
@@ -107,8 +107,8 @@ if command -v "$CC" >/dev/null && [ -f /usr/include/vulkan/vk_layer.h ]; then
 else echo "SKIP Y1 layer build: $CC or Vulkan headers missing"; fi
 OUT=$(awk '/^  cat > "\$LEP_LAYER_JSON" <<JSON$/{f=1;next} /^JSON$/{f=0} f' "$INST" | LEP_LAYER=/x/libVkLayer_fossilize.so envsubst 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin)["layer"]; print(d["name"], d["library_path"])')
 check "Y2 manifest names VK_LAYER_fossilize with library path ending libVkLayer_fossilize.so (Lepton's id lookup)" "[ \"\$OUT\" = 'VK_LAYER_fossilize /x/libVkLayer_fossilize.so' ]"
-check "Y3 setup builds layer into overlay, manifest only on success; BUILDPKGS has compiler and headers with the part" \
-  "grep -qF 'LEP_LAYER=\$LEP_OVERLAY/vendor/vulkan_layers/libVkLayer_fossilize.so' '$INST' && grep -qF 'rm -f \"\$LEP_LAYER\" \"\$LEP_LAYER_JSON\"; warn \"lepton: fossilize stand-in layer did not build' '$INST' && grep -qF 'opt lepton && BUILDPKGS=\"\$BUILDPKGS gcc libc6-dev libvulkan-dev\"' '$INST'"
+check "Y3 setup builds layer into overlay, manifest only on success; compiler and headers in LEP_BUILD (recorded, purged with the part), not BUILDPKGS" \
+  "grep -qF 'LEP_LAYER=\$LEP_OVERLAY/vendor/vulkan_layers/libVkLayer_fossilize.so' '$INST' && grep -qF 'rm -f \"\$LEP_LAYER\" \"\$LEP_LAYER_JSON\"; warn \"lepton: fossilize stand-in layer did not build' '$INST' && grep -qx 'LEP_BUILD=\"gcc libc6-dev libvulkan-dev\"' '$INST' && grep -qF 'for p in \$LEP_PKGS \$LEP_BUILD; do' '$INST' && ! grep -q 'opt lepton && BUILDPKGS' '$INST'"
 
 # setpgid stand-in
 P=$T/setpgid; awk "/^cat > \"\\\$LEP_BIN\\/setpgid\" <<'LEPSETPGID'\$/{f=1;next} /^LEPSETPGID\$/{f=0} f" "$INST" > "$P"; chmod 755 "$P"
