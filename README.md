@@ -687,7 +687,8 @@ upgrade from 1.2, which saved no family record, only turns such parts off.
 - `lepton`: Host tools Valve's Lepton (Android runtime) calls: podman, catatonit, uidmap,
   passt, attr, inotify-tools, adb and jq (removal purges only packages it added), `setpgid`
   and `steamvr` stand-ins in `/usr/local/lib/steam-arm-lepton/bin` first in client `PATH`,
-  client umask 022. Android titles still need Steam Frame parts (Adreno driver payload, VR
+  pass-through `VK_LAYER_fossilize` stand-in (built at setup) in overlay linked to
+  `/usr/share/guestos/android` while that path is free, client umask 022. Android titles still need Steam Frame parts (Adreno driver payload, VR
   runtime). Off by default. (scope: generic)
 
 ## Graphics route per title

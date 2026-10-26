@@ -893,6 +893,9 @@ LEP_DIR=/usr/local/lib/steam-arm-lepton
 LEP_BIN=$LEP_DIR/bin
 LEP_OVERLAY=$LEP_DIR/guestos-android
 LEP_GUEST=/usr/share/guestos/android
+LEP_LAYER_C=$LEP_DIR/vk-fossilize-passthrough.c
+LEP_LAYER=$LEP_OVERLAY/vendor/vulkan_layers/libVkLayer_fossilize.so
+LEP_LAYER_JSON=/usr/share/vulkan/explicit_layer.d/steam-arm-lepton-fossilize.json
 pkg_inst(){ dpkg-query -W -f='${db:Status-Abbrev}\n' "$1" 2>/dev/null | grep -q '^ii'; }
 pkg_list(){ dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 2>/dev/null | awk '$1 == "ii" { print $2 }' | sort -u; }
 # Installs missing LEP_PKGS; every package new after the install (dependencies too) joins LEPTON_PKGS_ADDED.
@@ -924,8 +927,8 @@ lepton_pkgs_purge(){
 # Component off: recorded packages, stand-ins, own guestos link; overlay source filled by hand stays.
 lepton_off(){
   lepton_pkgs_purge
-  rm -f "$LEP_BIN/setpgid" "$LEP_BIN/steamvr"
-  rmdir "$LEP_BIN" 2>/dev/null
+  rm -f "$LEP_BIN/setpgid" "$LEP_BIN/steamvr" "$LEP_LAYER" "$LEP_LAYER_C" "$LEP_LAYER_JSON"
+  rmdir "$LEP_BIN" "$LEP_OVERLAY/vendor/vulkan_layers" "$LEP_OVERLAY/vendor" "$LEP_OVERLAY" 2>/dev/null
   [ "$(readlink "$LEP_GUEST" 2>/dev/null)" = "$LEP_OVERLAY" ] && rm -f "$LEP_GUEST"
   rmdir /usr/share/guestos 2>/dev/null
   rmdir "$LEP_DIR" 2>/dev/null
@@ -9104,6 +9107,7 @@ if [ "$MODE" = remove ]; then remove_all; exit 0; fi
 # --- host package preflight (read-only), before any package or package source change ---
 BUILDPKGS=""; opt vk-spoof && BUILDPKGS="gcc libc6-dev libvulkan-dev"
 opt glx-lax && BUILDPKGS="$BUILDPKGS patchelf"
+opt lepton && BUILDPKGS="$BUILDPKGS gcc libc6-dev libvulkan-dev"                     # Lepton fossilize stand-in layer
 opt gpu-in-emulation && BUILDPKGS="$BUILDPKGS zstd"                                  # driver archive
 want_icons(){ opt desktop || opt desktop-mode || opt icon-bigpicture || opt icon-desktop; }
 want_icons && BUILDPKGS="$BUILDPKGS python3-pil"                                     # menu and desktop icons
@@ -17525,9 +17529,152 @@ esac
 mkdir -p "$d" && printf '%s\n' "$d"
 LEPSTEAMVR
 chmod 755 "$LEP_BIN/setpgid" "$LEP_BIN/steamvr"
-# Android overlay source (filled separately): linked to Lepton's guestos path only while that path is free.
-if [ -d "$LEP_OVERLAY" ] && [ ! -e "$LEP_GUEST" ] && [ ! -L "$LEP_GUEST" ]; then
+# Lepton requires a layer named VK_LAYER_fossilize (SteamOS guestos payload): pass-through stand-in, Android ABI, no libc.
+cat > "$LEP_LAYER_C" <<'CEOF'
+/* VK_LAYER_fossilize stand-in for Lepton (Android ABI, no libc): pass-through, no capture. */
+#include <vulkan/vulkan.h>
+#include <vulkan/vk_layer.h>
+
+#define EXPORT __attribute__((visibility("default")))
+#define LAYER_NAME "VK_LAYER_fossilize"
+
+static PFN_vkGetInstanceProcAddr next_gipa;
+static PFN_vkGetDeviceProcAddr next_gdpa;
+static VkInstance last_instance;
+
+static int str_eq(const char *a, const char *b)
+{
+    if (!a || !b) return 0;
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+static void str_cpy(char *d, const char *s, unsigned n)
+{
+    unsigned i = 0;
+    for (; i + 1 < n && s[i]; i++) d[i] = s[i];
+    for (; i < n; i++) d[i] = 0;
+}
+
+static VkResult layer_props(uint32_t *count, VkLayerProperties *props)
+{
+    if (!props) { *count = 1; return VK_SUCCESS; }
+    if (*count < 1) return VK_INCOMPLETE;
+    str_cpy(props[0].layerName, LAYER_NAME, VK_MAX_EXTENSION_NAME_SIZE);
+    str_cpy(props[0].description, "pass-through stand-in", VK_MAX_DESCRIPTION_SIZE);
+    props[0].specVersion = VK_MAKE_VERSION(1, 1, 0);
+    props[0].implementationVersion = 1;
+    *count = 1;
+    return VK_SUCCESS;
+}
+
+EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceLayerProperties(uint32_t *count, VkLayerProperties *props)
+{
+    return layer_props(count, props);
+}
+
+EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateDeviceLayerProperties(VkPhysicalDevice pd, uint32_t *count, VkLayerProperties *props)
+{
+    (void)pd;
+    return layer_props(count, props);
+}
+
+EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceExtensionProperties(const char *layer, uint32_t *count, VkExtensionProperties *props)
+{
+    (void)props;
+    if (str_eq(layer, LAYER_NAME)) { *count = 0; return VK_SUCCESS; }
+    return VK_ERROR_LAYER_NOT_PRESENT;
+}
+
+EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateDeviceExtensionProperties(VkPhysicalDevice pd, const char *layer, uint32_t *count, VkExtensionProperties *props)
+{
+    if (str_eq(layer, LAYER_NAME)) { *count = 0; return VK_SUCCESS; }
+    if (next_gipa && last_instance) {
+        PFN_vkEnumerateDeviceExtensionProperties f =
+            (PFN_vkEnumerateDeviceExtensionProperties)next_gipa(last_instance, "vkEnumerateDeviceExtensionProperties");
+        if (f) return f(pd, layer, count, props);
+    }
+    return VK_ERROR_LAYER_NOT_PRESENT;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL layer_CreateInstance(const VkInstanceCreateInfo *ci, const VkAllocationCallbacks *alloc, VkInstance *inst)
+{
+    VkLayerInstanceCreateInfo *li = (VkLayerInstanceCreateInfo *)ci->pNext;
+    while (li && !(li->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO && li->function == VK_LAYER_LINK_INFO))
+        li = (VkLayerInstanceCreateInfo *)li->pNext;
+    if (!li || !li->u.pLayerInfo) return VK_ERROR_INITIALIZATION_FAILED;
+    PFN_vkGetInstanceProcAddr gipa = li->u.pLayerInfo->pfnNextGetInstanceProcAddr;
+    li->u.pLayerInfo = li->u.pLayerInfo->pNext;
+    PFN_vkCreateInstance create = (PFN_vkCreateInstance)gipa(VK_NULL_HANDLE, "vkCreateInstance");
+    if (!create) return VK_ERROR_INITIALIZATION_FAILED;
+    VkResult r = create(ci, alloc, inst);
+    if (r == VK_SUCCESS) { next_gipa = gipa; last_instance = *inst; }
+    return r;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL layer_CreateDevice(VkPhysicalDevice pd, const VkDeviceCreateInfo *ci, const VkAllocationCallbacks *alloc, VkDevice *dev)
+{
+    VkLayerDeviceCreateInfo *li = (VkLayerDeviceCreateInfo *)ci->pNext;
+    while (li && !(li->sType == VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO && li->function == VK_LAYER_LINK_INFO))
+        li = (VkLayerDeviceCreateInfo *)li->pNext;
+    if (!li || !li->u.pLayerInfo) return VK_ERROR_INITIALIZATION_FAILED;
+    PFN_vkGetInstanceProcAddr gipa = li->u.pLayerInfo->pfnNextGetInstanceProcAddr;
+    PFN_vkGetDeviceProcAddr gdpa = li->u.pLayerInfo->pfnNextGetDeviceProcAddr;
+    li->u.pLayerInfo = li->u.pLayerInfo->pNext;
+    PFN_vkCreateDevice create = (PFN_vkCreateDevice)gipa(last_instance, "vkCreateDevice");
+    if (!create) return VK_ERROR_INITIALIZATION_FAILED;
+    VkResult r = create(pd, ci, alloc, dev);
+    if (r == VK_SUCCESS) next_gdpa = gdpa;
+    return r;
+}
+
+EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice dev, const char *name)
+{
+    if (str_eq(name, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
+    return next_gdpa ? next_gdpa(dev, name) : 0;
+}
+
+EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance inst, const char *name)
+{
+    if (str_eq(name, "vkGetInstanceProcAddr")) return (PFN_vkVoidFunction)vkGetInstanceProcAddr;
+    if (str_eq(name, "vkCreateInstance")) return (PFN_vkVoidFunction)layer_CreateInstance;
+    if (str_eq(name, "vkCreateDevice")) return (PFN_vkVoidFunction)layer_CreateDevice;
+    if (str_eq(name, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
+    if (str_eq(name, "vkEnumerateInstanceLayerProperties")) return (PFN_vkVoidFunction)vkEnumerateInstanceLayerProperties;
+    if (str_eq(name, "vkEnumerateInstanceExtensionProperties")) return (PFN_vkVoidFunction)vkEnumerateInstanceExtensionProperties;
+    if (str_eq(name, "vkEnumerateDeviceLayerProperties")) return (PFN_vkVoidFunction)vkEnumerateDeviceLayerProperties;
+    if (str_eq(name, "vkEnumerateDeviceExtensionProperties")) return (PFN_vkVoidFunction)vkEnumerateDeviceExtensionProperties;
+    return next_gipa ? next_gipa(inst, name) : 0;
+}
+CEOF
+mkdir -p "$LEP_OVERLAY/vendor/vulkan_layers"
+if gcc -O2 -fPIC -shared -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fno-tree-loop-distribute-patterns \
+     -fvisibility=hidden -Wl,-Bsymbolic -Wl,--hash-style=both -Wl,-soname,libVkLayer_fossilize.so -Wl,-z,max-page-size=4096 \
+     -Wl,-z,noexecstack -Wl,--no-undefined -o "$LEP_LAYER" "$LEP_LAYER_C"; then
+  chmod 644 "$LEP_LAYER"
+  # manifest: Lepton reads the layer name from /usr/share/vulkan JSON files by library file name
+  cat > "$LEP_LAYER_JSON" <<JSON
+{
+  "file_format_version": "1.0.0",
+  "layer": {
+    "name": "VK_LAYER_fossilize",
+    "type": "GLOBAL",
+    "library_path": "$LEP_LAYER",
+    "api_version": "1.1.0",
+    "implementation_version": "1",
+    "description": "Steam ARM stand-in for Lepton (pass-through)"
+  }
+}
+JSON
+  chmod 644 "$LEP_LAYER_JSON"
+else
+  rm -f "$LEP_LAYER" "$LEP_LAYER_JSON"; warn "lepton: fossilize stand-in layer did not build; Lepton stops at its Vulkan layer step"
+fi
+# Android overlay source: linked to Lepton's guestos path only while that path is free.
+if [ ! -e "$LEP_GUEST" ] && [ ! -L "$LEP_GUEST" ]; then
   { mkdir -p /usr/share/guestos && ln -s "$LEP_OVERLAY" "$LEP_GUEST"; } || warn "lepton: could not link $LEP_GUEST"
+elif [ "$(readlink "$LEP_GUEST" 2>/dev/null)" != "$LEP_OVERLAY" ]; then
+  warn "lepton: $LEP_GUEST exists and is not setup's link; Lepton uses it as it is"
 fi
 # depot files written under umask 0002: group write off (Android init skips group-writable rc files)
 [ -d "$S/steamapps/common/Lepton" ] && { as_user chmod -R g-w "$S/steamapps/common/Lepton" || warn "lepton: could not clear group write on $S/steamapps/common/Lepton"; }

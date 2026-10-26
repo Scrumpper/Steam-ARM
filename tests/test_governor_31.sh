@@ -86,7 +86,7 @@ sed -i 's/^COMPONENTS_ON=\(.*\)$/COMPONENTS_ON=\1,pi-governor/' "$SARM_UI_FAKE/e
 ui menu_maintenance 22 off
 check "M4 part on: row says on; Off runs setup without pi-governor" "grep -q ' 22 CPU governor while Steam runs (now: on)' <<<\"\$OUT\" && grep -q '^RUN_INSTALLER CPU governor|--select=' <<<\"\$OUT\" && ! grep -q '^RUN_INSTALLER.*pi-governor' <<<\"\$OUT\""
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; gov_applies && echo applies; comp_short pi-governor" 2>&1)
-check "M5 gov_applies on a Raspberry Pi model; comp_short names the part; SA_COMPONENTS lists it (installer --list decides elsewhere)" "grep -qx applies <<<\"\$OUT\" && grep -qx 'Raspberry Pi: governor performance while Steam runs' <<<\"\$OUT\" && grep -q '^SA_COMPONENTS=\".* pi-governor\"' '$CFG'"
+check "M5 gov_applies on a Raspberry Pi model; comp_short names the part; SA_COMPONENTS lists it (installer --list decides elsewhere)" "grep -qx applies <<<\"\$OUT\" && grep -qx 'Raspberry Pi: governor performance while Steam runs' <<<\"\$OUT\" && grep -q '^SA_COMPONENTS=\".* pi-governor lepton\"' '$CFG'"
 
 echo "governor 3.1: $pass pass, $fail fail"
 [ "$fail" = 0 ]

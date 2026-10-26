@@ -62,7 +62,7 @@ steam-arm-setup (3.1) stable; urgency=low
     Steam runs on Raspberry Pi boards.
   * Component lepton (off by default): host packages for Valve's Lepton,
     purged on removal when added by it; setpgid and steamvr stand-ins;
-    client umask 022.
+    pass-through fossilize layer stand-in; client umask 022.
   * Frame pacing readout, off by default (steam-arm --perf-stats):
     frame interval p50, p95, p99 and maximum per frame source every
     5 s, from Mesa overlay layer (Vulkan) and Gallium HUD dump

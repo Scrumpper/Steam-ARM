@@ -45,7 +45,7 @@ LIB=$T/lib.sh
 { echo 'warn(){ echo "WARN $*"; }; die(){ echo "DIE $*"; exit 1; }'
   awk '/^conf_get\(\)\{/{f=1} f{print} f && /^conf_del\(\)\{/{g=1} g && /^}$/{exit}' "$INST"
   awk '/^# lepton: host packages and SteamOS tool stand-ins/{f=1} f{print} f && /^lepton_dev_conf\(\)/{exit}' "$INST" \
-    | sed -e "s#^LEP_DIR=.*#LEP_DIR=$T/lepdir#" -e "s#^LEP_GUEST=.*#LEP_GUEST=$T/guestos/android#" -e "s#/usr/share/guestos#$T/guestos#g"
+    | sed -e "s#^LEP_DIR=.*#LEP_DIR=$T/lepdir#" -e "s#^LEP_GUEST=.*#LEP_GUEST=$T/guestos/android#" -e "s#/usr/share/guestos#$T/guestos#g" -e "s#^LEP_LAYER_JSON=.*#LEP_LAYER_JSON=$T/layer.json#"
 } > "$LIB"
 check "P0 extracted: conf helpers, package helpers, lepton_off, drop-in stub" "grep -q '^conf_del()' $LIB && grep -q '^lepton_pkgs_add()' $LIB && grep -q '^lepton_pkgs_purge()' $LIB && grep -q '^lepton_off()' $LIB && grep -q '^lepton_dev_conf()' $LIB && bash -n $LIB"
 run(){ ( export T; PATH=$T/bin:$PATH; CONF=$T/etc/steam-arm.conf; . "$LIB"; eval "$1" ) 2>&1; }
@@ -76,10 +76,11 @@ OUT=$(run lepton_pkgs_purge; echo "rc=$?"; cat "$T/apt.log" 2>/dev/null)
 check "P7 nothing recorded: no apt-get call" "grep -qx 'rc=0' <<<\"\$OUT\" && ! grep -q '^apt-get' <<<\"\$OUT\""
 
 # lepton_off: stand-ins, own guestos link only, overlay content kept
-mkdir -p "$T/lepdir/bin" "$T/guestos"; touch "$T/lepdir/bin/setpgid" "$T/lepdir/bin/steamvr"
+mkdir -p "$T/lepdir/bin" "$T/guestos" "$T/lepdir/guestos-android/vendor/vulkan_layers"; touch "$T/lepdir/bin/setpgid" "$T/lepdir/bin/steamvr"
+touch "$T/lepdir/guestos-android/vendor/vulkan_layers/libVkLayer_fossilize.so" "$T/lepdir/vk-fossilize-passthrough.c" "$T/layer.json"
 ln -s "$T/lepdir/guestos-android" "$T/guestos/android"
 OUT=$(run lepton_off; ls -A "$T/lepdir" "$T" 2>&1)
-check "O1 off: stand-ins and own link gone, empty folders removed" "[ ! -e '$T/lepdir' ] && [ ! -e '$T/guestos' ]"
+check "O1 off: stand-ins, layer, its source and manifest, own link gone, empty folders removed" "[ ! -e '$T/lepdir' ] && [ ! -e '$T/guestos' ] && [ ! -e '$T/layer.json' ]"
 mkdir -p "$T/lepdir/bin" "$T/lepdir/guestos-android" "$T/guestos"; touch "$T/lepdir/bin/setpgid" "$T/lepdir/guestos-android/x.so"
 ln -s /elsewhere "$T/guestos/android"
 OUT=$(run lepton_off)
@@ -90,10 +91,24 @@ check "D1 drop-in stub: render node passed as device, not applied by setup; node
 
 # setup block and removal order
 check "S1 setup: part on installs, writes stand-ins, links overlay only when free, clears group write as game user; off runs lepton_off" \
-  "awk '/^if opt lepton; then\$/{f=1} f' '$INST' | head -80 > '$T/blk' && grep -q '^lepton_pkgs_add\$' '$T/blk' && grep -qF 'cat > \"\$LEP_BIN/setpgid\" <<'\"'\"'LEPSETPGID'\"'\"'' '$T/blk' && grep -qF '[ ! -e \"\$LEP_GUEST\" ] && [ ! -L \"\$LEP_GUEST\" ]' '$T/blk' && grep -qF 'as_user chmod -R g-w \"\$S/steamapps/common/Lepton\"' '$T/blk' && grep -A1 -x 'else' '$T/blk' | grep -qx 'lepton_off'"
+  "awk '/^if opt lepton; then\$/{f=1} f' '$INST' | head -260 > '$T/blk' && grep -q '^lepton_pkgs_add\$' '$T/blk' && grep -qF 'cat > \"\$LEP_BIN/setpgid\" <<'\"'\"'LEPSETPGID'\"'\"'' '$T/blk' && grep -qF '[ ! -e \"\$LEP_GUEST\" ] && [ ! -L \"\$LEP_GUEST\" ]' '$T/blk' && grep -qF 'as_user chmod -R g-w \"\$S/steamapps/common/Lepton\"' '$T/blk' && grep -A1 -x 'else' '$T/blk' | grep -qx 'lepton_off'"
 a=$(grep -n '^remove_all(){' "$INST" | cut -d: -f1)
 lo=$(awk -v a="$a" 'NR > a && /lepton_off; fi$/ { print NR; exit }' "$INST"); rm_=$(awk -v a="$a" 'NR > a && /rm -rf \/usr\/local\/share\/steam-arm \/etc\/steam-arm/ { print NR; exit }' "$INST")
 check "R1 removal runs lepton_off before settings folder (holds the record) goes" "[ -n '$lo' ] && [ -n '$rm_' ] && [ '$lo' -lt '$rm_' ]"
+
+# fossilize stand-in layer: built as at setup (cross compiler when the host is not arm64), Android ABI, no libc
+C=$T/layer.c; awk "/^cat > \"\\\$LEP_LAYER_C\" <<'CEOF'\$/{f=1;next} f && /^CEOF\$/{exit} f" "$INST" > "$C"
+FL=$(awk '/^if gcc -O2 -fPIC -shared -nostdlib/{f=1} f{print} f && /-o "\$LEP_LAYER" "\$LEP_LAYER_C"; then$/{exit}' "$INST" | tr -d '\\\n' | sed -e 's/^if gcc //' -e 's/ -o "\$LEP_LAYER" "\$LEP_LAYER_C"; then$//')
+CC=gcc; [ "$(uname -m)" = aarch64 ] || CC=aarch64-linux-gnu-gcc
+if command -v "$CC" >/dev/null && [ -f /usr/include/vulkan/vk_layer.h ]; then
+  OUT=$(eval "$CC $FL -o '$T/layer.so' '$C'" 2>&1; LC_ALL=C readelf -W -hd --dyn-syms "$T/layer.so" 2>&1)
+  check "Y1 layer builds with setup's flags: aarch64 shared object, no NEEDED libraries, soname, exports loader entry points" \
+    "grep -q 'Machine: *AArch64' <<<\"\$OUT\" && grep -q 'DYN' <<<\"\$OUT\" && ! grep -q '(NEEDED)' <<<\"\$OUT\" && grep -q 'Library soname: \[libVkLayer_fossilize.so\]' <<<\"\$OUT\" && grep -q ' vkGetInstanceProcAddr\$' <<<\"\$OUT\" && grep -q ' vkGetDeviceProcAddr\$' <<<\"\$OUT\" && grep -q ' vkEnumerateInstanceLayerProperties\$' <<<\"\$OUT\""
+else echo "SKIP Y1 layer build: $CC or Vulkan headers missing"; fi
+OUT=$(awk '/^  cat > "\$LEP_LAYER_JSON" <<JSON$/{f=1;next} /^JSON$/{f=0} f' "$INST" | LEP_LAYER=/x/libVkLayer_fossilize.so envsubst 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin)["layer"]; print(d["name"], d["library_path"])')
+check "Y2 manifest names VK_LAYER_fossilize with library path ending libVkLayer_fossilize.so (Lepton's id lookup)" "[ \"\$OUT\" = 'VK_LAYER_fossilize /x/libVkLayer_fossilize.so' ]"
+check "Y3 setup builds layer into overlay, manifest only on success; BUILDPKGS has compiler and headers with the part" \
+  "grep -qF 'LEP_LAYER=\$LEP_OVERLAY/vendor/vulkan_layers/libVkLayer_fossilize.so' '$INST' && grep -qF 'rm -f \"\$LEP_LAYER\" \"\$LEP_LAYER_JSON\"; warn \"lepton: fossilize stand-in layer did not build' '$INST' && grep -qF 'opt lepton && BUILDPKGS=\"\$BUILDPKGS gcc libc6-dev libvulkan-dev\"' '$INST'"
 
 # setpgid stand-in
 P=$T/setpgid; awk "/^cat > \"\\\$LEP_BIN\\/setpgid\" <<'LEPSETPGID'\$/{f=1;next} /^LEPSETPGID\$/{f=0} f" "$INST" > "$P"; chmod 755 "$P"
