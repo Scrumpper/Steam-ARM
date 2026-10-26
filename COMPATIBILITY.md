@@ -326,12 +326,13 @@ route title); 2D titles get no row.
 
 Component `lepton`, off by default, provides host side Valve's Lepton expects from SteamOS:
 podman stack, `setpgid` and `steamvr` stand-ins, pass-through `VK_LAYER_fossilize` stand-in,
-podman drop-in mounting detected GPU render node, client umask 022. Android Mesa build for
-Mali is not part of package; it goes by hand into overlay source
-`/usr/local/lib/steam-arm-lepton/guestos-android`.
+podman drop-in mounting detected GPU render node, client umask 022. On Panthor GPUs setup
+downloads Mali Android Mesa 25.1.4 from Waydroid's LineageOS 18.1 vendor image (about 134 MB,
+pinned SHA-256, each file checked) into overlay `/usr/local/lib/steam-arm-lepton/guestos-android`;
+other GPU families get no Android driver and draw on CPU.
 
 Works (TODO-GO: wording from box evidence): Lepton's Android container starts. GPU path on
-Mali through Android Mesa build placed in overlay source: TODO-GO.
+Mali through that Android Mesa: TODO-GO.
 
 Does not work:
 
