@@ -16673,10 +16673,22 @@ temp_c(){ local t; t=$(vc measure_temp); [ -n "$t" ] && { echo "${t#temp=}"; ret
 arm_mhz(){ local f; f=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null) && echo $((f/1000)); }
 v3d_mhz(){ local c; c=$(vc measure_clock v3d); c=${c#*=}; [ -n "$c" ] && echo $((${c%% *}/1000000)); }
 
+# true for a pid gone or running under this report (its subshells match by command line); builtins only, no fork
+report_pid(){
+  local q=$1 k v n=0
+  [ -r "/proc/$q/status" ] || return 0
+  while [ "$q" -gt 1 ] && [ $n -lt 64 ]; do
+    [ "$q" = "$$" ] && return 0
+    v=""; while read -r k v; do [ "$k" = PPid: ] && break; v=""; done 2>/dev/null < "/proc/$q/status"
+    [ -n "$v" ] || return 1
+    q=$v; n=$((n + 1))
+  done
+  return 1
+}
 # Steam and emulator processes of the account (command name or command line match), this report left out
 steam_pids(){
   pgrep -u "$ME" -f 'steam|FEX|reaper|pressure-vessel|pv-bwrap|wineserver|srt-bwrap|\.exe' 2>/dev/null | grep -vx -e "$$" -e "$PPID" \
-    | while read -r p; do grep -qa 'steam-arm-cpu-report' "/proc/$p/cmdline" 2>/dev/null || echo "$p"; done | sort -n | uniq
+    | while read -r p; do report_pid "$p" || grep -qa 'steam-arm-cpu-report' "/proc/$p/cmdline" 2>/dev/null || echo "$p"; done | sort -n | uniq
 }
 # group of a pid: steam, steamwebhelper, fex, runtime, game
 pid_group(){

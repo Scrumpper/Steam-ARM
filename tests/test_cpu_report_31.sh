@@ -69,6 +69,15 @@ check "C8c exited pid dropped, new pid counted whole: no negative share (swh 120
 OUT=$( . "$FN"; printf 'total 10000 5000\ngame 900 12\ntotal 14000 6000\ngame 200 12\n' | cpu_delta 4 )
 check "C8d reused pid (jiffies below first snapshot) counted whole: game 20" "[ \"\$OUT\" = '75 0 0 0 20 0' ]"
 
+# steam_pids: report's own subshells left out even after exec (no report name on command line); others and gone pids
+PF=$T/pids.sh; awk '/^report_pid\(\)\{/{f=1} f{print} f && /^steam_pids\(\)\{/{g=1} g && /^}$/{exit}' "$S" > "$PF"
+bash -c 'sleep 20; :' steam-outside-stand-in > /dev/null 2>&1 & PO=$!
+OUT=$(ME=$(id -un) bash -c '. "$1"; bash -c "sleep 20; :" steam-inside-stand-in > /dev/null 2>&1 & PI=$!; command sleep 0.3
+  L=$(steam_pids); grep -qx "$2" <<<"$L" && echo outside=in; grep -qx "$PI" <<<"$L" || echo inside=out
+  report_pid 2147483646 && echo gone=out; pkill -P "$PI"; kill "$PI"' _ "$PF" "$PO" 2>&1)
+pkill -P "$PO"; kill "$PO" 2>/dev/null
+check "C8e steam_pids: other process counted, report child left out, gone pid left out" "[ \"\$(echo \$OUT)\" = 'outside=in inside=out gone=out' ]"
+
 # static sections only (hardware report): no profile, no FEXBash probe, exit 0
 OUT=$(cd "$T" && HOME=$T/home timeout 60 bash "$S" --sections system,processes --user "$(id -un)" --home "$T/home" 2>&1); RC=$?
 check "C9 --sections system,processes: those two headers only, no profile, status 0" \
