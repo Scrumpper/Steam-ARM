@@ -331,13 +331,13 @@ downloads Mali Android Mesa 25.1.4 from Waydroid's LineageOS 18.1 vendor image (
 pinned SHA-256, each file checked) into overlay `/usr/local/lib/steam-arm-lepton/guestos-android`;
 other GPU families get no Android driver and draw on CPU.
 
-Works (TODO-GO: wording from box evidence): Lepton's Android container starts. GPU path on
-Mali through that Android Mesa: TODO-GO.
+Works: Lepton's Android 11 container boots with SurfaceFlinger on Mali-G610 (Panfrost, OpenGL
+ES 3.1, Mesa 25.1.4), on component alone. Android title started from Steam: TODO-GO.
 
 Does not work:
 
 - VR titles: no OpenXR runtime provided. Every Steam Frame Android title is VR or VR-first.
-- Vulkan inside Android on Mali: available PanVK lacks Android hardware buffer extension.
+- Vulkan inside Android on Mali (title starts, window stays black): available PanVK has no Android swapchain or hardware buffer support.
 - Adreno driver payload Lepton carries for Steam Frame: absent; not used on other GPUs.
 
 ## What decides it, in practice

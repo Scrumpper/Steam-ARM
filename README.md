@@ -694,8 +694,11 @@ upgrade from 1.2, which saved no family record, only turns such parts off.
   into rootless containers of every account, client umask 022. Panthor GPUs: Mali Android
   Mesa 25.1.4 from Waydroid's LineageOS 18.1 vendor image (download about 134 MB, pinned
   SHA-256, each file checked) in same overlay; licences Mesa and libdrm MIT, minigbm
-  BSD-3-Clause, LLVM Apache-2.0 WITH LLVM-exception. Android titles still need Steam Frame parts (Adreno driver payload, VR
-  runtime). Off by default. (scope: generic)
+  BSD-3-Clause, LLVM Apache-2.0 WITH LLVM-exception. Android 11 container boots with
+  SurfaceFlinger on Mali-G610; TODO-GO: Android title result. Not working: VR titles (no
+  OpenXR runtime), Vulkan inside Android on Mali, Adreno driver payload (COMPATIBILITY.md,
+  Android titles). Removal keeps group write cleared on Lepton files. Off by default.
+  (scope: generic)
 
 ## Graphics route per title
 
@@ -1706,6 +1709,8 @@ Kept by default:
 - Account groups.
 - `/dev/shm` line in `/etc/fstab` that setup did not add (earlier version, or added by
   hand); removal lists it under "Kept".
+- Lepton files in client folder keep group write cleared after `lepton` removal (SteamOS
+  file modes).
 
 Client folder is deleted, from prompt or with `--purge`, only when it holds marker file
 `.steam-arm-client`. Setup writes that marker from 2.0 on, on install and Update / Repair,
