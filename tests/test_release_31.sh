@@ -24,17 +24,22 @@ check "two builds: four files present and byte-identical" "[ $same = 1 ]"
 for f in "$ZN" "$DN"; do
   check "sidecar $f.sha256: one line '<sha256>  $f'" "[ \"\$(cat '$T/o1/$f.sha256')\" = \"\$(sha256sum < '$T/o1/$f' | cut -c1-64)  $f\" ] && [ \$(wc -l < '$T/o1/$f.sha256') = 1 ]"
 done
-OUT=$(python3 - "$T/o1/$ZN" "$V" "$SARM_INST" "$T/menu.png" <<'PY' 2>&1
-import sys, zipfile
+OUT=$(python3 - "$T/o1/$ZN" "$V" "$SARM_INST" "$T/menu.png" "$R" <<'PY' 2>&1
+import re, sys, zipfile
 z = zipfile.ZipFile(sys.argv[1]); top = "Steam ARM %s/" % sys.argv[2]
 want = ["RESEARCH.md", "CHANGELOG.md", "README.md", "CREDITS.md", "COMPARISON.md", "COMPATIBILITY.md", "GAMES.md",
         "steam-arm-install.sh", "FEATURES.md", "installer-menu.png"]
 inf = z.infolist()
+# expected entry time: ZTIME of this version's case in release.sh, else default case
+src = open(sys.argv[5]).read()
+m = re.search(r"\n  %s\)(.*?);;" % re.escape(sys.argv[2]), src, re.S) or re.search(r"\n  \*\)(.*?);;", src, re.S)
+zt = re.search(r"ZTIME='(\d+)-(\d+)-(\d+) (\d+):(\d+):(\d+)'", m.group(1)).groups()
+want_dt = tuple(int(x) for x in zt)
 assert [i.filename for i in inf] == [top + n for n in want], [i.filename for i in inf]
 for i in inf:
     mode = (i.external_attr >> 16) & 0o777
     assert mode == (0o775 if i.filename.endswith(".sh") else 0o664), (i.filename, oct(mode))
-    assert i.date_time == (2026, 10, 24, 17, 0, 0), (i.filename, i.date_time)
+    assert i.date_time == want_dt, (i.filename, i.date_time, want_dt)
     assert i.extra == b"", i.filename
 assert z.comment == b""
 assert z.read(top + "steam-arm-install.sh") == open(sys.argv[3], "rb").read()
