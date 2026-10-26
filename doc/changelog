@@ -60,10 +60,6 @@ steam-arm-setup (3.1) stable; urgency=low
     Raspberry Pi GPUs (five Vulkan features missing), WineD3D used.
   * Component pi-governor (off by default): governor performance while
     Steam runs on Raspberry Pi boards.
-  * Component lepton (off by default): host packages for Valve's Lepton,
-    purged on removal when added by it; setpgid and steamvr stand-ins;
-    pass-through fossilize layer stand-in; podman drop-in for GPU render
-    node; client umask 022.
   * Frame pacing readout, off by default (steam-arm --perf-stats):
     frame interval p50, p95, p99 and maximum per frame source every
     5 s, from Mesa overlay layer (Vulkan) and Gallium HUD dump

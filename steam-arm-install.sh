@@ -899,6 +899,7 @@ LEP_LAYER_C=$LEP_DIR/vk-fossilize-passthrough.c
 LEP_LAYER=$LEP_OVERLAY/vendor/vulkan_layers/libVkLayer_fossilize.so
 LEP_LAYER_JSON=/usr/share/vulkan/explicit_layer.d/steam-arm-lepton-fossilize.json
 LEP_PODMAN_CONF=/etc/containers/containers.conf.d/50-steam-arm-lepton.conf
+LEP_GPU_RC=$LEP_OVERLAY/vendor/etc/init/zz-steam-arm-lepton-gpu.rc
 pkg_inst(){ dpkg-query -W -f='${db:Status-Abbrev}\n' "$1" 2>/dev/null | grep -q '^ii'; }
 pkg_list(){ dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 2>/dev/null | awk '$1 == "ii" { print $2 }' | sort -u; }
 # Installs missing LEP_PKGS and LEP_BUILD; every package new after the install (dependencies too) joins LEPTON_PKGS_ADDED.
@@ -933,8 +934,9 @@ lepton_off(){
   rm -f "$LEP_PODMAN_CONF"
   rmdir /etc/containers/containers.conf.d /etc/containers 2>/dev/null
   lepton_pkgs_purge
-  rm -f "$LEP_BIN/setpgid" "$LEP_BIN/steamvr" "$LEP_LAYER" "$LEP_LAYER_C" "$LEP_LAYER_JSON"
-  rmdir "$LEP_BIN" "$LEP_OVERLAY/vendor/vulkan_layers" "$LEP_OVERLAY/vendor" "$LEP_OVERLAY" 2>/dev/null
+  rm -f "$LEP_BIN/setpgid" "$LEP_BIN/steamvr" "$LEP_LAYER" "$LEP_LAYER_C" "$LEP_LAYER_JSON" "$LEP_GPU_RC"
+  rmdir "$LEP_BIN" "$LEP_OVERLAY/vendor/vulkan_layers" "$LEP_OVERLAY/vendor/etc/init" "$LEP_OVERLAY/vendor/etc" \
+    "$LEP_OVERLAY/vendor" "$LEP_OVERLAY" 2>/dev/null
   [ "$(readlink "$LEP_GUEST" 2>/dev/null)" = "$LEP_OVERLAY" ] && rm -f "$LEP_GUEST"
   rmdir /usr/share/guestos 2>/dev/null
   rmdir "$LEP_DIR" 2>/dev/null
@@ -943,6 +945,8 @@ lepton_off(){
 }
 # containers.conf drop-in: render node $1 as bind mount (Lepton's --tmpfs /dev hides devices= entries).
 lepton_dev_conf(){ printf '# steam-arm-setup lepton: GPU render node for rootless podman containers\n[containers]\nvolumes = ["%s:%s:rw"]\n' "$1" "$1"; }
+# Android init file: minigbm allocates on the same render node $1.
+lepton_gpu_rc(){ printf '# steam-arm-setup lepton: render node mounted by 50-steam-arm-lepton.conf\non early-init\n    setprop gralloc.gbm.device %s\n' "$1"; }
 # Components listed and saved on this system; page-size, kde-input-prompt and pi-governor only where they apply.
 COMPONENTS=$COMPONENTS_ALL
 ps_relevant || COMPONENTS=${COMPONENTS/ page-size/}
@@ -17688,8 +17692,10 @@ fi
 if [ -n "${GPU_NODE:-}" ] && [ -c "$GPU_NODE" ]; then
   { mkdir -p /etc/containers/containers.conf.d && lepton_dev_conf "$GPU_NODE" > "$LEP_PODMAN_CONF" && chmod 644 "$LEP_PODMAN_CONF"; } \
     || warn "lepton: could not write $LEP_PODMAN_CONF"
+  { mkdir -p "$LEP_OVERLAY/vendor/etc/init" && lepton_gpu_rc "$GPU_NODE" > "$LEP_GPU_RC" && chmod 644 "$LEP_GPU_RC"; } \
+    || warn "lepton: could not write $LEP_GPU_RC"
 else
-  rm -f "$LEP_PODMAN_CONF"; warn "lepton: no GPU render node found; Lepton titles draw on CPU"
+  rm -f "$LEP_PODMAN_CONF" "$LEP_GPU_RC"; warn "lepton: no GPU render node found; Lepton titles draw on CPU"
 fi
 grep -qs "^$GAMEUSER:" /etc/subuid \
   || warn "lepton: no subordinate ids for '$GAMEUSER' in /etc/subuid; podman needs them: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $GAMEUSER"
