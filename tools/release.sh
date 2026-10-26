@@ -32,8 +32,16 @@ case $V in
        PIN_ZIP=c2b36aa86bf21f013d8fa8864ef68ded3ea1c6f8cb50d78d293c934cd34d7ac6
        PIN_ZIPSHA=8ebc6d0567233ade7babc560df59697a19046fb6a66e576e82669798915c86bd
        PIN_DEB=1fe5be36e13600fb7a01e994e930b6f849d753e0ea40d5a15bca765571e90acb
-       PIN_DEBSHA=e02493a23909debd6ca22b5a1c12ff3e1010ae703a97b4ee7ba4e491db91fc7a ;;
-  *) PIN_PNG= PIN_ZIP= PIN_ZIPSHA= PIN_DEB= PIN_DEBSHA= ;;
+       PIN_DEBSHA=e02493a23909debd6ca22b5a1c12ff3e1010ae703a97b4ee7ba4e491db91fc7a
+       ZTIME='2026-10-24 17:00:00' ;;
+  3.2) PIN_PNG=d8fe02615cc17f0e7cfac6b8d06e50c86e26c39b036b5fe34af278050b143065
+       PIN_ZIP=bd9a2b9b80a1f4cb689d7909f46211d921a82585167adfd618ca525184e92825
+       PIN_ZIPSHA=9af9547885b2355a5a2154f25dc500413ace4b79d402d3384a7a63d2249729d4
+       PIN_DEB=9c792c76b2e4eb471c636e1516b03ff115495998bfae3529f61ff3d14bf70568
+       PIN_DEBSHA=fa76667c1f85be123a068068e5e8f6ebb6085e5dae8a12437cb87e855286bf09
+       ZTIME='2026-10-25 17:00:00' ;;
+  *) PIN_PNG= PIN_ZIP= PIN_ZIPSHA= PIN_DEB= PIN_DEBSHA=
+     ZTIME='2026-10-25 17:00:00' ;;
 esac
 
 command -v zip >/dev/null || { echo "release.sh: zip (Info-ZIP) not found" >&2; exit 1; }
@@ -55,9 +63,9 @@ mkdir "$T/z" "$T/z/$TOP"
 for f in $FILES; do cp "$ROOT/$f" "$T/z/$TOP/$f"; done
 cp "$PNG" "$T/z/$TOP/installer-menu.png"
 chmod 0664 "$T/z/$TOP"/*; chmod 0775 "$T/z/$TOP/steam-arm-install.sh"
-# zip stores local DOS time: 2026-10-24 17:00 under TZ UTC0 = published 2026-10-25 00:00 UTC (PDT) entries
+# zip stores local DOS time under TZ UTC0; ZTIME per version (3.1: 2026-10-24 17:00)
 export TZ=UTC0
-touch -d '2026-10-24 17:00:00' "$T/z/$TOP"/*
+touch -d "$ZTIME" "$T/z/$TOP"/*
 set --; for f in $FILES installer-menu.png; do set -- "$@" "$TOP/$f"; done
 rm -f "$OUT/$ZN"
 (cd "$T/z" && zip -q -X -D "$OUT/$ZN" "$@")
