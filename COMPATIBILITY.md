@@ -14,6 +14,8 @@ Confirmed by inspection of installer:
 
 FEX, emulation tool used for x86 game code, installs from FEX's Ubuntu PPA `ppa:fex-emu/fex`. Ubuntu family distribution is tested path for that step. On Debian 13 and Raspberry Pi OS built on it, setup adds same PPA as plain apt source with its Ubuntu 24.04 build (see Debian systems).
 
+PPA series as of 2026-10-24: FEX 2610 for Ubuntu 24.04 and 26.04 series (Debian 13 hosts get Ubuntu 24.04 build), FEX 2607 for Ubuntu 25.10. Host FEX serves Remote Play, thunk libraries, binfmt registration and x86 client path; games run on Valve's FEX tool from Steam, so title compatibility does not depend on PPA series. Setup warns when PPA offers older FEX build for host Ubuntu release than for other releases: host packages step compares apt candidate of chosen `fex-emu-armv8.x` package with 2610 and prints one line, `[warn] FEX package source offers FEX 2607-1 for this distribution release; FEX 2610 builds exist there for other Ubuntu releases. Host FEX serves Remote Play and thunk libraries; titles use Valve's FEX tool from Steam and are unaffected.` Package choice is unchanged and no other series is pinned; `--detect` prints no such line.
+
 Installer has no hardcoded GPU render node and no hardcoded card index. GPU family detection reads every render node and sets component defaults per family (see GPU families). Page size check names fix for Raspberry Pi; on Apple Silicon it stops (16K page kernel not supported).
 
 Vulkan driver is needed for Windows titles; GPUs without one run native OpenGL titles.
