@@ -280,7 +280,7 @@ ru(){ local s=$1; shift; rm -f "$T/ab-calls.log"; ui ". $T/rstubs.sh; $s" "$@"; 
 rcli(){ rm -f "$T/ab-calls.log"; OUT=$(bash -c ". $T/harness.sh --help >/dev/null; . $T/rstubs.sh; main $*" 2>&1); RC=$?; }
 
 fresh; ru menu_graphics BACK
-check "R1 Graphics: item 3 Automatic Windows build (now: on), absent key = on" "grep -q '^MENU Graphics|.* 2 Route per game 3 Automatic Windows build (now: on) 4 CPU drawing notice (now: off) 5 Still-working notice (now: auto)\$' <<<\"\$OUT\""
+check "R1 Graphics: item 3 Automatic Windows build (now: on), absent key = on" "grep -q '^MENU Graphics|.* 2 Route per game 3 Automatic Windows build (now: on) 4 CPU drawing notice (now: off) 5 Still-working notice (now: auto) 6 Valve Frame runtime (now: off)\$' <<<\"\$OUT\""
 fresh AUTO_BUILD=off; ru menu_graphics BACK
 check "R1 Graphics: AUTO_BUILD=off -> (now: off)" "grep -q '3 Automatic Windows build (now: off) 4 ' <<<\"\$OUT\""
 fresh; ru menu_graphics 3 BACK BACK
@@ -412,9 +412,9 @@ check "P8 built-in screens: Graphics 4 opens CPU drawing notice screen, Back lea
 
 # ---------- W Still-working notice (Graphics item 5, CLI, backup key, help) ----------
 fresh; ru menu_graphics BACK
-check "W1 Graphics: item 5 Still-working notice (now: auto), absent key = auto" "grep -q '^MENU Graphics|.* 4 CPU drawing notice (now: off) 5 Still-working notice (now: auto)\$' <<<\"\$OUT\""
+check "W1 Graphics: item 5 Still-working notice (now: auto), absent key = auto" "grep -q '^MENU Graphics|.* 4 CPU drawing notice (now: off) 5 Still-working notice (now: auto) 6 ' <<<\"\$OUT\""
 fresh STILL_NOTICE=off; ru menu_graphics BACK
-check "W1 STILL_NOTICE=off -> (now: off); unknown value -> auto" "grep -q ' 5 Still-working notice (now: off)\$' <<<\"\$OUT\" && [ \"\$(bash -c \". $T/harness.sh --help >/dev/null; conf_get(){ echo maybe; }; still_notice\")\" = auto ]"
+check "W1 STILL_NOTICE=off -> (now: off); unknown value -> auto" "grep -q ' 5 Still-working notice (now: off) 6 ' <<<\"\$OUT\" && [ \"\$(bash -c \". $T/harness.sh --help >/dev/null; conf_get(){ echo maybe; }; still_notice\")\" = auto ]"
 fresh; ru menu_graphics 5 BACK BACK
 check "W2 item 5 opens choice screen: state, three states named, Back writes nothing" "grep -q '^MENU Still-working notice|Still-working notice: auto' <<<\"\$OUT\" && grep -q 'compiling shaders, loading, or idle (own launcher window waiting' <<<\"\$OUT\" && grep -q '1 Auto 2 On 3 Off' <<<\"\$OUT\" && [ -z \"\$(key STILL_NOTICE)\" ] && [ \$(grep -c '^MENU Graphics' <<<\"\$OUT\") = 2 ]"
 check "W2 screen text fits 66 columns" "! sed -n '/^MENU Still-working notice/,/^MENU Graphics/p' <<<\"\$OUT\" | grep -v '^MENU' | sed 's/|1 Auto 2 On 3 Off\$//' | awk 'length > 66' | grep -q ."
@@ -435,7 +435,7 @@ check "W4 CLI bad value: usage, exit 2" "[ $RC = 2 ] && grep -q 'usage: steam-ar
 OUT=$(bash "$CFG" --help)
 check "W5 --help lists still-notice and STILL_NOTICE key" "grep -q '^  still-notice \\[on|off|auto\\]' <<<\"\$OUT\" && grep -q 'STILL_NOTICE=on|off (absent: auto)' <<<\"\$OUT\""
 OUT=$(bash -c ". $T/harness.sh --help >/dev/null; echo \"\$SA_BK_KEYS\"; for v in on off auto '' maybe; do rs_valid STILL_NOTICE \"\$v\" && echo \"ok:\$v\" || echo \"bad:\$v\"; done" 2>&1)
-check "W5 backup keys carry STILL_NOTICE; restore accepts on, off, auto, empty only" "grep -q ' STILL_NOTICE\$' <<<\"\$OUT\" && [ \"\$(grep -c '^ok:' <<<\"\$OUT\")\" = 4 ] && grep -qx 'bad:maybe' <<<\"\$OUT\""
+check "W5 backup keys carry STILL_NOTICE; restore accepts on, off, auto, empty only" "grep -qE ' STILL_NOTICE( |\$)' <<<\"\$OUT\" && [ \"\$(grep -c '^ok:' <<<\"\$OUT\")\" = 4 ] && grep -qx 'bad:maybe' <<<\"\$OUT\""
 
 # ---------- G GE-Proton (Maintenance item 9, screen, file install, remove, Route per game, labels, CLI) ----------
 bash "$T0/mkfake.sh" >/dev/null

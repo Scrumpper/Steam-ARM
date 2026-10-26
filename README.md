@@ -30,6 +30,7 @@ Other routes to Steam on ARM64, and where each one runs: `COMPARISON.md`.
 9. Graphics route per title
     - Extra Mesa versions (route B)
     - Automatic Windows build
+    - Valve Frame runtime
 10. Page size
 11. x86 client (Armv8.0 CPUs)
 12. Playing games
@@ -241,7 +242,8 @@ Sections:
    `gpu-in-emulation` is kept, with note that games use forwarding until it is installed.
    Automatic Windows build: on or off (see Automatic Windows build); Route per game lists
    titles it set as `Windows (auto)`, with reason, and marks Windows build as suggested
-   where rule matches title but does not apply on this system. CPU drawing notice: on or
+   where rule matches title but does not apply on this system. Valve Frame runtime: auto
+   or off (see Valve Frame runtime); Route per game notes titles it set. CPU drawing notice: on or
    off (see Renderer check). Game lists of Graphics and Games mark titles whose newest game
    log says CPU drawing with `CPU!`.
 5. Games: per installed game: Steam overlay, MangoHud, extra environment, extra arguments,
@@ -300,6 +302,7 @@ Command line, same settings from scripts:
 | `profile <appid> key=value ...`        | Profile keys; `key=` removes one, `--clear` all         |
 | `compat <appid> linux\|windows\|ge\|clear` | Force Linux, Windows or GE-Proton build, or clear it; Steam closed |
 | `auto-build [on\|off]`                  | Automatic Windows build; no value: state, rules, titles |
+| `frame-runtime [auto\|off]`            | Valve Frame runtime (off by default); no value: state, titles |
 | `cpu-notice [on\|off]`                  | CPU drawing notice; no value: state                     |
 | `cpu-report [--quick] [--no-wait]`     | CPU and GPU profile of client window and games (see CPU report) |
 | `x87-client [on\|off]`                  | x86 client: reduced x87 precision for client program; no value: state |
@@ -801,6 +804,27 @@ good) or Automatic (rule may apply again). Turn off: Graphics, Automatic Windows
 `steam-arm-config auto-build off` (`AUTO_BUILD=off` in `/etc/steam-arm/steam-arm.conf`);
 titles already set keep Windows build. Record of titles set:
 `.config/steam-arm/auto-build.conf` in client folder.
+
+### Valve Frame runtime
+
+Off by default (`FRAME_RUNTIME=off` or absent). With `auto` (Graphics, Valve Frame runtime,
+or `steam-arm-config frame-runtime auto`), launcher sets compatibility tool of installed
+titles from Valve's Steam Frame recommended runtime (`recommended_runtime` in client's
+appinfo cache) before client starts, after Automatic Windows build: `proton-stable` gives
+`proton_11-arm64` (Proton ARM64 stable); `proton-experimental` and
+`proton-experimental-arm64` give `proton-experimental-arm64` (Proton ARM64 experimental;
+stable tool with log line when that name is not known); `native` gives `steamlinuxruntime`
+(Linux build); `lepton-stable` leaves tool unchanged with one log line (Lepton not
+available here). Applies once per title, only with no tool chosen in Steam or settings
+menu; GE-Proton and own choices are never replaced. Native ARM64 client only (x86 client:
+one log line, nothing set); appinfo cache not read yet: nothing set. Launcher log names
+each title in `frame-runtime:` line; desktop notice counts titles set. Run report,
+Upstream fields: `Runtime applied` row while title keeps tool set this way. Undo: Graphics,
+Route per game, Force Linux or Windows build (kept for good) or Automatic (recommendation
+may apply again). Turn off keeps titles already set. Record of titles set:
+`.config/steam-arm/frame-runtime.conf` in client folder. `FRAME_RUNTIME` is part of
+setup choices in settings backup; earlier versions keep key in settings file and skip it
+on restore.
 
 ## Page size
 
@@ -1569,7 +1593,7 @@ again. Summary of every change comes before Restore / Back. Restore needs admini
 rights and refuses while Steam ARM runs.
 
 - Setup choices: `COMPONENTS_ON`, `COMPONENTS_OFF`, `COMPONENTS_USER_SET`, `GFX_DEFAULT`,
-  `AUTO_BUILD`, `CPU_NOTICE`, `RUN_HISTORY`, and `GPU_FAMILY` when set by hand
+  `AUTO_BUILD`, `CPU_NOTICE`, `RUN_HISTORY`, `FRAME_RUNTIME`, and `GPU_FAMILY` when set by hand
   (`GPU_FAMILY_SET=user`); run history itself (`runs.log`) is not backed up.
   State of this machine
   (`GAMEUSER`, `ARMHOME_DIR`, `VERSION`, `FSTAB_ADDED`, `RFS_CREATED`, `ACCOUNT_CREATED`,
@@ -1740,6 +1764,7 @@ quotes (launcher reads it as shell):
 | `CPU_NOTICE`             | menu        | `on`: notice on CPU drawing (absent: off)        |
 | `RUN_HISTORY`            | menu        | `on`: run history (absent: off)                  |
 | `STILL_NOTICE`           | menu        | `on\|off`: still-working notice (absent: auto)   |
+| `FRAME_RUNTIME`          | menu        | `auto`: Valve Frame runtime per title (absent: off) |
 | `VERSION`                | setup       | Installer version of last run                    |
 | `ACCOUNT_CREATED`        | setup       | `1` when setup created game account              |
 | `LINGER_SET`             | setup       | `1` when setup turned lingering on               |

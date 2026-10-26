@@ -84,6 +84,12 @@ steam-arm-setup (3.1) stable; urgency=low
     appinfo cache.
   * Run report row Class: Android-only, VR-only or Lepton route title
     from Steam Frame columns of appinfo cache; 2D titles get no row.
+  * Valve Frame runtime, off by default (FRAME_RUNTIME=auto|off,
+    Graphics menu, steam-arm-config frame-runtime): compatibility tool
+    from Valve's Steam Frame recommended runtime for titles with no tool
+    chosen (proton-stable, proton-experimental, native; lepton-stable
+    unchanged); own choices and GE-Proton kept; run report row Runtime
+    applied.
 
  -- Scrumpper <Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 00:00:00 +0000
 
