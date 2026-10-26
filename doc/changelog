@@ -1,13 +1,15 @@
-steam-arm-setup (3.2) UNRELEASED; urgency=low
+steam-arm-setup (3.2) stable; urgency=low
 
-  * Component lepton (off by default): host packages for Valve's Lepton,
+  * Component lepton (experimental, off by default): host packages for Valve's Lepton,
     purged on removal when added by it; setpgid and steamvr stand-ins;
     pass-through fossilize layer stand-in; podman drop-in for GPU render
     node; client umask 022; Panthor GPUs: Mali Android Mesa 25.1.4 from
     pinned Waydroid vendor image. Android 11 container boots with
-    SurfaceFlinger on Mali-G610. TODO-GO: Android title result.
+    SurfaceFlinger on Mali-G610. No Android title draws frame on Mali
+    yet: Vulkan path stays black (PanVK has no Android swapchain),
+    OpenGL ES 3.1 too old for Unity 6 VR build; no OpenXR session.
 
- -- Scrumpper <Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 00:00:00 +0000
+ -- Scrumpper <Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 00:00:00 +0000
 
 steam-arm-setup (3.1) stable; urgency=low
 

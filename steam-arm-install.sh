@@ -1032,7 +1032,7 @@ desc_of(){ case "$1" in
   kde-input-prompt) echo "KDE Plasma (Wayland): no \"Remote control requested\" prompt; any X11 program may then send input";;
   page-size)  echo "Raspberry Pi 5: boot firmware's 4K page kernel (no effect elsewhere)";;
   pi-governor) echo "Raspberry Pi: CPU governor performance while Steam runs (more heat and power); off by default";;
-  lepton)     echo "Host tools for Valve's Lepton (Android titles): podman stack, adb, setpgid and steamvr stand-ins, umask 022; Panthor GPUs: Mali Android Mesa (downloads about 134 MB); off by default";;
+  lepton)     echo "Host tools for Valve's Lepton (Android titles): podman stack, adb, setpgid and steamvr stand-ins, umask 022; Panthor GPUs: Mali Android Mesa (downloads about 134 MB); experimental, off by default";;
 esac; }
 var_of(){ echo "OPT_$(echo "$1" | tr 'a-z-' 'A-Z_')"; }
 for c in $COMPONENTS_ALL; do eval "$(var_of "$c")=1"; done
@@ -3273,7 +3273,7 @@ comp_short(){ case "$1" in
   kde-input-prompt) echo "KDE: no input prompt; X11 apps may send input";;
   page-size)  echo "Raspberry Pi 5: switch to 4K page kernel";;
   pi-governor) echo "Raspberry Pi: governor performance while Steam runs";;
-  lepton)     echo "Lepton host tools (Android titles; Steam Frame parts still missing)";;
+  lepton)     echo "Lepton host tools (experimental; Android titles draw no frame yet)";;
   *)          echo "$1";;
 esac; }
 # Component names from installer --list, else built-in list.

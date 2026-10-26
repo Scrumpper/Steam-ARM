@@ -146,7 +146,7 @@ Panthor GPUs. Titles built for Linux not affected. Cause open.
 | `desktop-mode`, `icon-bigpicture`, `icon-desktop`, `tray` | Generic       | Menu entry, desktop icons and tray icon; no hardware dependency.                                           |
 | `page-size`                                               | Raspberry Pi  | Selects 4K page kernel in firmware `config.txt`; listed only on Pi 5 class or Pi without 4K pages.         |
 | `kde-input-prompt`                                        | KDE Plasma    | Off by default. Pre-authorises input from X11 programs on Plasma Wayland; any X11 program may send input.  |
-| `lepton`                                                  | Generic       | Off by default. Host tools Valve's Lepton calls; Android titles still need Steam Frame parts to start.     |
+| `lepton`                                                  | Generic       | Experimental, off by default. Host tools Valve's Lepton calls; no Android title draws frame on Mali yet.   |
 
 ## Known to work
 
@@ -318,26 +318,40 @@ such guest, emulation fails. Untested.
 **Hardware with no 64-bit ARM support**, which is excluded by architecture itself.
 
 **Android-only Steam titles and VR titles.** Android builds run through Lepton runtime and VR
-titles need VR runtime; both are Steam Frame components, not present on this stack, on any
-GPU family. Run report names class in row `Class` (Android-only title, VR-only title, Lepton
+titles need VR runtime; both are Steam Frame components. Experimental `lepton` component
+starts Lepton's container, but no Android title draws frame yet (Android titles (Lepton)
+below). Run report names class in row `Class` (Android-only title, VR-only title, Lepton
 route title); 2D titles get no row.
 
 ## Android titles (Lepton)
 
-Component `lepton`, off by default, provides host side Valve's Lepton expects from SteamOS:
+Component `lepton`, experimental and off by default, provides host side Valve's Lepton expects
+from SteamOS:
 podman stack, `setpgid` and `steamvr` stand-ins, pass-through `VK_LAYER_fossilize` stand-in,
 podman drop-in mounting detected GPU render node, client umask 022. On Panthor GPUs setup
 downloads Mali Android Mesa 25.1.4 from Waydroid's LineageOS 18.1 vendor image (about 134 MB,
 pinned SHA-256, each file checked) into overlay `/usr/local/lib/steam-arm-lepton/guestos-android`;
 other GPU families get no Android driver and draw on CPU.
 
-Works: Lepton's Android 11 container boots with SurfaceFlinger on Mali-G610 (Panfrost, OpenGL
-ES 3.1, Mesa 25.1.4), on component alone. Android title started from Steam: TODO-GO.
+Lepton stays Valve's runtime, files unedited; component clears group write on them only.
+Component is groundwork: no Android title draws frame on Mali yet.
+
+Works: Lepton's Android 11 container boots with SurfaceFlinger on Mali-G610 (renderer
+Mali-G610 (Panfrost), OpenGL ES 3.1 Mesa 25.1.4; Vulkan device Mali-G610), on component alone.
+
+Android title started from Steam (free VR title in flat mode):
+
+- Vulkan path: game loop starts, window stays black. PanVK 25.1.4 has no Android swapchain or
+  AHardwareBuffer support (swapchain connect fails with -22).
+- OpenGL ES path: window opens with Unity hardware requirements warning; after CONTINUE Unity
+  graphics setup fails and app exits. Unity 6 VR build needs Vulkan or OpenGL ES newer than 3.1.
 
 Does not work:
 
-- VR titles: no OpenXR runtime provided. Every Steam Frame Android title is VR or VR-first.
-- Vulkan inside Android on Mali (title starts, window stays black): available PanVK has no Android swapchain or hardware buffer support.
+- VR titles: no OpenXR session. Component provides no OpenXR runtime; test runtime reached
+  `xrCreateInstance` and `xrGetSystem` only, Monado on Android needs AHardwareBuffer, and no
+  keyboard or mouse OpenXR input exists. Every Steam Frame Android title is VR or VR-first.
+- Vulkan inside Android on Mali: see Vulkan path above.
 - Adreno driver payload Lepton carries for Steam Frame: absent; not used on other GPUs.
 
 ## What decides it, in practice

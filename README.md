@@ -684,7 +684,7 @@ upgrade from 1.2, which saved no family record, only turns such parts off.
   `/etc/sudoers.d/steam-arm-governor` for game account). More heat and power. Off by
   default; listed on Raspberry Pi boards or while its rule is in place. (scope: Raspberry
   Pi)
-- `lepton`: Host tools Valve's Lepton (Android runtime) calls: podman, catatonit, uidmap,
+- `lepton` (experimental): Host tools Valve's Lepton (Android runtime) calls: podman, catatonit, uidmap,
   passt, attr, inotify-tools, adb, jq, plus gcc, libc6-dev and libvulkan-dev for layer
   build (removal purges only packages it added), `setpgid`
   and `steamvr` stand-ins in `/usr/local/lib/steam-arm-lepton/bin` first in client `PATH`,
@@ -695,9 +695,10 @@ upgrade from 1.2, which saved no family record, only turns such parts off.
   Mesa 25.1.4 from Waydroid's LineageOS 18.1 vendor image (download about 134 MB, pinned
   SHA-256, each file checked) in same overlay; licences Mesa and libdrm MIT, minigbm
   BSD-3-Clause, LLVM Apache-2.0 WITH LLVM-exception. Android 11 container boots with
-  SurfaceFlinger on Mali-G610; TODO-GO: Android title result. Not working: VR titles (no
-  OpenXR runtime), Vulkan inside Android on Mali, Adreno driver payload (COMPATIBILITY.md,
-  Android titles). Removal keeps group write cleared on Lepton files. Off by default.
+  SurfaceFlinger on Mali-G610; no Android title draws frame on Mali yet (Vulkan window stays
+  black, OpenGL ES 3.1 too old for Unity 6 VR builds). Not working: VR titles (no OpenXR
+  session), Vulkan inside Android on Mali, Adreno driver payload (COMPATIBILITY.md, Android
+  titles). Removal keeps group write cleared on Lepton files. Off by default.
   (scope: generic)
 
 ## Graphics route per title
