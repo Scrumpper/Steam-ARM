@@ -19,7 +19,7 @@ from sarm_paths import P  # noqa: E402
 HD = re.compile(r"""<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1""")
 # removal-side functions: their bodies count as removal text
 REMOVERS = ("remove_all", "retire_other", "mali_tree_remove", "legacy_mesa_restore", "rfs_unguard", "mc_restore",
-            "kwin_rule_remove", "ps_remove", "fstab_edit", "kde_input")
+            "kwin_rule_remove", "ps_remove", "fstab_edit", "kde_input", "lepton_off")
 # parents other packages share; mkdir -p of these is no own write
 SHARED_DIRS = (r"^/(etc|usr|usr/local|usr/share|usr/local/share|usr/local/lib|opt)(/(bin|sbin|lib|apt|apt/keyrings|"
                r"apt/sources\.list\.d|apt/preferences\.d|apt/apt\.conf\.d|applications|icons|icons/hicolor(/[^/]+(/apps)?)?|"

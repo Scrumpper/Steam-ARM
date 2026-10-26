@@ -146,6 +146,7 @@ Panthor GPUs. Titles built for Linux not affected. Cause open.
 | `desktop-mode`, `icon-bigpicture`, `icon-desktop`, `tray` | Generic       | Menu entry, desktop icons and tray icon; no hardware dependency.                                           |
 | `page-size`                                               | Raspberry Pi  | Selects 4K page kernel in firmware `config.txt`; listed only on Pi 5 class or Pi without 4K pages.         |
 | `kde-input-prompt`                                        | KDE Plasma    | Off by default. Pre-authorises input from X11 programs on Plasma Wayland; any X11 program may send input.  |
+| `lepton`                                                  | Generic       | Off by default. Host tools Valve's Lepton calls; Android titles still need Steam Frame parts to start.     |
 
 ## Known to work
 
@@ -569,11 +570,11 @@ Installer hardcodes no GPU render node or card index; GPU family detection reads
 is ARM64 system, Debian or Ubuntu family distribution and Mesa graphics stack, which
 also describes ARM64 workstations, servers and laptops, not only single board computers.
 
-Three of sixteen components are help for specific driver rather than requirements:
+Three of eighteen components are help for specific driver rather than requirements:
 `vk-spoof` exists because Mali driver does not expose features Direct3D translation
 layer asks for, and is unnecessary on driver that exposes them; `gpu-in-emulation` carries
-Mali drivers only; `glx-lax` applies to Mesa. `page-size` applies to Raspberry Pi only,
-`kde-input-prompt` to KDE Plasma only. Other eleven are generic. Detection turns `vk-spoof` and `gpu-in-emulation` off on GPUs they do not serve.
+Mali drivers only; `glx-lax` applies to Mesa. `page-size` and `pi-governor` apply to Raspberry Pi only,
+`kde-input-prompt` to KDE Plasma only. Other twelve are generic. Detection turns `vk-spoof` and `gpu-in-emulation` off on GPUs they do not serve.
 
 ## Disclaimer
 

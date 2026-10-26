@@ -684,6 +684,15 @@ upgrade from 1.2, which saved no family record, only turns such parts off.
   `/etc/sudoers.d/steam-arm-governor` for game account). More heat and power. Off by
   default; listed on Raspberry Pi boards or while its rule is in place. (scope: Raspberry
   Pi)
+- `lepton`: Host tools Valve's Lepton (Android runtime) calls: podman, catatonit, uidmap,
+  passt, attr, inotify-tools, adb, jq, plus gcc, libc6-dev and libvulkan-dev for layer
+  build (removal purges only packages it added), `setpgid`
+  and `steamvr` stand-ins in `/usr/local/lib/steam-arm-lepton/bin` first in client `PATH`,
+  pass-through `VK_LAYER_fossilize` stand-in (built at setup) in overlay linked to
+  `/usr/share/guestos/android` while that path is free, podman drop-in
+  `/etc/containers/containers.conf.d/50-steam-arm-lepton.conf` mounting GPU render node
+  into rootless containers of every account, client umask 022. Android titles still need Steam Frame parts (Adreno driver payload, VR
+  runtime). Off by default. (scope: generic)
 
 ## Graphics route per title
 

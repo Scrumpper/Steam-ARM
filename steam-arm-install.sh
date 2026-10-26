@@ -181,7 +181,8 @@ user_write(){
 GAMEPASS=""
 # Opt-in components (all others default on). pad-xbox: client's own Steam Input re-identifies pads.
 # shader-cache: several GB download and long first-run processing. kde-input-prompt: security trade-off.
-DEFAULT_OFF="pad-xbox shader-cache kde-input-prompt pi-governor"
+# lepton: container packages for Valve's Android runtime; titles still need Steam Frame parts.
+DEFAULT_OFF="pad-xbox shader-cache kde-input-prompt pi-governor lepton"
 # Client home: env, then saved setting, then default; re-run never moves the client away from its games.
 ARMHOME_ENV=${ARMHOME_DIR:-}; GAMEUSER_ENV=${GAMEUSER:-}
 ARMHOME_DIR="${ARMHOME_DIR:-$(sed -n 's/^ARMHOME_DIR=//p' /etc/steam-arm/steam-arm.conf 2>/dev/null | tail -1)}"
@@ -865,7 +866,7 @@ rfs_root_own(){
   find "$1" -xdev -type f -perm /6000 -exec chmod ug-s {} + && echo "  set-user-ID and set-group-ID bits removed in $1"
 }
 # ---------------------------------------------------------------------------
-COMPONENTS_ALL="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray kde-input-prompt page-size pi-governor"
+COMPONENTS_ALL="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray kde-input-prompt page-size pi-governor lepton"
 # page-size applies to Raspberry Pi 5 class boards (16K page kernel), or where its boot line is still in place.
 ps_relevant(){
   case "$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null)" in
@@ -886,6 +887,66 @@ kde_wayland(){ pgrep -x kwin_wayland >/dev/null 2>&1; }
 GOV_HELPER=/usr/local/sbin/steam-arm-governor
 GOV_SUDO=/etc/sudoers.d/steam-arm-governor
 gov_relevant(){ case "$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null)" in "Raspberry Pi"*) return 0;; esac; [ -e "$GOV_SUDO" ]; }
+# lepton: host packages and SteamOS tool stand-ins for Valve's Lepton (Android runtime, app 3029110).
+LEP_PKGS="podman catatonit uidmap passt attr inotify-tools adb jq"
+# compiler and headers for the fossilize stand-in layer; recorded like LEP_PKGS
+LEP_BUILD="gcc libc6-dev libvulkan-dev"
+LEP_DIR=/usr/local/lib/steam-arm-lepton
+LEP_BIN=$LEP_DIR/bin
+LEP_OVERLAY=$LEP_DIR/guestos-android
+LEP_GUEST=/usr/share/guestos/android
+LEP_LAYER_C=$LEP_DIR/vk-fossilize-passthrough.c
+LEP_LAYER=$LEP_OVERLAY/vendor/vulkan_layers/libVkLayer_fossilize.so
+LEP_LAYER_JSON=/usr/share/vulkan/explicit_layer.d/steam-arm-lepton-fossilize.json
+LEP_PODMAN_CONF=/etc/containers/containers.conf.d/50-steam-arm-lepton.conf
+LEP_GPU_RC=$LEP_OVERLAY/vendor/etc/init/zz-steam-arm-lepton-gpu.rc
+pkg_inst(){ dpkg-query -W -f='${db:Status-Abbrev}\n' "$1" 2>/dev/null | grep -q '^ii'; }
+pkg_list(){ dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 2>/dev/null | awk '$1 == "ii" { print $2 }' | sort -u; }
+# Installs missing LEP_PKGS and LEP_BUILD; every package new after the install (dependencies too) joins LEPTON_PKGS_ADDED.
+lepton_pkgs_add(){
+  local miss p before after add
+  miss=$(for p in $LEP_PKGS $LEP_BUILD; do pkg_inst "$p" || printf '%s ' "$p"; done)
+  [ -n "$miss" ] || return 0
+  before=$(pkg_list)
+  # shellcheck disable=SC2086
+  apt-get install -y -o DPkg::Lock::Timeout=120 $miss || warn "lepton: packages did not all install ($miss); its message is above"
+  after=$(pkg_list)
+  add=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
+  conf_set LEPTON_PKGS_ADDED "$(printf '%s\n' $(conf_get LEPTON_PKGS_ADDED | tr ',' ' ') $add | awk 'NF' | sort -u | paste -sd, -)"
+}
+# Purges recorded packages still installed (never setup's own); skipped when the purge would take other packages.
+lepton_pkgs_purge(){
+  local p rec sim extra
+  rec=$(for p in $(conf_get LEPTON_PKGS_ADDED | tr ',' ' '); do
+    case " ${HOSTPKGS:-} " in *" $p "*) continue;; esac; pkg_inst "$p" && printf '%s ' "$p"; done)
+  [ -n "$rec" ] || { conf_del LEPTON_PKGS_ADDED; return 0; }
+  # shellcheck disable=SC2086
+  sim=$(LC_ALL=C apt-get -s purge $rec 2>/dev/null | awk '$1 == "Purg" || $1 == "Remv" { print $2 }')
+  extra=$(for p in $sim; do case " $rec " in *" $p "*) ;; *) printf '%s ' "$p";; esac; done)
+  if [ -n "$extra" ]; then warn "lepton: packages kept, purging them would also remove: $extra(kept: $rec)"; return 1; fi
+  # shellcheck disable=SC2086
+  if apt-get purge -y -o DPkg::Lock::Timeout=120 $rec >/dev/null; then echo "  lepton packages purged: $rec"; conf_del LEPTON_PKGS_ADDED
+  else warn "lepton: apt-get purge failed; packages stay: $rec"; return 1; fi
+}
+# Component off: recorded packages, stand-ins, own guestos link; overlay source filled by hand stays.
+lepton_off(){
+  # own files first: package purge then finds its folders empty
+  rm -f "$LEP_PODMAN_CONF"
+  rmdir /etc/containers/containers.conf.d /etc/containers 2>/dev/null
+  lepton_pkgs_purge
+  rm -f "$LEP_BIN/setpgid" "$LEP_BIN/steamvr" "$LEP_LAYER" "$LEP_LAYER_C" "$LEP_LAYER_JSON" "$LEP_GPU_RC"
+  rmdir "$LEP_BIN" "$LEP_OVERLAY/vendor/vulkan_layers" "$LEP_OVERLAY/vendor/etc/init" "$LEP_OVERLAY/vendor/etc" \
+    "$LEP_OVERLAY/vendor" "$LEP_OVERLAY" 2>/dev/null
+  [ "$(readlink "$LEP_GUEST" 2>/dev/null)" = "$LEP_OVERLAY" ] && rm -f "$LEP_GUEST"
+  rmdir /usr/share/guestos 2>/dev/null
+  rmdir "$LEP_DIR" 2>/dev/null
+  [ -d "$LEP_DIR" ] && echo "  kept: $LEP_DIR (files not written by setup)"
+  return 0
+}
+# containers.conf drop-in: render node $1 as bind mount (Lepton's --tmpfs /dev hides devices= entries).
+lepton_dev_conf(){ printf '# steam-arm-setup lepton: GPU render node for rootless podman containers\n[containers]\nvolumes = ["%s:%s:rw"]\n' "$1" "$1"; }
+# Android init file: minigbm allocates on the same render node $1.
+lepton_gpu_rc(){ printf '# steam-arm-setup lepton: render node mounted by 50-steam-arm-lepton.conf\non early-init\n    setprop gralloc.gbm.device %s\n' "$1"; }
 # Components listed and saved on this system; page-size, kde-input-prompt and pi-governor only where they apply.
 COMPONENTS=$COMPONENTS_ALL
 ps_relevant || COMPONENTS=${COMPONENTS/ page-size/}
@@ -909,6 +970,7 @@ desc_of(){ case "$1" in
   kde-input-prompt) echo "KDE Plasma (Wayland): no \"Remote control requested\" prompt; any X11 program may then send input";;
   page-size)  echo "Raspberry Pi 5: boot firmware's 4K page kernel (no effect elsewhere)";;
   pi-governor) echo "Raspberry Pi: CPU governor performance while Steam runs (more heat and power); off by default";;
+  lepton)     echo "Host tools for Valve's Lepton (Android titles): podman stack, adb, setpgid and steamvr stand-ins, umask 022; off by default";;
 esac; }
 var_of(){ echo "OPT_$(echo "$1" | tr 'a-z-' 'A-Z_')"; }
 for c in $COMPONENTS_ALL; do eval "$(var_of "$c")=1"; done
@@ -1033,7 +1095,7 @@ gpu_family_of(){
 # Detected family into GPU_DETECTED, with GPU_DRV and GPU_NAME.
 gpu_detect(){
   local r node sdrv idrv gid compat vendor fam rank f2 r2 best=-1 io p a
-  GPU_DETECTED=none; GPU_DRV=""; GPU_NAME=""
+  GPU_DETECTED=none; GPU_DRV=""; GPU_NAME=""; GPU_NODE=""
   io=$(gpu_ioctl_probe)
   for r in /sys/class/drm/renderD*; do
     [ -e "$r" ] || continue
@@ -1049,7 +1111,7 @@ gpu_detect(){
     [ "$fam" = unknown ] && [ "$sdrv" != - ] && [ -n "$idrv" ] && [ "$idrv" != "$sdrv" ] \
       && read -r f2 r2 <<< "$(gpu_family_of "$sdrv" "$compat" "$gid" "$vendor")" && [ "$f2" != unknown ] && { fam=$f2; rank=$r2; }
     [ "$rank" -gt "$best" ] || continue
-    best=$rank; GPU_DETECTED=$fam
+    best=$rank; GPU_DETECTED=$fam; GPU_NODE=/dev/dri/$node
     GPU_DRV=${idrv:-$sdrv}; [ "$sdrv" = tyr ] && GPU_DRV=tyr
     [ "$GPU_DRV" = - ] && GPU_DRV=""
     GPU_NAME=""
@@ -1332,8 +1394,8 @@ X86_PROTON=proton_experimental
 ARM64_PROTON=proton_11-arm64
 SA_CPUFREQ=/sys/devices/system/cpu/cpufreq
 # Fallback component list when the installer cannot be asked.
-SA_COMPONENTS="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray kde-input-prompt page-size pi-governor"
-SA_DEFAULT_OFF="pad-xbox shader-cache kde-input-prompt pi-governor"
+SA_COMPONENTS="glx-lax vk-spoof gpu-in-emulation shader-cache physx-skip map-count xpad-dedup pad-hidraw pad-xbox desktop desktop-mode icon-bigpicture icon-desktop tray kde-input-prompt page-size pi-governor lepton"
+SA_DEFAULT_OFF="pad-xbox shader-cache kde-input-prompt pi-governor lepton"
 SA_MALI_ONLY="vk-spoof gpu-in-emulation"
 SA_TOOL_RE='^(FEX|Proton|Steam Linux Runtime|Steamworks Common|Steamworks Shared)'
 
@@ -3149,6 +3211,7 @@ comp_short(){ case "$1" in
   kde-input-prompt) echo "KDE: no input prompt; X11 apps may send input";;
   page-size)  echo "Raspberry Pi 5: switch to 4K page kernel";;
   pi-governor) echo "Raspberry Pi: governor performance while Steam runs";;
+  lepton)     echo "Lepton host tools (Android titles; Steam Frame parts still missing)";;
   *)          echo "$1";;
 esac; }
 # Component names from installer --list, else built-in list.
@@ -5029,6 +5092,7 @@ sa_owned_paths(){
     /usr/local/lib/steam-arm-glx-lax.state /usr/local/lib/steam-arm-vk-spoof.c /usr/local/lib/steam-arm-nopkg \
     /usr/local/sbin/steam-arm-glx-lax /usr/local/sbin/steam-arm-xpad-dedup /usr/local/sbin/steam-arm-pad-xbox \
     /usr/local/sbin/steam-arm-governor /etc/sudoers.d/steam-arm-governor \
+    /usr/local/lib/steam-arm-lepton/bin/setpgid /usr/local/lib/steam-arm-lepton/bin/steamvr \
     /usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0 /usr/lib/aarch64-linux-gnu/libVkLayer_steam_arm_spoof.so \
     /usr/share/vulkan/implicit_layer.d/VkLayer_steam_arm_spoof.json \
     /etc/udev/rules.d/71-steam-arm-xpad-dedup.rules /etc/udev/rules.d/60-steam-arm-gamepad-hidraw.rules \
@@ -8516,6 +8580,7 @@ installed(){ case "$1" in
   kde-input-prompt) [ -f "$2/$KDE_MARK" ];;
   page-size)  grep -qs '^# steam-arm-setup page-size:' /boot/firmware/config.txt /boot/config.txt;;
   pi-governor) [ -e "$GOV_SUDO" ];;
+  lepton)     [ -e "$LEP_BIN/setpgid" ];;
   *)          return 1;;
 esac; }
 # Selection of last run: COMPONENTS_ON and COMPONENTS_OFF in $CONF, else read from files of
@@ -8821,6 +8886,8 @@ remove_all(){
   done
   systemctl daemon-reload 2>/dev/null
   pkill -TERM -f /usr/local/bin/steam-arm-tray 2>/dev/null
+  # lepton component: recorded packages and stand-ins; record in /etc/steam-arm, so before it goes
+  if [ -n "$(conf_get LEPTON_PKGS_ADDED)" ] || [ -e "$LEP_BIN/setpgid" ]; then say "lepton"; lepton_off; fi
   if [ "$linger" = 1 ] && [ -n "$uh" ]; then
     loginctl disable-linger "$GAMEUSER" >/dev/null 2>&1 && restored="${restored:+$restored, }user services of $GAMEUSER stop at logout again"
   fi
@@ -15485,6 +15552,11 @@ if [ -z "$RNODE" ]; then
 fi
 # Component chosen at install (COMPONENTS_ON in the settings file; all count as chosen when the file has no list).
 comp_on(){ [ -z "${COMPONENTS_ON+x}" ] && return 0; case ",$COMPONENTS_ON," in *",$1,"*) return 0;; esac; return 1; }
+# lepton (component, off by default): SteamOS tool stand-ins first in PATH; umask 022 so depot files are not group-writable.
+LEPBIN=/usr/local/lib/steam-arm-lepton/bin
+if [ -n "${COMPONENTS_ON+x}" ] && comp_on lepton && [ -x "$LEPBIN/setpgid" ]; then
+  export PATH="$LEPBIN:$PATH"; umask 022; llog "lepton: SteamOS tool stand-ins in PATH, umask 022"
+fi
 # Graphics route is picked per title by the launch handler; here only a note when its second tree is gone.
 comp_on gpu-in-emulation && [ -n "${COMPONENTS_ON+x}" ] && [ ! -f /opt/fex-rootfs/Ubuntu_24_04-mali/.steam-arm-mali ] \
   && lnote "Mali drivers inside the emulation missing, titles that need them use forwarding; run the installer again to restore them"
@@ -17401,6 +17473,234 @@ else
 fi
 else
 rm -f /etc/sudoers.d/steam-arm
+fi
+# lepton: packages Valve's Lepton calls, setpgid and steamvr stand-ins (launcher puts them first in PATH), guestos link.
+if opt lepton; then
+lepton_pkgs_add
+mkdir -p "$LEP_BIN"
+cat > "$LEP_BIN/setpgid" <<'LEPSETPGID'
+#!/usr/bin/python3 -I
+"""setpgid [--foreground] COMMAND [ARG...]: stand-in for SteamOS setpgid (lepton component).
+
+Own process group, with --foreground also foreground group of the controlling terminal (when there is one), then exec.
+GAMESCOPE_WAYLAND_DISPLAY unset: set to WAYLAND_DISPLAY (Lepton otherwise looks for gamescope-0).
+"""
+import os
+import signal
+import sys
+
+a = sys.argv[1:]
+fg = bool(a) and a[0] in ("-f", "--foreground")
+if fg:
+    a = a[1:]
+if a and a[0] == "--":
+    a = a[1:]
+if not a:
+    sys.exit("usage: setpgid [--foreground] COMMAND [ARG...]")
+try:
+    os.setpgid(0, 0)
+except OSError:
+    pass  # session leader already leads its group
+if fg:
+    try:
+        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    except OSError:
+        fd = -1  # no controlling terminal
+    if fd >= 0:
+        old = signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+        try:
+            os.tcsetpgrp(fd, os.getpgrp())
+        except OSError:
+            pass
+        signal.signal(signal.SIGTTOU, old)
+        os.close(fd)
+if not os.environ.get("GAMESCOPE_WAYLAND_DISPLAY") and os.environ.get("WAYLAND_DISPLAY"):
+    os.environ["GAMESCOPE_WAYLAND_DISPLAY"] = os.environ["WAYLAND_DISPLAY"]
+# Python ignores these; exec keeps ignored signals, so back to default first
+for s in (signal.SIGPIPE, signal.SIGXFSZ):
+    signal.signal(s, signal.SIG_DFL)
+try:
+    os.execvp(a[0], a)
+except OSError as e:
+    sys.stderr.write("setpgid: %s: %s\n" % (a[0], e.strerror))
+    sys.exit(127 if e.errno == 2 else 126)
+LEPSETPGID
+cat > "$LEP_BIN/steamvr" <<'LEPSTEAMVR'
+#!/bin/sh
+# steamvr: stand-in for SteamOS steamvr command (lepton component); folders in client home, runtime empty unless filled.
+B="$HOME/.local/share/steam-arm-lepton/steamvr"
+case "${1:-}" in
+  path) d=$B/runtime;;
+  logpath) d=$B/logs;;
+  configpath) d=$B/config;;
+  *) echo "usage: steamvr path|logpath|configpath (Steam ARM stand-in, no VR runtime)" >&2; exit 2;;
+esac
+mkdir -p "$d" && printf '%s\n' "$d"
+LEPSTEAMVR
+chmod 755 "$LEP_BIN/setpgid" "$LEP_BIN/steamvr"
+# Lepton requires a layer named VK_LAYER_fossilize (SteamOS guestos payload): pass-through stand-in, Android ABI, no libc.
+cat > "$LEP_LAYER_C" <<'CEOF'
+/* VK_LAYER_fossilize stand-in for Lepton (Android ABI, no libc): pass-through, no capture. */
+#include <vulkan/vulkan.h>
+#include <vulkan/vk_layer.h>
+
+#define EXPORT __attribute__((visibility("default")))
+#define LAYER_NAME "VK_LAYER_fossilize"
+
+static PFN_vkGetInstanceProcAddr next_gipa;
+static PFN_vkGetDeviceProcAddr next_gdpa;
+static VkInstance last_instance;
+
+static int str_eq(const char *a, const char *b)
+{
+    if (!a || !b) return 0;
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+static void str_cpy(char *d, const char *s, unsigned n)
+{
+    unsigned i = 0;
+    for (; i + 1 < n && s[i]; i++) d[i] = s[i];
+    for (; i < n; i++) d[i] = 0;
+}
+
+static VkResult layer_props(uint32_t *count, VkLayerProperties *props)
+{
+    if (!props) { *count = 1; return VK_SUCCESS; }
+    if (*count < 1) return VK_INCOMPLETE;
+    str_cpy(props[0].layerName, LAYER_NAME, VK_MAX_EXTENSION_NAME_SIZE);
+    str_cpy(props[0].description, "pass-through stand-in", VK_MAX_DESCRIPTION_SIZE);
+    props[0].specVersion = VK_MAKE_VERSION(1, 1, 0);
+    props[0].implementationVersion = 1;
+    *count = 1;
+    return VK_SUCCESS;
+}
+
+EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceLayerProperties(uint32_t *count, VkLayerProperties *props)
+{
+    return layer_props(count, props);
+}
+
+EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateDeviceLayerProperties(VkPhysicalDevice pd, uint32_t *count, VkLayerProperties *props)
+{
+    (void)pd;
+    return layer_props(count, props);
+}
+
+EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceExtensionProperties(const char *layer, uint32_t *count, VkExtensionProperties *props)
+{
+    (void)props;
+    if (str_eq(layer, LAYER_NAME)) { *count = 0; return VK_SUCCESS; }
+    return VK_ERROR_LAYER_NOT_PRESENT;
+}
+
+EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateDeviceExtensionProperties(VkPhysicalDevice pd, const char *layer, uint32_t *count, VkExtensionProperties *props)
+{
+    if (str_eq(layer, LAYER_NAME)) { *count = 0; return VK_SUCCESS; }
+    if (next_gipa && last_instance) {
+        PFN_vkEnumerateDeviceExtensionProperties f =
+            (PFN_vkEnumerateDeviceExtensionProperties)next_gipa(last_instance, "vkEnumerateDeviceExtensionProperties");
+        if (f) return f(pd, layer, count, props);
+    }
+    return VK_ERROR_LAYER_NOT_PRESENT;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL layer_CreateInstance(const VkInstanceCreateInfo *ci, const VkAllocationCallbacks *alloc, VkInstance *inst)
+{
+    VkLayerInstanceCreateInfo *li = (VkLayerInstanceCreateInfo *)ci->pNext;
+    while (li && !(li->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO && li->function == VK_LAYER_LINK_INFO))
+        li = (VkLayerInstanceCreateInfo *)li->pNext;
+    if (!li || !li->u.pLayerInfo) return VK_ERROR_INITIALIZATION_FAILED;
+    PFN_vkGetInstanceProcAddr gipa = li->u.pLayerInfo->pfnNextGetInstanceProcAddr;
+    li->u.pLayerInfo = li->u.pLayerInfo->pNext;
+    PFN_vkCreateInstance create = (PFN_vkCreateInstance)gipa(VK_NULL_HANDLE, "vkCreateInstance");
+    if (!create) return VK_ERROR_INITIALIZATION_FAILED;
+    VkResult r = create(ci, alloc, inst);
+    if (r == VK_SUCCESS) { next_gipa = gipa; last_instance = *inst; }
+    return r;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL layer_CreateDevice(VkPhysicalDevice pd, const VkDeviceCreateInfo *ci, const VkAllocationCallbacks *alloc, VkDevice *dev)
+{
+    VkLayerDeviceCreateInfo *li = (VkLayerDeviceCreateInfo *)ci->pNext;
+    while (li && !(li->sType == VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO && li->function == VK_LAYER_LINK_INFO))
+        li = (VkLayerDeviceCreateInfo *)li->pNext;
+    if (!li || !li->u.pLayerInfo) return VK_ERROR_INITIALIZATION_FAILED;
+    PFN_vkGetInstanceProcAddr gipa = li->u.pLayerInfo->pfnNextGetInstanceProcAddr;
+    PFN_vkGetDeviceProcAddr gdpa = li->u.pLayerInfo->pfnNextGetDeviceProcAddr;
+    li->u.pLayerInfo = li->u.pLayerInfo->pNext;
+    PFN_vkCreateDevice create = (PFN_vkCreateDevice)gipa(last_instance, "vkCreateDevice");
+    if (!create) return VK_ERROR_INITIALIZATION_FAILED;
+    VkResult r = create(pd, ci, alloc, dev);
+    if (r == VK_SUCCESS) next_gdpa = gdpa;
+    return r;
+}
+
+EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice dev, const char *name)
+{
+    if (str_eq(name, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
+    return next_gdpa ? next_gdpa(dev, name) : 0;
+}
+
+EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance inst, const char *name)
+{
+    if (str_eq(name, "vkGetInstanceProcAddr")) return (PFN_vkVoidFunction)vkGetInstanceProcAddr;
+    if (str_eq(name, "vkCreateInstance")) return (PFN_vkVoidFunction)layer_CreateInstance;
+    if (str_eq(name, "vkCreateDevice")) return (PFN_vkVoidFunction)layer_CreateDevice;
+    if (str_eq(name, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
+    if (str_eq(name, "vkEnumerateInstanceLayerProperties")) return (PFN_vkVoidFunction)vkEnumerateInstanceLayerProperties;
+    if (str_eq(name, "vkEnumerateInstanceExtensionProperties")) return (PFN_vkVoidFunction)vkEnumerateInstanceExtensionProperties;
+    if (str_eq(name, "vkEnumerateDeviceLayerProperties")) return (PFN_vkVoidFunction)vkEnumerateDeviceLayerProperties;
+    if (str_eq(name, "vkEnumerateDeviceExtensionProperties")) return (PFN_vkVoidFunction)vkEnumerateDeviceExtensionProperties;
+    return next_gipa ? next_gipa(inst, name) : 0;
+}
+CEOF
+mkdir -p "$LEP_OVERLAY/vendor/vulkan_layers"
+if gcc -O2 -fPIC -shared -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fno-tree-loop-distribute-patterns \
+     -fvisibility=hidden -Wl,-Bsymbolic -Wl,--hash-style=both -Wl,-soname,libVkLayer_fossilize.so -Wl,-z,max-page-size=4096 \
+     -Wl,-z,noexecstack -Wl,--no-undefined -o "$LEP_LAYER" "$LEP_LAYER_C"; then
+  chmod 644 "$LEP_LAYER"
+  # manifest: Lepton reads the layer name from /usr/share/vulkan JSON files by library file name
+  cat > "$LEP_LAYER_JSON" <<JSON
+{
+  "file_format_version": "1.0.0",
+  "layer": {
+    "name": "VK_LAYER_fossilize",
+    "type": "GLOBAL",
+    "library_path": "$LEP_LAYER",
+    "api_version": "1.1.0",
+    "implementation_version": "1",
+    "description": "Steam ARM stand-in for Lepton (pass-through)"
+  }
+}
+JSON
+  chmod 644 "$LEP_LAYER_JSON"
+else
+  rm -f "$LEP_LAYER" "$LEP_LAYER_JSON"; warn "lepton: fossilize stand-in layer did not build; Lepton stops at its Vulkan layer step"
+fi
+# Android overlay source: linked to Lepton's guestos path only while that path is free.
+if [ ! -e "$LEP_GUEST" ] && [ ! -L "$LEP_GUEST" ]; then
+  { mkdir -p /usr/share/guestos && ln -s "$LEP_OVERLAY" "$LEP_GUEST"; } || warn "lepton: could not link $LEP_GUEST"
+elif [ "$(readlink "$LEP_GUEST" 2>/dev/null)" != "$LEP_OVERLAY" ]; then
+  warn "lepton: $LEP_GUEST exists and is not setup's link; Lepton uses it as it is"
+fi
+# depot files written under umask 0002: group write off (Android init skips group-writable rc files)
+[ -d "$S/steamapps/common/Lepton" ] && { as_user chmod -R g-w "$S/steamapps/common/Lepton" || warn "lepton: could not clear group write on $S/steamapps/common/Lepton"; }
+# GPU render node of the detected GPU into Lepton's container (access through its keep-groups, render group)
+[ -n "${GPU_NODE:-}" ] || gpu_detect
+if [ -n "${GPU_NODE:-}" ] && [ -c "$GPU_NODE" ]; then
+  { mkdir -p /etc/containers/containers.conf.d && lepton_dev_conf "$GPU_NODE" > "$LEP_PODMAN_CONF" && chmod 644 "$LEP_PODMAN_CONF"; } \
+    || warn "lepton: could not write $LEP_PODMAN_CONF"
+  { mkdir -p "$LEP_OVERLAY/vendor/etc/init" && lepton_gpu_rc "$GPU_NODE" > "$LEP_GPU_RC" && chmod 644 "$LEP_GPU_RC"; } \
+    || warn "lepton: could not write $LEP_GPU_RC"
+else
+  rm -f "$LEP_PODMAN_CONF" "$LEP_GPU_RC"; warn "lepton: no GPU render node found; Lepton titles draw on CPU"
+fi
+grep -qs "^$GAMEUSER:" /etc/subuid \
+  || warn "lepton: no subordinate ids for '$GAMEUSER' in /etc/subuid; podman needs them: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $GAMEUSER"
+else
+lepton_off
 fi
 # compat tool mapping helper (titles with a Linux build on record but Windows files installed)
 cat > /usr/local/lib/steam-arm-compatmap.py <<'PYEOF'
