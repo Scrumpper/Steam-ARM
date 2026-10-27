@@ -14,11 +14,11 @@ Confirmed by inspection of installer:
 
 FEX, emulation tool used for x86 game code, installs from FEX's Ubuntu PPA `ppa:fex-emu/fex`. Ubuntu family distribution is tested path for that step. On Debian 13 and Raspberry Pi OS built on it, setup adds same PPA as plain apt source with its Ubuntu 24.04 build (see Debian systems).
 
-PPA series as of 2026-10-24: FEX 2610 for Ubuntu 24.04 and 26.04 series (Debian 13 hosts get Ubuntu 24.04 build), FEX 2607 for Ubuntu 25.10. Host FEX serves Remote Play, thunk libraries, binfmt registration and x86 client path; games run on Valve's FEX tool from Steam, so title compatibility does not depend on PPA series. Setup warns when PPA offers older FEX build for host Ubuntu release than for other releases: host packages step reads apt candidate of selected `fex-emu-armv8.x` package, matches it against 2610 and prints one line, `[warn] FEX package source offers FEX 2607-1 for this distribution release; FEX 2610 builds exist there for other Ubuntu releases. Host FEX serves Remote Play and thunk libraries; titles use Valve's FEX tool from Steam and are unaffected.` Package choice is unchanged and no other series is pinned; `--detect` prints no such line.
+PPA series as of 2026-10-24: FEX 2610 for Ubuntu 24.04 and 26.04 series (Debian 13 hosts get Ubuntu 24.04 build), FEX 2607 for Ubuntu 25.10. Host FEX serves Remote Play, thunk libraries, binfmt registration and x86 client path; games run on Valve's FEX tool from Steam, so title compatibility does not depend on PPA series. Setup warns when PPA offers older FEX build for host Ubuntu release than for other releases: host packages step reads apt candidate of selected `fex-emu-armv8.x` package, matches it against 2610 and prints this line, `[warn] FEX package source offers FEX 2607-1 for this distribution release; FEX 2610 builds exist there for other Ubuntu releases. Host FEX serves Remote Play and thunk libraries; titles use Valve's FEX tool from Steam and are unaffected.` Package choice is unchanged and no other series is pinned; `--detect` prints no such line.
 
-Installer has no hardcoded GPU render node and no hardcoded card index. GPU family detection reads every render node and sets component defaults per family (see GPU families). Page size check names fix for Raspberry Pi; on Apple Silicon it stops (16K page kernel not supported).
+Installer hardcodes neither GPU render node nor card index. GPU family detection reads every render node and sets component defaults per family (see GPU families). Page size check names fix for Raspberry Pi; on Apple Silicon it stops (16K page kernel not supported).
 
-Vulkan driver is needed for Windows titles; GPUs without one run native OpenGL titles.
+Vulkan driver is needed for Windows titles; GPUs without Vulkan run native OpenGL titles.
 
 Native ARM64 client needs Armv8.1 or newer CPU with LSE atomics; on Armv8.0 cores
 (Cortex-A53, A57, A72, A73) setup installs Valve's x86 client through emulation instead.
@@ -54,7 +54,7 @@ Mesa on tested device comes from `kisak-mesa` PPA. Older Mesa releases carry ear
 PanVK; when `vulkaninfo` lists no `panvk` device on Mali-G610, newer Mesa from that PPA
 is what tested device uses.
 
-Mesa 26.1 or newer is recommended: tested device runs 26.1, and 26.1 added PanVK
+Recommended Mesa is 26.1 or newer: tested device runs 26.1, and 26.1 added PanVK
 extensions that DXVK uses (`RESEARCH.md`, M4). Installer does not check Mesa version.
 `gpu-in-emulation` component, on by default on Mali GPUs, brings its own x86 Mesa 26.1.8 for
 titles that launch handler puts on Mali drivers in emulation (Java, 32-bit Vulkan); other
@@ -163,12 +163,12 @@ that. Each depends on PanVK features that have no release date; no timeline is g
   `denormBehaviorIndependence` none).
 - **Unreal Engine 5 titles.** Rendering goes through Direct3D 12 or Shader Model 6; same
   limits.
+- **Unity HDRP titles (Direct3D 11).** HDRP needs compute shaders, which Unity enables from
+  feature level 11_0; at 10_1 title shows black screen.
 - **Unreal Engine 4 Direct3D 11 titles.** Engine asks for feature level 11_0, which needs
   tessellation; PanVK has none. DXVK offers 10_1. Raising level in `dxvk.conf` crashes
   engine when it compiles geometry shader; reporting tessellation through Vulkan layer
   crashed X server.
-- **Unity HDRP titles (Direct3D 11).** HDRP needs compute shaders, which Unity enables from
-  feature level 11_0; at 10_1 title shows black screen.
 - **Titles with kernel-level anti-cheat.** Anti-cheat and DRM components need system call
   filter that emulator does not implement.
 
@@ -227,8 +227,8 @@ Two properties decide whether this works on system, and neither is about board:
 2. **4K page size for emulation half.** Code built for x86 assumes 4K pages. Most
    ARM64 Linux systems use 4K, but two common ones do not. Apple Silicon runs 16K pages and
    needs x86 side inside environment with 4K pages, which this package does not set
-   up. Raspberry Pi 5 also defaults to 16K, and switches with one line of firmware
-   configuration, described below.
+   up. Raspberry Pi 5 also defaults to 16K, and switches with single firmware
+   configuration line, described below.
 
 What changes per graphics driver:
 
@@ -275,7 +275,7 @@ through emulation (see Plausible, not tested).
 ### Plausible, not tested
 
 **NVIDIA Jetson Orin.** Vendor's own driver provides Vulkan, and base is Ubuntu, so
-requirements are met. Base is older than current desktop distribution.
+requirements are met. That base is older than current desktop distribution.
 
 **Snapdragon laptops with 8cx Gen 3**, Adreno 690 through Turnip, which is established
 part of that driver.
@@ -339,7 +339,7 @@ against OpenGL, which Panfrost supports well; Windows titles through Direct3D la
 not reasonable expectation there.
 
 **Page size, where it is not 4K.** Raspberry Pi 5 and Apple Silicon both default to 16K.
-Pi is one line firmware change, which `page-size` component makes. Apple Silicon needs
+Pi takes single firmware line change, which `page-size` component makes. Apple Silicon needs
 emulation inside 4K page guest, which this package does not set up.
 Setup checks page size first and stops with fix for that system rather than installing
 something that cannot run. On ARM workstations default has moved between releases of same
@@ -397,7 +397,7 @@ and leaves Mali-only parts off. `glxinfo -B` shows OpenGL values on system;
   feature layer `vk-spoof` cannot fill them, so it stays off. VKD3D-Proton (Direct3D 12)
   needs more than DXVK.
 - GPU throughput about quarter of RK3588's Mali-G610 (third-party FP32 estimates; no
-  like-for-like benchmark exists). GPU memory: 4 GiB address space, 1 GiB per allocation.
+  like-for-like benchmark exists). Graphics memory: 4 GiB address space, 1 GiB per allocation.
 
 What Steam ARM does on `broadcom-v3d71`, `broadcom-v3d42` and `broadcom-vc4`:
 
@@ -410,7 +410,7 @@ What Steam ARM does on `broadcom-v3d71`, `broadcom-v3d42` and `broadcom-vc4`:
 - **OpenGL version report per title, off by default.** `glver=3.3` sets
   `MESA_GL_VERSION_OVERRIDE=3.3` with matching `MESA_GLSL_VERSION_OVERRIDE=330` (Graphics,
   Route per game, OpenGL version; values 3.2, 3.3 and 4.0 to 4.6, GLSL version follows).
-  Titles that only check version at start then start. Titles that use OpenGL 3.2 and newer
+  Titles that only check version at start then start. Those that use OpenGL 3.2 and newer
   features (geometry shaders, seamless cube maps, GLSL 3.30 paths) draw wrong or stop:
   remove setting again. Never global, since titles that run today would take paths v3d
   cannot draw. Game log line `renderer:` with CPU drawing, and CPU drawing notice, name this
@@ -471,7 +471,7 @@ What runs where:
   FEX's thunk libraries are present (package `fex-emu-armv8.0` includes
   `HostThunks/libGL-host.so`, `libvulkan-host.so`, `GuestThunks/libGL-guest.so`,
   `libvulkan-guest.so`, `ThunksDB.json`; checked by project's container test). Without
-  them every game draws on CPU and launcher raises notice at every start. 32-bit titles
+  them every game draws on CPU and launcher raises notice at each start. 32-bit titles
   are worst case: no 32-bit Vulkan thunk, GL thunk only.
 - Windows titles: x86 Proton through emulation, WineD3D on OpenGL 3.1 (Direct3D 9 class,
   feature level 9_3); Direct3D 10 and 11 titles need `glver=3.3` and may misrender.
@@ -554,7 +554,7 @@ and stay off unless set by hand.
    title ran 5 to 9 % faster with 9 to 12 % less CPU load, first frame 2 to 4 s later.
    Java 21 and newer titles fail with it on.
 8. **FEX code cache per title (opt-in).** `steam-arm-config profile <appid> diskcache=on`;
-   needs Valve FEX tool FEX-2609.1 or newer. Unmeasured on Pi 5 and RK3588 test device;
+   needs Valve FEX tool FEX-2609.1 or newer. Not measured on Pi 5 or RK3588 test device;
    on RK3588 test device 2 of 11 starts with empty cache hung before game start.
    Proton Experimental (ARM64) turns code cache on for Windows titles by itself.
 9. **Clocks (opt-in, warranty and heat).** Raspberry Pi documents `arm_freq`, `gpu_freq`,

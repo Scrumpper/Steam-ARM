@@ -71,7 +71,7 @@ through ARM64 Proton on system Vulkan, on neither route.
 
 ## Route comparison
 
-Frame rates on both routes, tests 2026-10-01. Conditions: one test system (RK3588,
+Frame rates on both routes, tests 2026-10-01. Conditions: single test system (RK3588,
 Mali-G610), one title per row, 90-second runs unless noted, frame rate from Mesa Gallium
 HUD. Mali drivers route: 2.0 driver archive, forced with `gfx=b` where handler picks
 forwarding.
@@ -98,8 +98,8 @@ forwarding.
 
 Mali drivers route handled every title type that ran on forwarding. Java titles that crash on
 forwarding ran on it, so handler picks it for them; other titles stay on forwarding, which
-ran same or higher frame rate for most types above. Frame rates are from one system and
-one title each; other titles and boards can differ.
+ran same or higher frame rate for most types above. Frame rates are from single system, one
+title per type; other titles and boards can differ.
 
 ## Launch handler
 
@@ -107,7 +107,7 @@ Steam ARM's launch handler decides per title, before game starts, with no launch
 
 - x86 Steam overlay on for Linux x86 titles
 - MangoHud when title asks for it
-- Godot 4 titles on OpenGL renderer with GL 3.3 report; Godot 3 titles with GL 3.3 report; engine version from PCK inside executable, else `.pck` beside it; Windows builds under x86 Proton left as is
+- Godot 4 titles on OpenGL renderer with GL 3.3 report; same report for Godot 3 titles; engine version from PCK inside executable, else `.pck` beside it; Windows builds under x86 Proton left as is
 - Unity titles: Vulkan renderer where player carries it, else GL 4.5 report; 32-bit Unity players with overlay off
 - Graphics route: forwarding, or Mali drivers in emulation for Java titles and, on `mali-csf-v10`, for 32-bit titles started with `-vulkan` or `-force-vulkan` (option kept); see Route choice
 - Java titles with LWJGL 2: `-DLWJGL_DISABLE_XRANDR=true` added; Java 21 and newer on Mali drivers route: FEX Multiblock off

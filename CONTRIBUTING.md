@@ -9,8 +9,8 @@ Package is built with:
 ```
 
 This requires `dpkg-deb` and produces `steam-arm-setup_<version>_arm64.deb` plus
-`steam-arm-setup_<version>_arm64.deb.sha256` (one line, `<sha256>  <file name>`). Same
-sources and same `dpkg-deb` version give same bytes; `tools/release-gates.sh` builds twice
+`steam-arm-setup_<version>_arm64.deb.sha256` (single line, `<sha256>  <file name>`). Same
+sources and `dpkg-deb` version give matching bytes; `tools/release-gates.sh` builds twice
 and compares.
 
 ## Release assets
@@ -57,7 +57,7 @@ determinism and zip layout.
 1. Build package with `./build-deb.sh`.
 2. Install built package: `sudo dpkg -i steam-arm-setup_*_arm64.deb`.
 3. Run `steam-arm-setup --list` and verify component list matches change.
-4. Run `steam-arm-setup --help` and confirm usage text is correct.
+4. Check `steam-arm-setup --help` output and confirm usage text is correct.
 5. Remove package: `sudo apt-get purge steam-arm-setup`.
 
 ## Required checks
@@ -76,7 +76,7 @@ Reports of device working, or not working, belong in compatibility issue templat
 
 ## Scope of changes
 
-`steam-arm-install.sh` is close to 1400 lines and is installer for every component listed in `README.md`. Keep changes minimal, scoped to one component or concern at time, and explain in pull request what change does and why it is needed.
+`steam-arm-install.sh` is close to 1400 lines and is installer for every component listed in `README.md`. Keep changes minimal, scoped to single component or concern, and explain in pull request what change does and why it is needed.
 
 ---
 
