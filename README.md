@@ -22,7 +22,7 @@ Other routes to Steam on ARM64, and where each one runs: `COMPARISON.md`.
 3. Requirements
 4. Install
 5. Setup menu (steam-arm-config)
-    - Run report and run history
+    - Run report and history
     - Automatic tuning
 6. GPU detection
 7. First start
@@ -340,7 +340,7 @@ script that menu runs. Default: among `steam-arm-setup`,
 `steam-arm-install.sh` beside menu app, menu picks one whose version equals installed
 version, else newest of them; older package never runs over newer install.
 
-### Run report and run history
+### Run report and history
 
 Maintenance, Report how last game ran (or `steam-arm-config report run [APPID|last]`)
 writes report of one game start for issue or forum post. Choose last game started or
@@ -657,7 +657,7 @@ upgrade from 1.2, which saved no family record, only turns such parts off.
 - `icon-bigpicture`: Places "Steam ARM" icon on desktop. (scope: Generic)
 - `icon-desktop`: Places "Steam ARM (Desktop mode)" icon on desktop. (scope: Generic)
 - `tray`: Steam icon in panel tray with Open Steam, Open in Big Picture, Open in desktop
-  mode, Steam pages (Library, Store, Screenshots, Friends, Downloads and Steam Settings; link
+  mode, client pages (Store, Library, Friends, Downloads, Screenshots and Steam Settings; link
   to running client through `steam-arm --open`, greyed during first start and while client
   is not running), Stop Steam (`steam-arm --shutdown`; greyed while game runs), Steam ARM
   Settings (`steam-arm-config` in terminal emulator), View log (shows `steam-arm.log` in
@@ -2055,7 +2055,7 @@ read-only access to repository.
   start. Start Steam from desktop, or remove that launch option.
 - Hardware report for compatibility report: `steam-arm-config report`.
 - Report of one game start for issue: `steam-arm-config report run` (see Run report and
-  run history).
+  history).
 
 ## What this does not do
 
