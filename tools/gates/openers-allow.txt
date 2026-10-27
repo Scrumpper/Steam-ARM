@@ -1,0 +1,2 @@
+# check-alliteration.py opener allow-list: one word per line, optional "FILE:" scope (basename or path), "# reason"
+# optional, case ignored. Proper and product names and unavoidable requirement lists only, never ordinary words.
