@@ -230,7 +230,7 @@ steam-arm (launcher, desktop account only, refuses root)
        32-bit -vulkan on Mali G610           -> B (keeps -vulkan)
        other titles                          -> A
      route B tree: profile mesa=<version> with that tree installed -> extra tree;
-       else second tree (log line); route A: mesa= logged, nothing else
+       else second tree (log line); route A: mesa= logged only
      route A: FEX forwards OpenGL and Vulkan to system Mesa (glx-lax for threads)
      route B: x86 Mesa inside emulation drives GPU directly; Multiblock set by
               FEX_APP_CONFIG launch option kept (Steam's per-title FEX setting

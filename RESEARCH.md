@@ -67,7 +67,7 @@ titles they are only place: launch handler does not run for them.
 
 ### Title profiles (`titles.conf`)
 
-One line per title, keyed by Steam app id. Launch handler reads them for Linux x86 titles
+Single line per title, keyed by Steam app id. Launch handler reads them for Linux x86 titles
 that run through FEX; Proton titles ignore them.
 
 Read in this order, later files overriding earlier ones:
@@ -350,7 +350,7 @@ Zink runs OpenGL on top of PanVK, but does not reach GL 4.x there: Zink needs Vu
 recipe, December 2025) ran Feral GL 4 port through Zink on
 Mali-G610, through box64 rather than FEX; their recipe reports GL 4.3 through
 `MESA_GL_VERSION_OVERRIDE`, same version report trick as on Panfrost (T4, T5), so title
-runs only while it avoids missing stages (inferred). Zink stacks two drivers; for titles that need GL
+runs only while it avoids missing stages (inferred). Stacking two drivers has its cost; for titles that need GL
 3.3 or less, native Panfrost is faster.
 
 What to change: per title only, version report included. Linux x86 title, one profile line:
@@ -453,8 +453,8 @@ and `denormBehaviorIndependence` none caps Shader Model at 6.0. Unreal Engine 5 
 fall under same limits (E2).
 
 Open Mesa merge requests cover geometry shaders (38401, 44118), transform feedback (43359)
-and clip and cull distance (40343, 43156); none covers tessellation, and none has merge
-date <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/43359>.
+and clip and cull distance (40343, 43156); none covers tessellation, and merge dates are
+still missing <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/43359>.
 
 Checked 2026-10-24 on GitLab: transform feedback MR 43359 open (opened 2026-08-01);
 geometry shaders MR 38401 draft; MR 44118, experimental geometry shader support, opened
@@ -588,7 +588,7 @@ What to change: keep `page-size` component selected; report results.
 Status: no claim survived verification.
 
 Research found no verified result for ARM servers or workstations with AMD or NVIDIA
-cards: no DXVK or vkd3d-proton feature level, no PCIe or firmware quirk list.
+cards, neither DXVK or vkd3d-proton feature level nor PCIe or firmware quirk list.
 
 What to change: none at install; GPU family detection leaves `vk-spoof` off on AMD, NVIDIA
 and Intel, and `glx-lax` off on NVIDIA's own driver. Check `getconf PAGESIZE`; some server kernels use
@@ -681,7 +681,7 @@ X87ReducedPrecision off together; other three combinations worked
 blocks: FEX #4538 hid it, FEX #5024 (recovering from branch encoding failures, November
 2025) fixed it, and issue closed.
 
-What to change: current FEX, nothing else. On FEX older than November 2025: launch option
+What to change: current FEX only. On FEX older than November 2025: launch option
 `FEX_MULTIBLOCK=0 %command%` or `FEX_X87REDUCEDPRECISION=1 %command%`, not both.
 
 ### F6. SMCChecks for self-modifying code
@@ -753,10 +753,10 @@ Status: UE4 Direct3D 11 limit tested (T8); others researched.
 
 - UE4 Direct3D 11 renderer needs feature level 11_0 and Shader Model 5. On Mali it stops
   (T8).
-- UE5 Nanite and Lumen need Shader Model 6; Nanite needs Direct3D 12 with 6.6 atomics or
-  Vulkan `VK_KHR_shader_atomic_int64`, whichever renderer runs. UE5 Direct3D 12 titles
+- Nanite and Lumen in UE5 need Shader Model 6; Nanite needs Direct3D 12 with 6.6 atomics or
+  Vulkan `VK_KHR_shader_atomic_int64`, whichever renderer runs. Direct3D 12 titles on UE5
   fail on Mali before that, at vkd3d-proton device creation (M8).
-- UE5 Direct3D 12 on Adreno: A2. Asahi reaches feature level 12_0: AS3.
+- Adreno and UE5 Direct3D 12: see A2. Asahi reaches feature level 12_0: see AS3.
 - Native Linux UE4 and UE5 builds already render through Vulkan; their Shader Model 5 path
   needs tessellation too (inferred from T8).
 
@@ -793,7 +793,7 @@ What to change:
 
 Status: researched, untested.
 
-Source 2 is Vulkan only, with no OpenGL fallback. Source 2 shooter lists AMD GCN or NVIDIA
+Source 2 is Vulkan only, with no OpenGL fallback. Valve's Source 2 shooter lists AMD GCN or NVIDIA
 Kepler as floor <https://www.phoronix.com/news/Counter-Strike-2-Linux> and reports Vulkan
 1.2 errors on weaker drivers
 <https://github.com/ValveSoftware/csgo-osx-linux/issues/3772>. No report was found of
@@ -809,8 +809,8 @@ rule not run on device; others researched.
 Godot 4 has three renderers: Forward+ and Mobile on Vulkan, Compatibility on OpenGL
 <https://docs.godotengine.org/en/4.4/tutorials/rendering/renderers.html>. Project setting
 `renderer/rendering_method="gl_compatibility"` selects Compatibility
-<https://godotengine.org/article/status-of-opengl-renderer/>. Godot's GPU detection can
-fall back to llvmpipe on Panfrost class hardware while other programs use GPU
+<https://godotengine.org/article/status-of-opengl-renderer/>. On Panfrost class hardware
+Godot's GPU detection can fall back to llvmpipe while other programs use GPU
 <https://github.com/godotengine/godot/issues/50469>. Godot 3 titles stop at start on
 Panfrost's GL 3.1 (`GLXBadFBConfig`); handler sets GL 3.3 and GLSL 330 report for them
 (GAMES.md, Godot 3 row). Engine version comes from PCK inside executable, else `.pck`
@@ -891,7 +891,7 @@ Do not try these. Each failed verification or conflicts with test results.
   <https://wiki.fex-emu.com/index.php/Config>. Nearest options are `TSOEnabled` and
   `SMCChecks`.
 - **Multiblock off as documented stutter fix.** Refuted 0-3; FEX schema does not say that.
-  Multiblock off costs speed (F5 was title-specific crash, not stutter, fixed upstream).
+  Turning Multiblock off costs speed (F5 was title-specific crash, not stutter, fixed upstream).
 - **Source engine native build crash under FEX and Proton as its workaround.** Both refuted 0-3
   <https://github.com/FEX-Emu/FEX/issues/3807>.
 - **`PAN_MESA_DEBUG=gofaster`.** Belongs to old panfork fork; mainline Mesa flag table has

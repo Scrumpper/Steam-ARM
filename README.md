@@ -2,7 +2,7 @@
 
 **Steam Frame's Steam client on ARM64 Linux** · Valve's native ARM64 build made for Steam Frame,
 from Valve's update channel · x86 Linux titles through FEX · Windows titles through ARM64
-Proton · one installer script · settings menu `steam-arm-config`
+Proton · installer script · settings menu `steam-arm-config`
 
 Same client Steam Frame runs, set up on other ARM64 Linux devices: single-board computers, TV
 boxes, ARM laptops. Armv8.0 CPUs get Valve's x86 client through FEX in its place. Unofficial;
@@ -95,7 +95,7 @@ This installs Steam Frame's Steam client; Armv8.0 CPUs get Valve's x86 client th
 emulation in its place (see x86 client). x86 code runs through emulation tool that client
 downloads. Windows titles run through Valve's ARM64 Proton build.
 
-Nothing downloads before installer runs. Steam client, emulation tool and Proton build
+No download happens before installer runs. Steam client, emulation tool and Proton build
 download when installer runs and client is set up.
 
 Installing, re-running installer and changing components leave game library
@@ -104,12 +104,12 @@ replaced, and only when it is missing or damaged.
 
 ## Requirements
 
-- ARM64 system. GPU family detection sets defaults per GPU; Windows titles need Vulkan
-  driver, native OpenGL titles run without one. See GPU detection.
-- ARM64 CPU. Armv8.1 or newer with LSE atomics (`atomics` in `Features` line of
-  `/proc/cpuinfo`) runs Valve's native ARM64 client: Raspberry Pi 5 (Cortex-A76), RK3588
-  (Cortex-A76 and A55). Armv8.0 CPUs without LSE (Cortex-A53, A57, A72, A73: Raspberry Pi
-  4, RK3399, S922X) run Valve's x86 client through emulation instead, since native builds
+- GPU of any family; detection (see GPU detection) sets defaults per GPU. Windows titles
+  need Vulkan driver, native OpenGL titles run without one.
+- ARM64 CPU, Armv8.1 or newer with LSE atomics (`atomics` in `Features` line of
+  `/proc/cpuinfo`), for Valve's native ARM64 client: Raspberry Pi 5 (Cortex-A76), RK3588
+  (Cortex-A76 and A55). Without LSE (Armv8.0: Cortex-A53, A57, A72, A73: Raspberry Pi
+  4, RK3399, S922X), Valve's x86 client runs through emulation instead, since native builds
   newer than 15 April 2026 (client 1776387948) stop there with SIGILL
   (<https://github.com/ValveSoftware/steam-for-linux/issues/13288>). Setup picks client
   type by itself, before any package change, and names it; see x86 client.
@@ -132,15 +132,14 @@ replaced, and only when it is missing or damaged.
     release (from `add-apt-repository` on Debian) is renamed to `.disabled`.
     Raspberry Pi OS desktop lacks `libibus-1.0-5`, which client window process
     (`steamwebhelper`) loads; setup installs it with other host packages.
-  - Debian 12 (bookworm): host package check halts setup before any change, since
-    Debian 12 has no SDL3 packages and no `libgtk2.0-0t64`. Upgrade to Debian 13.
-  - Debian 11 and older: host package check halts setup before any change (no SDL3
-    packages). Upgrade to Debian 13.
+  - Older Debian releases, 12 (bookworm) and before: host package check halts setup
+    before any change, since those releases lack SDL3 packages (Debian 12 also lacks
+    `libgtk2.0-0t64`). Upgrade to Debian 13.
   - Setup warns when PPA offers older FEX build for host Ubuntu release than for other
     releases (apt candidate of chosen `fex-emu-armv8.x` package below 2610; Ubuntu 25.10
     series at 2607-1 as of 2026-10-24): host FEX serves Remote Play and thunk libraries,
     titles use Valve's FEX tool from Steam; package choice unchanged, setup continues.
-  - FEX from `fex-emu` package already installed: setup adds no package source.
+  - Installed `fex-emu` package: setup adds no package source.
   - FEX from another source (`FEX` command not owned by `fex-emu` package, for example
     build installed under `/usr/local`): setup adds no package source and installs no FEX
     packages. FEX's x86 binfmt entries (`FEX-x86`, `FEX-x86_64` in
@@ -161,7 +160,7 @@ Checks to run before install, and results on test device: `COMPATIBILITY.md`.
 
 ## Install
 
-One script, readable before running:
+Installer is single script; read it before running:
 
 ```
 sudo bash steam-arm-install.sh             # settings menu (terminal)
@@ -169,8 +168,8 @@ sudo bash steam-arm-install.sh --defaults  # recommended components, no question
 ```
 
 With no options in terminal, installer opens settings menu `steam-arm-config` with itself
-as installer; Install / Setup there runs guided install. With no options and no terminal
-in graphical session, installer shows component checklist through zenity.
+as installer; Install / Setup there runs guided install. Started with no options and no
+terminal in graphical session, installer shows component checklist through zenity.
 
 Install goes into desktop user account, not root: account of last run by default, else
 first regular account on system (uid 1000).
@@ -189,7 +188,7 @@ builds same package bytes with `build-deb.sh`. `steam-arm-setup --detect`, `--li
 `--help` run without root.
 `steam-arm-setup` without options in terminal opens setup menu, which asks for
 administrator rights through `sudo` when needed. Package also provides menu entry
-"Steam ARM Setup", which opens that menu in terminal. Package install or upgrade replaces
+"Steam ARM Setup", which opens that menu in terminal. Installing or upgrading package replaces
 setup script only: launcher, launch handler and settings menu on system remain at earlier
 version until setup runs again. When client set up earlier (by package, zip or script) comes
 from other version, package says so and names `sudo steam-arm-setup --keep`.
@@ -215,7 +214,7 @@ Sections:
 
 1. Information: system (board, GPU, drivers, CPU), Steam ARM status, notes for this
    hardware. Status row `Client type` names native ARM64 or x86 client and why; with x86
-   client, `FEX tool` row names system FEX as its emulator. Status names custom driver tree as
+   client, `FEX tool` row names system FEX as its emulator. Custom driver tree shows in status as
    `present (custom drivers, sha <first 12>…)`; row `Driver archive` names source:
    `download`, `local file <path>` or `custom <path>`. System row `Vulkan gaps` lists
    features `vk-spoof` reports that Vulkan driver lacks (`none` when driver has all;
@@ -226,7 +225,7 @@ Sections:
    desktop user marked) with cursor on current or desktop user; last entry
    `Create a new account...` asks for name, then password twice (empty: setup makes one
    and shows it at end). With no normal account on system, step opens on new account. Summary names client download (several GB) only when client folder
-   holds no client yet; otherwise it says setup keeps present client. Summary row `Client`
+   holds no client yet; otherwise it says setup keeps present client. Row `Client` of summary
    names client type. On CPU without Armv8.1 atomics, x86 client screen (what changes,
    Continue or Back) comes first.
 3. Components: Parts, checklist of installed parts; turning one off removes it, games
@@ -238,8 +237,8 @@ Sections:
    clears forced build of that game (Steam closed). B is offered on Mali
    GPU, or with custom driver tree in place; elsewhere menu notes that route B needs Mali
    GPU or custom driver archive, and shows earlier B setting as
-   `b (not used on this GPU)`, which can be changed. B on Mali GPU without
-   `gpu-in-emulation` is kept, with note that games use forwarding until it is installed.
+   `b (not used on this GPU)`, which can be changed. Without `gpu-in-emulation` on Mali
+   GPU, B is kept, with note that games use forwarding until it is installed.
    Automatic Windows build: on or off (see Automatic Windows build); Route per game lists
    titles it set as `Windows (auto)`, with reason, and marks Windows build as suggested
    where rule matches title but does not apply on this system. Valve Frame runtime: auto
@@ -364,7 +363,7 @@ pick game from list. Report holds:
   hardware report.
 
 Report only reads: handler logs in `/tmp`, run history, start and end lines of Steam's
-`logs/console_log.txt` (values only, never whole lines) and system state; never
+`logs/console_log.txt` (values only, not whole lines) and system state; never
 `steam.token`, `ssfn*` or `userdata/`. Same filter as hardware report removes home
 folders, account and full names, host name, Steam sign-in and persona names, Steam IDs,
 network, MAC and e-mail addresses and token values, plus machine-id, board serial and
@@ -381,7 +380,7 @@ native ARM64 games never pass launch handler; their report holds route, Steam st
 end time and hardware only (`run record: not available for this route`).
 
 Run history (Maintenance, Run history, or `steam-arm-config run-history on|off`; off by
-default): launch handler writes one line per start, launch wrapper stand-in one line per
+default): launch handler writes line per start, launch wrapper stand-in writes line per
 end (FEX tool edit fallback: start lines only), into client folder,
 `.local/state/steam-arm/runs.log`: time, App ID, entry, client, graphics route, overlay,
 engine, bitness, FEX tool version and kind, Mesa version, Proton tool, Multiblock, code
@@ -511,7 +510,7 @@ Notes installer prints per family:
   `adreno-legacy`: no Vulkan driver, native OpenGL titles only.
 - Raspberry Pi 4 and 5 (`broadcom-v3d42`, `broadcom-v3d71`): OpenGL 3.1; Windows titles
   through WineD3D by default, since DXVK cannot run on V3D; OpenGL version report and Zink
-  per title (Raspberry Pi GPU settings). Raspberry Pi 4: x86 client through emulation
+  per title (Raspberry Pi GPU settings). On Raspberry Pi 4, x86 client runs through emulation
   (Armv8.0 CPU, see x86 client); setup writes `PLATFORM=pi4` and `VK_HOST` (V3DV Vulkan
   1.3 on Raspberry Pi OS trixie; bookworm cannot run setup, see Requirements). On `pi4`,
   `pi5` and `pi-other`, GL or
@@ -647,7 +646,7 @@ upgrade from 1.2, which saved no family record, only turns such parts off.
   (scope: Generic)
 - `desktop`: Adds application menu entry "Steam ARM", and KDE window rule that gives
   client's desktop interface windows title bar. Rule needs `kwriteconfig6` (Plasma 6) or
-  `kwriteconfig5` (Plasma 5); without either on KDE Plasma, setup prints skip line. Rule file
+  `kwriteconfig5` (Plasma 5); without either on KDE Plasma, setup prints skip line. File
   `kwinrulesrc` that setup created is deleted at removal once it holds no rules (record
   `/etc/steam-arm/kwinrules-made`, naming account). Setup for another account deletes rule
   from previous account's rule file when setup created that file. (scope: Generic)
@@ -1023,7 +1022,7 @@ Launcher writes game-only settings there as block at top of file, between
 `STEAM_ARM_VK_SPOOF=1` (component `vk-spoof`) and
 `DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1` (component `shader-cache`). Client process
 itself no longer carries them. Lines written by hand go below block and win over it;
-uninstall removes block only, file too when nothing else is in it.
+uninstall removes block only, file too when no other lines remain.
 
 Lines of this file win over Steam launch options (observed on test system), so settings that
 launch options override per title stay in launcher environment: `PROTON_DXVK_D3D8=1`,
@@ -1057,7 +1056,7 @@ new build. Pick it per title in Graphics > Route per game (`ge`),
 Builds need Steam Linux Runtime 4.0 (Arm64), which Steam downloads at first start of game
 set to them; GE-Proton screen shows whether it is installed. Install from downloaded file
 takes `GE-Proton<version>-aarch64.tar.gz` with its `.sha512sum` beside it (for networks
-that block GitHub API). Install needs free space of five times download size. Installing
+that block GitHub API). Free space of five times download size is needed. Installing
 newer build offers to move games from older build installed here and remove it (default:
 keep both). Remove version moves its games to other installed build or back to Steam's
 choice: Linux build where game has one, else default Proton. Copies installed by hand are listed and left unchanged. Not offered with
@@ -1107,7 +1106,7 @@ Frame times come from Mesa, through game environment file (x86 client: launcher
 environment), only while readout is on:
 
 - Vulkan (Windows titles on Proton): Mesa overlay layer
-  `VK_LAYER_MESA_overlay` with `no_display`, one line per present into
+  `VK_LAYER_MESA_overlay` with `no_display`, writing line per present into
   `.cache/steam-arm/perf/vk-frames.csv` of client home. Layer comes with Mesa's Vulkan
   drivers (`mesa-vulkan-drivers` on Debian and Ubuntu).
 - OpenGL (forwarded titles, route B, WineD3D): Gallium HUD dump (`GALLIUM_HUD=frametime`,
@@ -1117,9 +1116,9 @@ Limits:
 
 - Interval is time between presents of game; frames that compositor or display drop are
   not seen.
-- No Mesa overlay layer on host: Vulkan titles report nothing; no Gallium driver: OpenGL
-  titles report nothing. Launcher log names missing source. Proprietary drivers report
-  nothing.
+- Host without Mesa overlay layer gives no Vulkan readout, and host without Gallium
+  driver no OpenGL readout; launcher log names missing source. Proprietary drivers give
+  none either.
 - Vulkan titles through Valve's FEX tool report nothing: Steam runtime container carries no
   x86-64 Mesa overlay layer.
 - Steam client already running: readout covers games started from then on, prints in that
@@ -1128,7 +1127,7 @@ Limits:
   keeps those lines. x86 client takes them only at client start: close Steam and start it
   with `--perf-stats`.
 - Frames read after game end carry last app id with `(ended)`.
-- Several Vulkan instances in one game share one file; readout skips damaged lines.
+- Several Vulkan instances of same game write to that file together; readout skips damaged lines.
 - While off, nothing is set and no watcher runs.
 
 ### Still-working notice
@@ -1231,7 +1230,7 @@ afterwards. Test device, one 32-bit Unity title, three runs each way: 5 to 9 % h
 rate, 9 to 12 % less CPU load, first frame 2 to 4 s later. Java 21 and newer titles fail
 with it on.
 
-Without `diskcache`, title runs without FEX code cache (FEX default). `diskcache=on` keeps
+Title without `diskcache` runs with no FEX code cache (FEX default). `diskcache=on` keeps
 translated code for next start, in per-title cache folder that Steam assigns. Needs Valve FEX tool
 FEX-2609.1 or newer; with older tool, log says `code cache not applied` and nothing
 changes. Titles with own JIT compiler (Java, Mono, .NET, LuaJIT, CEF) keep file-backed
@@ -1293,9 +1292,9 @@ tso=off x87=reduced`) set FEX `TSOEnabled` 0 (relaxed memory model) and
 `X87ReducedPrecision` 1 for one title. Both trade correctness for speed: relaxed memory
 model is faster on CPUs without Armv8.1 atomics, and games with several threads can
 crash, hang or corrupt saves; reduced x87 precision is faster for 32-bit and older games,
-and geometry or physics errors are possible. Off unless set, per title only, never global,
-never client files, never automatic tuning knobs. Launch option `FEX_APP_CONFIG` holding
-same key and Steam's own FEX setting win (log: `launch option kept`, `Steam setting
+and geometry or physics errors are possible. Off unless set, per title only; these keys
+stay out of global configuration, client files and automatic tuning knobs. Launch option
+`FEX_APP_CONFIG` holding same key and Steam's own FEX setting win (log: `launch option kept`, `Steam setting
 kept`); both record and report of each start carry `tso` and `x87`. CPU drawing notice on CPUs
 without Armv8.1 atomics names memory model setting. Magnitude on Raspberry Pi 4 is
 unmeasured.
@@ -1366,7 +1365,7 @@ What to avoid:
   read-only `dpkg` queries still answer. Original stays as `<tool>.steam-arm-real` for
   experts; uninstall puts originals back.
 
-What cannot be fixed here:
+Not fixable here:
 
 - Direct3D 12 games.
 - Unreal Engine 4 and 5 games.
@@ -1426,7 +1425,7 @@ release, checks its SHA-256 and runs its installer with earlier choices kept. Ma
 names newer release once Check for new version has found one. Nothing checks or downloads
 on its own.
 
-Package install (`steam-arm-setup`): same menu item, one step. Upgrade compares versions
+Package install (`steam-arm-setup`): same menu item, single step. Upgrade compares versions
 first: same or older release gives nothing-to-do line. Newer release with package asset
 `steam-arm-setup_<version>_arm64.deb`: upgrade downloads package and its `.sha256` file,
 checks length, `.sha256` line and GitHub's digest, shows plan, then takes setup lock, keeps
@@ -1547,7 +1546,7 @@ run, started while another install or removal is in progress, stops with notice.
 
 Custom driver archive chosen with `STEAM_ARM_PROVIDER_SHA256` stays in use on every later
 run, Update / Repair included; `--provider-default` switches back to published archive.
-Custom settings are cleared only once published tree is built; when that fails, custom
+Those custom settings are cleared only once published tree is built; when that fails, custom
 settings and tree remain and setup reports it.
 
 Downloads show curl's progress bar on terminal and on settings menu's built-in progress
@@ -1567,7 +1566,7 @@ asks before it replaces other variant.
 
 ## Settings backup and restore
 
-Maintenance, Back up settings writes one file into folder of your choice (input starts at
+Maintenance, Back up settings writes single archive into folder of your choice (input starts at
 your home folder; missing folder is created on request). Name:
 `steam-arm-settings-<date>-<time>.tar.gz`, with no host or account name. File is readable
 by you only (mode 600) and owned by you, also when menu runs through `sudo`. It holds no
@@ -1591,7 +1590,7 @@ stores these parts without account name, so restore can put them into any accoun
 
 Maintenance, Restore settings lists backups in last-used folder and home folder, or takes
 typed path. Before anything changes, restore checks file: manifest present with known
-format version, expected file names only, no links, no paths outside archive, size
+format version, expected file names only, no links or paths outside archive, size
 limits. Checklist then shows parts that file holds, all ticked; personal parts ask for account
 again. Summary of every change comes before Restore / Back. Restore needs administrator
 rights and refuses while Steam ARM runs.
@@ -1675,11 +1674,11 @@ restores them at tool's next update); Valve's streaming client in kept client
 folder; with x86 client, Valve's launch wrapper and webhelper start script in kept
 client folder (while unchanged since edit), own FEX app settings removed, native update
 channel file back; package tools and `bwrap` of x86 root filesystem; user services stop
-at logout again, only when setup turned lingering on; `/etc/fstab` without `/dev/shm` line, only when setup
-added it. `graphics_provider.json` and `~/.fex-emu/Config.json` go only while unchanged
-after setup; `~/.fex-emu` goes with `Config.json` when nothing else is in it.
+at logout again when setup had turned lingering on; `/etc/fstab` without `/dev/shm` line,
+only when setup added it. `graphics_provider.json` and `~/.fex-emu/Config.json` go only while unchanged
+after setup; `~/.fex-emu` goes with `Config.json` when it holds no other files.
 
-Setup adds `/dev/shm` line to `/etc/fstab` only when nothing else mounts `/dev/shm` at
+Setup adds `/dev/shm` line to `/etc/fstab` only when no other entry mounts `/dev/shm` at
 boot (no `/dev/shm` line of its own, no `dev-shm.mount` unit), and records that as
 `FSTAB_ADDED=1`; removal takes out that line only.
 
@@ -1694,8 +1693,8 @@ Kept by default:
 - Account that setup created; removal prints `sudo userdel -r <name>` to delete it with its
   home folder.
 - Distribution packages and FEX package source; removal prints `apt remove` line for
-  packages nothing else needs.
-- Account groups.
+  packages left without dependants.
+- Group memberships of account.
 - `/dev/shm` line in `/etc/fstab` that setup did not add (earlier version, or added by
   hand); removal lists it under "Kept".
 
@@ -1706,9 +1705,9 @@ earlier Steam ARM install (its `steamrtarm64` folder, or `steam.sh` with
 `ubuntu12_32/steam` of x86 client, present; same account and folder name in settings
 file). Folder holding `steamapps` or `ubuntu12_32` at its top level
 belongs to another Steam install: setup refuses it and asks for other `ARMHOME_DIR`.
-Folder that held other files gets no marker; setup reports it and records it in settings
+When folder held other files, it gets no marker; setup reports it and records it in settings
 file (`ARMHOME_FOREIGN=1`), so later runs never mark it, even once client lives there.
-Folder without marker, or recorded that way, stays on removal: removal says so and prints
+Unmarked folder, or one recorded that way, stays on removal: removal says so and prints
 `rm -rf` line for deleting it by hand after checking its contents. Client folder of 1.2
 install gets marker from Update / Repair run once before removal only under default name
 `.local/share/steam-arm`; under other name it is kept.
@@ -2015,12 +2014,12 @@ read-only access to repository.
   emulation; KWin then offers Terminate): quit from title's own menu, or run
   `steam-arm --shutdown`, which stops client and title (6.5 s in test).
 - Game does not start or draws wrong: see Fixing games.
-- Game is slow or CPU-bound: check `renderer:` line in game log (Games section, then title, or
+- Low frame rate or CPU-bound game: check `renderer:` line in game log (Games section, then title, or
   hardware report). `renderer: warning: GPU forwarding not active: rendering on CPU
   (llvmpipe)` names reason; `renderer: GPU (...)` with low frame rate: steps in Fixing
   games, "Game is slow". Raspberry Pi 5: `COMPATIBILITY.md`, Raspberry Pi 5 performance
   tips.
-- Game starts slowly: first start of Windows title creates its Proton prefix and runs
+- Slow start: first start of Windows title creates its Proton prefix and runs
   install steps of its redistributables (Visual C++, DirectX) under emulation; PhysX step
   is marked done or stopped after 60 s (`physx-skip`). Every start translates x86 code
   again (FEX). Later starts skip prefix and install steps. x86 Proton builds (`proton_11`,
@@ -2089,5 +2088,5 @@ Mesa built for x86 by this project, published with its release. See `CREDITS.md`
 This project is not affiliated with, endorsed by or sponsored by Valve Corporation. Steam,
 Proton, Steam Deck and Steam Frame are trademarks of Valve Corporation.
 
-This tool is unofficial and community-built. It is not affiliated with, endorsed by or
+Steam ARM is unofficial and community-built, not affiliated with, endorsed by or
 supported by Armbian project or any board manufacturer.
