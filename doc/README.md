@@ -5,8 +5,8 @@ Installs Valve's native ARM64 Steam client and supporting pieces
 Vulkan compatibility layer and controller access rules) on ARM64
 Debian or Ubuntu family system with Mesa graphics stack.
 
-Nothing is downloaded at package installation. All downloads happen
-when setup command below is run.
+Package installation downloads nothing; downloads happen when setup
+command below is run.
 
 ## Usage
 
