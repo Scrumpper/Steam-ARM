@@ -70,7 +70,8 @@ def check(path):
 def main():
     args = sys.argv[1:]
     root = args.pop(0) if args and os.path.isdir(args[0]) else os.path.dirname(os.path.dirname(HERE))
-    files = args or doc_files(root)
+    # doc/changelog: package changelog, past entries frozen (published package bytes)
+    files = args or [f for f in doc_files(root) if f != "doc/changelog"]
     bad = 0
     for f in files:
         hits = check(os.path.join(root, f))
