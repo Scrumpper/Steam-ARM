@@ -88,7 +88,7 @@ published with its release under Mesa's own licences.
 Developed on test device: RK3588 board with Mali-G610 GPU. `COMPATIBILITY.md` lists GPU
 families, their defaults and status.
 
-Development took place in chat sessions with **Claude Code**. 
+Development took place in sessions with **Claude Code**.
 Treat everything in this repository as community work offered in good faith, with no warranty.
 
 ## Trademarks and affiliation
