@@ -47,7 +47,7 @@ steam-arm-setup_3.1_arm64.deb         1fe5be36e13600fb7a01e994e930b6f849d753e0ea
 steam-arm-setup_3.1_arm64.deb.sha256  e02493a23909debd6ca22b5a1c12ff3e1010ae703a97b4ee7ba4e491db91fc7a
 ```
 
-Zip holds nine repository files and screenshot in folder `Steam ARM 3.1`, in fixed order, modes 664
+Zip holds nine repository files and one screenshot, inside folder `Steam ARM 3.1`, in set order, modes 664
 (installer 775), entry time 2026-10-25 00:00 UTC, no extra fields (`zip -X -D`). Package comes from
 `build-deb.sh`; file times follow top `doc/changelog` entry. `tests/test_release_31.sh` covers
 determinism and zip layout.

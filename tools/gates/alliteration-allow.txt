@@ -5,3 +5,6 @@ PanVK      # Mesa Vulkan driver name
 Panthor    # kernel driver name
 PipeWire   # audio server name
 Proton     # Valve compatibility tool name
+Steam      # Valve client and store name; appears in most sentences of these docs
+Mali       # Arm GPU family name
+Mesa       # graphics stack name

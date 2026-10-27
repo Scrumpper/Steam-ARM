@@ -346,8 +346,8 @@ Status: researched, untested here.
 
 Zink runs OpenGL on top of PanVK, but does not reach GL 4.x there: Zink needs Vulkan
 `geometryShader` for GL 3.2 and `tessellationShader` for GL 4.0
-<https://docs.mesa3d.org/drivers/zink.html>, and PanVK exposes neither (M5, T8). Two posters on
-Armbian community forum (topic 55217, December 2025) ran Feral GL 4 port through Zink on
+<https://docs.mesa3d.org/drivers/zink.html>, and PanVK exposes neither (M5, T8). Two users (community
+recipe, December 2025) ran Feral GL 4 port through Zink on
 Mali-G610, through box64 rather than FEX; their recipe reports GL 4.3 through
 `MESA_GL_VERSION_OVERRIDE`, same version report trick as on Panfrost (T4, T5), so title
 runs only while it avoids missing stages (inferred). Zink stacks two drivers; for titles that need GL
@@ -359,7 +359,7 @@ What to change: per title only, version report included. Linux x86 title, one pr
 203160 env=MESA_LOADER_DRIVER_OVERRIDE=zink;GALLIUM_DRIVER=zink;LIBGL_KOPPER_DRI2=true;MESA_GL_VERSION_OVERRIDE=4.3
 ```
 
-Forum recipe also sets `PAN_MESA_DEBUG=gl3`; under Zink Panfrost's GL driver is not
+That recipe also sets `PAN_MESA_DEBUG=gl3`; under Zink Panfrost's GL driver is not
 loaded, so that flag likely has no effect (inferred).
 
 #### M4. Mesa version
@@ -398,8 +398,8 @@ Re-test `glx-lax` and `vk-spoof` titles after any Mesa change.
 Status: researched, untested here.
 
 DXVK maps Direct3D geometry shader stages to Vulkan geometry shaders, which PanVK lacks.
-UE4 title failed for this reason in Armbian community forum topic 55217; forum
-thread tracks it as open Mesa merge request 38401. With `vk-spoof`, feature is reported
+UE4 title failed for this reason in same community report, which
+tracks it as open Mesa merge request 38401. With `vk-spoof`, feature is reported
 present and removed at device creation, so such title gets device and then misrenders,
 crashes or hangs instead of refusing to start.
 
@@ -495,7 +495,7 @@ before 2026-09-03 lack fix.
 
 Status: researched, untested.
 
-Psychonauts 2 (main menu artifacts, MR 20533), Injustice 2 (main menu NaN
+Psychonauts 2 (artifacts on main menu; merge request 20533), Injustice 2 (main menu NaN
 corruption, 20396) and Monster Hunter: World (menu misrender, 20099 and 20100) were
 fixed in Mesa around 23.0; no environment variable works around them
 <https://blogs.igalia.com/dpiliaiev/turnips-in-the-wild-part-3/>.

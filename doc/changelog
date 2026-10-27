@@ -31,12 +31,12 @@ steam-arm-setup (3.1) stable; urgency=low
   * Client channel shown by name (stable, Valve ARM channel of Steam Frame
     mode, Steam Beta Participation).
   * --remove deletes /var/lib/steam-arm and /var/cache/steam-arm.
-  * Host facts CPU_LSE, CPU_CORES, PLATFORM (pi4, pi5, pi-other) and
+  * Host facts CPU_CORES, PLATFORM (pi4, pi5, pi-other), CPU_LSE and
     MESA_HOST in settings file; --detect prints them.
   * steam-arm --cpu-report: CPU and GPU profile of client window and
     games (two 60 s samples); Maintenance item and steam-arm-config
     cpu-report; hardware report appends static sections.
-  * x86 client: FEX code cache off for client window processes, own
+  * x86 client: FEX code cache off for window processes of client, own
     keys merged into FEX app settings; reduced x87 precision for client
     program (x87-client, off by default); Multiblock off for client
     files after repeated client window restarts on Armv8.0 CPUs.
@@ -82,7 +82,7 @@ steam-arm-setup (3.1) stable; urgency=low
     (category, recommended runtime), Rules page (runtime) and run report
     (category, runtime, test result tokens, test date), from client's
     appinfo cache.
-  * Run report row Class: Android-only, VR-only or Lepton route title
+  * Run report line Class: Android-only, VR-only or Lepton route title
     from Steam Frame columns of appinfo cache; 2D titles get no row.
   * Valve Frame runtime, off by default (FRAME_RUNTIME=auto|off,
     Graphics menu, steam-arm-config frame-runtime): compatibility tool
@@ -280,7 +280,7 @@ steam-arm-setup (2.2) stable; urgency=low
     panthor kernel); steam-arm.log capped at 1 MiB (.1 copy).
   * Running checks in settings menu and tray count game account only.
   * steam-arm --help lists --bigpicture, --desktop; works as root.
-  * Setup summary from settings menu without command line hints.
+  * Setup summary opened from menu carries no command line hints.
   * Settings menu offers Close Steam (steam-arm --shutdown as game
     account) where Steam must be closed; stop messages name that command.
   * Tray: Stop, Open in Big Picture and Open in desktop mode greyed while
@@ -298,7 +298,7 @@ steam-arm-setup (2.2) stable; urgency=low
     steam-arm-setup without options in terminal opens setup menu.
   * Check for new version (Maintenance, update-check): GitHub latest
     release, by hand only, nothing downloads.
-  * Hardware report: launcher log, bootstrap log lines, setup summary,
+  * Hardware report: entries from launcher and bootstrap logs, setup summary,
     account groups against running processes.
   * Godot 3 titles: GL 3.3 report by default (profile godot=vulkan: as
     is). Godot version also read from PCK embedded in executable, in
@@ -326,7 +326,7 @@ steam-arm-setup (2.1) stable; urgency=low
     on ARMv8.0 CPUs (Cortex-A72) no longer stops.
   * Display mode restore after titles and when Steam closes;
     STEAM_ARM_MODE_RESTORE=0 turns it off.
-  * steam-arm --shutdown, with SIGTERM fallback; interface switch uses it.
+  * steam-arm --shutdown, falling back to SIGTERM; interface switch uses it.
   * MangoHud in 64-bit x86 Linux titles: library copied from root
     filesystem into client folder and preloaded from there.
   * kde-input-prompt component, off by default; profile key multiblock.
@@ -383,7 +383,7 @@ steam-arm-setup (1.2) stable; urgency=low
     64-bit only); profile key vk32=keep keeps them.
   * Profile key gl32=off: title not detected as 64-bit runs on emulated x86
     Mesa instead of forwarded host Mesa.
-  * Start scripts (hl2.sh style) followed to binary they start; 64-bit
+  * Wrapper scripts (hl2.sh style) followed to binary they start; 64-bit
     build preferred in arch-switch scripts, crash helpers skipped.
   * Profile args counted by Unity and Godot renderer rules.
   * Source 2 titles logged; component dialog (zenity) with no controlling
