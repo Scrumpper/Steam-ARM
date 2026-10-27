@@ -1,6 +1,6 @@
 # Steam ARM · Researched, untested
 
-Driver facts per GPU family, FEX settings per title, engine notes, known not-fixes and
+Driver facts per GPU family, per-title FEX settings, engine notes, known not-fixes and
 refuted advice, each with what to change and where. Items marked "tested" ran on test
 system (RK3588, Mali-G610); every other item is research only.
 
@@ -34,14 +34,14 @@ and extracted claims; independent AI verifiers then cross-checked each claim aga
 source, and claims that failed were dropped or moved to Refuted advice. Sources are cited
 as plain links after each claim.
 
-- Nothing here is tested unless marked "tested on test system" (section 3 and status
+- Nothing here is tested unless marked "tested on test system" (part 3 and status
   lines).
 - Test system: RK3588, Mali-G610, Panfrost and PanVK, Mesa 26.1, KDE Plasma on X11.
 - Results vary by driver version, Mesa build, FEX build and Proton build. Claim valid for
   one Mesa release can be wrong for next one.
 - Verify on your own system before relying on any item. Change one setting per test run
   and note what changed.
-- Report what worked and what did not through project's compatibility report (see
+- Send results, working or not, through project's compatibility report form (see
   Reporting results). Reports move items from researched to tested.
 
 Requirements, pre-install checks and device classes are in `COMPATIBILITY.md`; results by
@@ -99,14 +99,14 @@ Examples:
 367520 unity=gl
 ```
 
-Values from `env=` override engine settings handler applies on its own. Handler prints
+Values from `env=` override engine settings that handler applies on its own. Handler prints
 every decision to `/tmp/fex-compat-tool-<pid>.log`; check it to confirm line took effect.
 
 ### Installer components
 
 GPU family detection sets default state of components written for one driver
 (`vk-spoof`, `gpu-in-emulation`, `glx-lax`); `--detect` prints family and defaults. On GPU
-detection does not recognise, leave component out by hand:
+that detection does not recognise, leave component out by hand:
 
 ```
 sudo bash steam-arm-install.sh --skip vk-spoof
@@ -163,7 +163,7 @@ forwarding off (below).
 
 What to change: Properties, Compatibility, force ARM64 Proton build to run Windows
 version. Also tested, same hang at load with all threads waiting: `<appid> gl32=off` (emulated
-x86 Mesa, no GL forwarding), FEX Multiblock off, `-nosound`, FEX TSO forced on. GL
+x86 Mesa, no GL forwarding), FEX Multiblock off, `-nosound`, TSO forced on. GL
 forwarding is not cause on test system. No setting fixed native build.
 
 ### T4. Unity rules (automatic)
@@ -249,7 +249,7 @@ section. Value `1` bypasses step only when section has no minimum; when it defin
 (`MinimumHasRunValue`), value has to reach it, else step runs again. Proton issue 51
 documents value `1` for section without minimum
 <https://github.com/ValveSoftware/Proton/issues/51>. On test system value at or above
-minimum made install step finish in seconds, and Steam kept value. Stopping PhysX
+minimum made install step complete within seconds, and Steam kept value. Stopping PhysX
 installer with SIGTERM also let Steam continue to title.
 
 Launcher applies both automatically (README, PhysX install step). Title in this test then
@@ -377,7 +377,7 @@ Status: researched; test system runs 26.1.4.
   <https://docs.mesa3d.org/relnotes/26.2.5.html>.
 - 26.3 (rc2 2026-10-21, final due 2026-11-04): Vulkan 1.3 on PanVK v6 and v7,
   `VK_KHR_maintenance4` to `maintenance8`, cooperative matrix, copy memory indirect, shader
-  constant data, incremental present, swapchain colorspace, image compression control;
+  constant data, swapchain colorspace, incremental present, image compression control;
   Panfrost support for Mali-G68, G715 and G615. No transform feedback and no geometry
   shaders (M5, M8)
   <https://gitlab.freedesktop.org/mesa/mesa/-/raw/staging/26.3/docs/relnotes/new_features.txt>.
@@ -495,8 +495,8 @@ before 2026-09-03 lack fix.
 
 Status: researched, untested.
 
-Psychonauts 2 (main menu artifacts, merge request 20533), Injustice 2 (main menu NaN
-corruption, 20396) and Monster Hunter: World (main menu misrender, 20099 and 20100) were
+Psychonauts 2 (main menu artifacts, MR 20533), Injustice 2 (main menu NaN
+corruption, 20396) and Monster Hunter: World (menu misrender, 20099 and 20100) were
 fixed in Mesa around 23.0; no environment variable works around them
 <https://blogs.igalia.com/dpiliaiev/turnips-in-the-wild-part-3/>.
 
@@ -559,7 +559,7 @@ guest, emulation fails.
 
 Status: researched, weak (one enthusiast's scripts, not verified).
 
-Community runner scripts set `FEX_X87REDUCEDPRECISION=1` for speed
+Community runner scripts use `FEX_X87REDUCEDPRECISION=1` for speed
 <https://github.com/Rouzihiro/Gaming_on_Linux/blob/main/Asahi-Fedora/Turtle.WoW/runner.sh>
 and `PROTON_NO_ESYNC=1 PROTON_NO_FSYNC=1` for compatibility:
 
@@ -627,7 +627,7 @@ Whether Valve's FEX reads AppConfig inside Steam's runtime container is not veri
 
 Status: researched; confirmed by FEX maintainers, untested here.
 
-Stellar Blade (3489700) under ARM64 Proton crashed about 43 s after launch with access
+Stellar Blade (3489700) under ARM64 Proton crashed roughly 43 s after launch with access
 violation in `VCRUNTIME140.dll` while X87ReducedPrecision was on. Setting it off reached
 gameplay; reporter tested on two ARM64 Proton builds with Adreno 830, Mesa 26.2.2
 <https://github.com/FEX-Emu/FEX/issues/5988>. Schema default is off, so ARM64 Proton's FEX
@@ -813,7 +813,7 @@ Godot 4 has three renderers: Forward+ and Mobile on Vulkan, Compatibility on Ope
 fall back to llvmpipe on Panfrost class hardware while other programs use GPU
 <https://github.com/godotengine/godot/issues/50469>. Godot 3 titles stop at start on
 Panfrost's GL 3.1 (`GLXBadFBConfig`); handler sets GL 3.3 and GLSL 330 report for them
-(GAMES.md, Godot 3 row). Engine version comes from PCK embedded in executable, else `.pck`
+(GAMES.md, Godot 3 row). Engine version comes from PCK inside executable, else `.pck`
 beside it, in Godot's own pack order. Windows builds under x86 Proton keep Godot defaults;
 A/B run with Windows Godot 4 title not done.
 
@@ -910,7 +910,7 @@ Do not try these. Each failed verification or conflicts with test results.
 - **Turnip needing driver-side handling for Execute Indirect Tier 1.1 misuse.** Refuted
   0-3.
 - **DXVK and vkd3d-proton not yet running on Honeykrisp in June 2024.** Refuted 1-2.
-- **Source 2 dedicated server segfault under FEX on Neoverse-N1.** Refuted 1-2
+- **Source 2 dedicated server crash under FEX on Neoverse-N1.** Refuted 1-2
   <https://github.com/FEX-Emu/FEX/issues/4568>.
 - **Unity title freezing under box64 on Mali-G52 class hardware.** Refuted 1-2
   <https://github.com/ptitSeb/box64/issues/1252>.
@@ -926,7 +926,7 @@ this survey.
 API. Steam Frame ratings gave little: 543 of 568 were unknown.
 
 - Direct3D 12 is largest gap: 119 titles use it only and 45 more offer it beside other
-  API, most of them Unreal Engine 5. None of Direct3D 12 path runs on Mali (M8).
+  API, most of them Unreal Engine 5. No Direct3D 12 path runs on Mali (M8).
 - Unreal Engine 4: 43 titles, blocked by tessellation (T8).
 - Kernel-level anti-cheat: 19 titles left out.
 - Unity: 110 titles, largest engine, mostly Direct3D 11, which runs at 10_1 unless title
@@ -952,7 +952,7 @@ vulkaninfo --summary | grep -i "driverName\|driverInfo\|deviceName"
 getconf PAGESIZE
 ```
 
-- Launch handler log for Linux x86 titles: `/tmp/fex-compat-tool-<pid>.log`.
+- Handler log for Linux x86 titles: `/tmp/fex-compat-tool-<pid>.log`.
 
 ---
 

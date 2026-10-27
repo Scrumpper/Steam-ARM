@@ -14,7 +14,7 @@ Confirmed by inspection of installer:
 
 FEX, emulation tool used for x86 game code, installs from FEX's Ubuntu PPA `ppa:fex-emu/fex`. Ubuntu family distribution is tested path for that step. On Debian 13 and Raspberry Pi OS built on it, setup adds same PPA as plain apt source with its Ubuntu 24.04 build (see Debian systems).
 
-PPA series as of 2026-10-24: FEX 2610 for Ubuntu 24.04 and 26.04 series (Debian 13 hosts get Ubuntu 24.04 build), FEX 2607 for Ubuntu 25.10. Host FEX serves Remote Play, thunk libraries, binfmt registration and x86 client path; games run on Valve's FEX tool from Steam, so title compatibility does not depend on PPA series. Setup warns when PPA offers older FEX build for host Ubuntu release than for other releases: host packages step compares apt candidate of chosen `fex-emu-armv8.x` package with 2610 and prints one line, `[warn] FEX package source offers FEX 2607-1 for this distribution release; FEX 2610 builds exist there for other Ubuntu releases. Host FEX serves Remote Play and thunk libraries; titles use Valve's FEX tool from Steam and are unaffected.` Package choice is unchanged and no other series is pinned; `--detect` prints no such line.
+PPA series as of 2026-10-24: FEX 2610 for Ubuntu 24.04 and 26.04 series (Debian 13 hosts get Ubuntu 24.04 build), FEX 2607 for Ubuntu 25.10. Host FEX serves Remote Play, thunk libraries, binfmt registration and x86 client path; games run on Valve's FEX tool from Steam, so title compatibility does not depend on PPA series. Setup warns when PPA offers older FEX build for host Ubuntu release than for other releases: host packages step reads apt candidate of selected `fex-emu-armv8.x` package, matches it against 2610 and prints one line, `[warn] FEX package source offers FEX 2607-1 for this distribution release; FEX 2610 builds exist there for other Ubuntu releases. Host FEX serves Remote Play and thunk libraries; titles use Valve's FEX tool from Steam and are unaffected.` Package choice is unchanged and no other series is pinned; `--detect` prints no such line.
 
 Installer has no hardcoded GPU render node and no hardcoded card index. GPU family detection reads every render node and sets component defaults per family (see GPU families). Page size check names fix for Raspberry Pi; on Apple Silicon it stops (16K page kernel not supported).
 
@@ -52,15 +52,15 @@ Output on test device, RK3588 board with Mali-G610 GPU (family `mali-csf-v10`):
 
 Mesa on tested device comes from `kisak-mesa` PPA. Older Mesa releases carry earlier
 PanVK; when `vulkaninfo` lists no `panvk` device on Mali-G610, newer Mesa from that PPA
-is route tested device uses.
+is what tested device uses.
 
 Mesa 26.1 or newer is recommended: tested device runs 26.1, and 26.1 added PanVK
 extensions that DXVK uses (`RESEARCH.md`, M4). Installer does not check Mesa version.
-`gpu-in-emulation` component, on by default on Mali GPUs, brings its own x86 Mesa 26.1.8 for titles
-launch handler puts on Mali drivers in emulation (Java, 32-bit Vulkan); other titles and
-Windows titles use system Mesa.
+`gpu-in-emulation` component, on by default on Mali GPUs, brings its own x86 Mesa 26.1.8 for
+titles that launch handler puts on Mali drivers in emulation (Java, 32-bit Vulkan); other
+titles and Windows titles use system Mesa.
 
-Board whose five results match first column matches tested device in every property
+Board whose five results match first column matches tested device in every property that
 installer depends on. That makes it expected to work, and still untested until someone
 reports it.
 
@@ -73,7 +73,7 @@ device. On Armbian, three choices at download time decide result:
   carried Panthor since Linux 6.10. `vendor` branch is Rockchip's 6.1 kernel; whether it
   has Panthor depends on build, so check with `lsmod` above.
 - **Userland.** Ubuntu based images fit installer's tested path. Debian 13 (trixie) based
-  images get FEX PPA as plain apt source (see Debian systems); Debian 12 based images lack
+  images get FEX PPA as plain apt source (Debian systems, below); Debian 12 based images lack
   SDL3 packages client needs, and setup halts there before any change.
 - **Mesa.** Image's stock Mesa may predate PanVK support in use here; `vulkaninfo` check
   above shows it.
@@ -161,7 +161,7 @@ that. Each depends on PanVK features that have no release date; no timeline is g
   them. With those forced, ceiling would still be feature level 11_0 and Shader Model 6.0
   (no `vertexPipelineStoresAndAtomics`, no `sparseResidencyAliased`,
   `denormBehaviorIndependence` none).
-- **Unreal Engine 5 titles.** They render through Direct3D 12 or Shader Model 6; same
+- **Unreal Engine 5 titles.** Rendering goes through Direct3D 12 or Shader Model 6; same
   limits.
 - **Unreal Engine 4 Direct3D 11 titles.** Engine asks for feature level 11_0, which needs
   tessellation; PanVK has none. DXVK offers 10_1. Raising level in `dxvk.conf` crashes
@@ -170,7 +170,7 @@ that. Each depends on PanVK features that have no release date; no timeline is g
 - **Unity HDRP titles (Direct3D 11).** HDRP needs compute shaders, which Unity enables from
   feature level 11_0; at 10_1 title shows black screen.
 - **Titles with kernel-level anti-cheat.** Anti-cheat and DRM components need system call
-  filter emulator does not implement.
+  filter that emulator does not implement.
 
 Direct3D 11 titles that accept feature level 10_1 run. Proton 11 ARM64 (DXVK 2.7.1) and
 Proton Experimental ARM64 (DXVK 3.1.1) both reach 10_1 on PanVK; results in `GAMES.md`.
@@ -192,7 +192,7 @@ fail.
 
 ## Debian systems
 
-`add-apt-repository` maps PPA to Debian release name, which PPA does not publish, so on systems outside Ubuntu family setup writes PPA as apt source `/etc/apt/sources.list.d/steam-arm-fex.sources` (deb822, `Architectures: arm64`). Ubuntu series follows Debian release: FEX build must need C library no newer than host's and Qt 5 package names Debian release uses.
+`add-apt-repository` maps PPA to Debian release name, which PPA does not publish, so on systems outside Ubuntu family setup writes PPA as apt source `/etc/apt/sources.list.d/steam-arm-fex.sources` (deb822, `Architectures: arm64`). Ubuntu series follows Debian release: FEX build must need C library no newer than host's and Qt 5 package names that Debian release uses.
 
 | Debian release              | glibc | PPA series (FEX build needs)     | Result                                                             |
 |-----------------------------|-------|----------------------------------|--------------------------------------------------------------------|
@@ -226,7 +226,7 @@ Two properties decide whether this works on system, and neither is about board:
    OpenGL, and cannot run Windows titles.
 2. **4K page size for emulation half.** Code built for x86 assumes 4K pages. Most
    ARM64 Linux systems use 4K, but two common ones do not. Apple Silicon runs 16K pages and
-   needs x86 side inside environment that provides 4K pages, which this package does not set
+   needs x86 side inside environment with 4K pages, which this package does not set
    up. Raspberry Pi 5 also defaults to 16K, and switches with one line of firmware
    configuration, described below.
 
@@ -240,10 +240,10 @@ What changes per graphics driver:
 
 Distribution matters as much as hardware: installer uses apt throughout, and
 emulation tool comes from Ubuntu PPA, so Ubuntu family system is path that has been
-exercised. Debian 13 gets that PPA as plain apt source (see Debian systems). Distribution
+exercised. Debian 13 gets that PPA as plain apt source (Debian systems, above). Distribution
 outside Debian family needs package steps rewritten.
 
-Everything in this section is reasoning from requirements, not result.
+Everything in this section follows from requirements, not from tests.
 
 ## Device classes
 
@@ -252,8 +252,8 @@ driver documentation and public reports; grouping is judgement, not result.
 
 ### Test device, expected on same stack
 
-**Rockchip RK3588 and RK3588S**, Mali-G610 through Panfrost and PanVK on Panthor kernel
-driver. This is configuration package was built against and test device's family; other
+**Rockchip RK3588 and RK3588S**, Mali-G610 on Panthor kernel driver, through Panfrost and
+PanVK. This is configuration that package was built against, and test device's family; other
 RK3588 boards running same stack are expected to work.
 
 ### Works after one change
@@ -324,14 +324,14 @@ route title); 2D titles get no row.
 ## What decides it, in practice
 
 **Which Mali driver OS image includes.** On Rockchip boards two stacks exist: open one,
-Panfrost with PanVK on Panthor kernel driver, and vendor blob on its own kernel
+Panthor kernel driver with Panfrost and PanVK, and vendor blob on its own kernel
 driver. They bind different GPU nodes in device tree and cannot both be active, so
 image carries one or other. This package expects open stack, which is what tested
 image uses. On vendor image installer finds closed `kbase` driver (family `mali-kbase`),
 warns and leaves Mali components off.
 `glxinfo -B` and `vulkaninfo --summary` name driver in use.
 
-**Which Mali generation chip is.** Open Vulkan driver is conformant on Mali-G610 and
+**Which Mali generation chip belongs to.** Open Vulkan driver is conformant on Mali-G610 and
 other Valhall parts of that generation. On older Bifrost parts, G52 and G31 found
 in cheaper boards, Vulkan is experimental to point that Mesa gates it behind
 environment variable that calls itself broken. Those boards can run titles built for Linux
@@ -340,7 +340,7 @@ not reasonable expectation there.
 
 **Page size, where it is not 4K.** Raspberry Pi 5 and Apple Silicon both default to 16K.
 Pi is one line firmware change, which `page-size` component makes. Apple Silicon needs
-emulation inside guest that provides 4K pages, which this package does not set up.
+emulation inside 4K page guest, which this package does not set up.
 Setup checks page size first and stops with fix for that system rather than installing
 something that cannot run. On ARM workstations default has moved between releases of same
 distribution, so it is worth checking rather than assuming.
@@ -380,13 +380,13 @@ lacks SDL3 packages client needs; host package check halts setup there before an
 Pi fits installer's tested path.
 
 **Graphics.** Mesa drives Pi GPU with v3d (OpenGL) and V3DV (Vulkan). GPU family detection
-names Pi 5 GPU `broadcom-v3d71`, Pi 4 GPU `broadcom-v3d42` and Pi 0 to 3 GPU `broadcom-vc4`,
+names Pi 5 `broadcom-v3d71`, Pi 4 `broadcom-v3d42` and Pi 0 to 3 `broadcom-vc4`,
 and leaves Mali-only parts off. `glxinfo -B` shows OpenGL values on system;
 `steam-arm-config` Information shows them as `OpenGL` line. Driver facts, from Mesa source
 (`src/gallium/drivers/v3d/v3d_screen.c`, `src/broadcom/vulkan/v3dv_device.c`, checked
 2026-10-14) and community reports:
 
-- Desktop OpenGL 3.1, not conformant (GLSL 1.40 for compatibility contexts); OpenGL ES 3.1
+- Desktop OpenGL 3.1, not conformant (GLSL 1.40 for compatibility profile); OpenGL ES 3.1
   conformant. Shader compiler accepts GLSL 3.30, but desktop geometry shaders and seamless
   cube maps are missing, so driver stops at 3.1. Same on Pi 5 (V3D 7.1) and Pi 4 (V3D 4.2).
 - V3DV is Vulkan 1.3 conformant on Pi 4 and Pi 5 since Mesa 24.3
@@ -426,7 +426,7 @@ What Steam ARM does on `broadcom-v3d71`, `broadcom-v3d42` and `broadcom-vc4`:
   handler: launcher writes settings as Steam launch option before client start
   (`STEAM_ARM_LAUNCHOPTS=<names> NAME=value ... %command%` ahead of own launch options),
   replaces or removes that part when setting changes, and removal takes it out. Variable
-  own launch options set already stays theirs (GL pair and Zink pair as whole).
+  already present in own launch options stays as set there (GL pair and Zink pair as whole).
 
 Expectations: older and lighter titles. 2D and indie titles fit; Source-era 3D runs at 720p
 on low settings; Direct3D 9 era 3D through WineD3D mostly runs slow. Direct3D 11 titles
@@ -453,7 +453,7 @@ What runs where:
 - Client window: x86 client through emulation, drawn on CPU. Expected, not fault; native
   client is blocked by Valve issue 13288. 3.1 lowers its work: desktop interface by
   default (Deck interface is one animated page), no friends view, site isolation off, FEX
-  code cache and logging off for client processes, optional reduced x87 precision for
+  code cache and logging off for Steam client processes, optional reduced x87 precision for
   client program, Multiblock off after repeated client window restarts. Magnitude is
   unmeasured; `steam-arm --cpu-report` names processes and threads and ends with verdict.
   Window size follows desktop resolution: 1920x1080 output draws one quarter of pixels of
@@ -463,7 +463,7 @@ What runs where:
   experiments (`lab-cef-gpu vulkan`, kept with `client-gpu on`; `client-tso relaxed`;
   `x87-client on`), each off by default and each with guard or watcher. Vulkan class:
   V3DV 1.3 on Raspberry Pi OS trixie (Mesa 25 and 26); setup stores it as `VK_HOST`
-  (1.2 below Mesa 24.3; no release setup accepts carries that Mesa).
+  (1.2 below Mesa 24.3; no release that setup accepts carries that Mesa).
 - Client window through GPU: only ANGLE on Vulkan thunk can reach host GPU (GL thunk
   breaks on Chromium's GLX pattern, EGL thunk lacks entry Chromium's loader uses);
   unverified on V3DV, black window possible, so opt-in.
@@ -542,7 +542,7 @@ and stay off unless set by hand.
    (`CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND=y` in `bcm2712_defconfig`,
    <https://github.com/raspberrypi/linux>). `performance` holds cores at top clock, with
    more heat and power. Component `pi-governor` (off by default; Maintenance, CPU governor
-   while Steam runs) sets it while Steam ARM runs and puts saved governor back at exit.
+   while Steam runs) applies it while Steam ARM runs and puts saved governor back at exit.
    By hand until next reboot:
    `echo performance | sudo tee /sys/devices/system/cpu/cpufreq/policy0/scaling_governor`;
    back with `ondemand` in same command. `steam-arm-config` Information shows governor in
@@ -558,7 +558,7 @@ and stay off unless set by hand.
    on RK3588 test device 2 of 11 starts with empty cache hung before game start.
    Proton Experimental (ARM64) turns code cache on for Windows titles by itself.
 9. **Clocks (opt-in, warranty and heat).** Raspberry Pi documents `arm_freq`, `gpu_freq`,
-   `v3d_freq` (on Pi 5 V3D clock is independent of core clock) and `over_voltage_delta`
+   `v3d_freq` (V3D clock on Pi 5 does not follow core clock) and `over_voltage_delta`
    for `config.txt`; Steam ARM sets none of them and suggests no values. Active cooling
    needed. Raspberry Pi documents that some combinations set permanent bit in SoC
    <https://www.raspberrypi.com/documentation/computers/config_txt.html>.

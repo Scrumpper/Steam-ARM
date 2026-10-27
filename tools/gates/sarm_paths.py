@@ -11,7 +11,7 @@ ASSET_DOCS = ["README.md", "CHANGELOG.md", "COMPATIBILITY.md", "GAMES.md"]
 INTERNAL_NAMES = ("CHANGES.md", "steam-arm-config")
 # repo copy (GitHub CI) carries test suites and gate tools beside work files; sources outside the work folder
 GATE_FILES = ["sarm_paths.py", "debfile.py", "check-version.py", "check-heredocs.py", "check-removal.py", "scan-testtools.py",
-              "privacy.py", "check-private.py", "check-docs.py", "deb-check.sh", "fetch-debian.sh", "deb-build-local.sh",
+              "privacy.py", "check-private.py", "check-docs.py", "check-alliteration.py", "alliteration-allow.txt", "deb-check.sh", "fetch-debian.sh", "deb-build-local.sh",
               "distro-matrix.sh", "distro-matrix-tree.py", "distro-matrix.lock", "fetch-image.py", "private-words.sha256"]
 TESTS_SKIP = ("test_tools_22.sh",)
 

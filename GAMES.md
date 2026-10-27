@@ -4,7 +4,7 @@ What works for each kind of game on this package, by build and graphics API. Upd
 game types are run.
 
 **Last updated:** 2026-10-07
-**Run on:** RK3588 board (Mali-G610, PanVK and Panfrost, Mesa 26.1), KDE Plasma on X11, `steam-arm-install.sh` 2.0 to 2.3, Valve FEX tool FEX-2607, FEX-2609 beta and FEX-2609.1, Proton 11 ARM64 and Proton Experimental ARM64
+**Run on:** RK3588 board (Mali-G610, PanVK and Panfrost, Mesa 26.1), KDE Plasma on X11, `steam-arm-install.sh` 2.0 to 2.3, Valve FEX tool 2607, 2609 beta and 2609.1, Proton 11 ARM64 and Proton Experimental ARM64
 
 Legend: ✅ works  ⚠️ works with conditions  ❌ does not work  ❓ not run yet
 
@@ -57,7 +57,7 @@ Legend: ✅ works  ⚠️ works with conditions  ❌ does not work  ❓ not run 
 x86 Linux titles run on one of two graphics routes, picked per title at start:
 
 - **Forwarding:** OpenGL and Vulkan calls go to system's ARM64 Mesa (FEX thunks). Used
-  for every title no rule below picks.
+  for every title that no rule below picks.
 - **Mali drivers in emulation:** x86 builds of Mesa with Panfrost and PanVK, in second
   copy of root filesystem (`gpu-in-emulation` component; defaults per Mali family in README GPU
   detection). Handler picks it for Java titles (bundled Java runtime detected in game folder)
@@ -107,12 +107,12 @@ Steam ARM's launch handler decides per title, before game starts, with no launch
 
 - x86 Steam overlay on for Linux x86 titles
 - MangoHud when title asks for it
-- Godot 4 titles on OpenGL renderer with GL 3.3 report; Godot 3 titles with GL 3.3 report; engine version from PCK embedded in executable, else `.pck` beside it; Windows builds under x86 Proton left as is
+- Godot 4 titles on OpenGL renderer with GL 3.3 report; Godot 3 titles with GL 3.3 report; engine version from PCK inside executable, else `.pck` beside it; Windows builds under x86 Proton left as is
 - Unity titles: Vulkan renderer where player carries it, else GL 4.5 report; 32-bit Unity players with overlay off
 - Graphics route: forwarding, or Mali drivers in emulation for Java titles and, on `mali-csf-v10`, for 32-bit titles started with `-vulkan` or `-force-vulkan` (option kept); see Route choice
 - Java titles with LWJGL 2: `-DLWJGL_DISABLE_XRANDR=true` added; Java 21 and newer on Mali drivers route: FEX Multiblock off
 - 32-bit titles without Mali drivers in emulation: `-vulkan` and `-force-vulkan` removed (Vulkan forwarding is 64-bit only)
-- Start scripts (Source engine style) followed to binary they start
+- Wrapper scripts (as in Source engine titles) followed to binary they start
 
 Title profiles in `/etc/steam-arm/titles.conf` change it per title, by Steam app id:
 
