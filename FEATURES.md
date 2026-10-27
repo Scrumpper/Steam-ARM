@@ -77,7 +77,7 @@
 
 ## GPU detection
 - GPU family from kernel driver name of each render node (DRM version query), Mali GPU id (Panthor and Panfrost queries), device tree compatible string and PCI vendor; highest ranked node wins, so discrete card wins over integrated GPU; `/dev/mali0` without render node read as Arm's closed `kbase` driver
-- 29 GPU families (Mali, Adreno, Apple, Raspberry Pi, Vivante, PowerVR, AMD, NVIDIA, Intel, virtual GPU), plus `none` and `unknown`; each sets default state of `vk-spoof`, `gpu-in-emulation` and `glx-lax`, with note or warning printed at install
+- Known GPU families, 29 in all (Mali, Adreno, Apple, Raspberry Pi, Vivante, PowerVR, AMD, NVIDIA, Intel, virtual GPU), plus `none` and `unknown`; each sets default state of `vk-spoof`, `gpu-in-emulation` and `glx-lax`, with note or warning printed at install
 - Mali components on by default on Mali GPUs: `vk-spoof` on Mali-G610 class (`mali-csf-v10`); `gpu-in-emulation` on that class, on Mali-G615/G715 (`mali-csf-v11`), on Mali 5th gen and on Panfrost Malis; off on other GPUs, on Mali-G1 (`mali-csf-g1`, needs Mesa 26.2), on Panthor Malis outside family table, on Mali-400/450 and on closed `kbase` driver
 - Vulkan driver and device name from `vulkaninfo` when installed; GPU line printed by installer, checklist and `--detect`
 - Host facts written to `/etc/steam-arm/steam-arm.conf` on every setup run (3.1): `CPU_LSE` (Armv8.1 atomics), `CPU_CORES`, `PLATFORM` (`pi4`: bcm2711 or Pi 4 model with VideoCore VI and no LSE; `pi5`: bcm2712 with VideoCore VII; `pi-other`: VideoCore IV; empty elsewhere), `MESA_HOST` (`libgl1-mesa-dri` version); `--detect` prints `cpu lse`, `cpu cores`, `platform`, `mesa host`; settings menu hardware guess also matches device-tree compatible (`bcm2711`, `bcm2712`)
