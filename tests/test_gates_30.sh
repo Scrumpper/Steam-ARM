@@ -1,6 +1,6 @@
 #!/bin/bash
 # Gate tools in tools/gates (project: tools/): check-version, check-removal, check-heredocs, scan-testtools, privacy,
-# docs style, on copies of installer and settings menu in a temp folder. SARM_GATES picks another tools copy.
+# docs style, alliteration, on copies of installer and settings menu in a temp folder. SARM_GATES picks another tools copy.
 . "$(dirname "$0")/paths.sh"; WORK=$(dirname "$SARM_INST"); CFG=$SARM_CFG
 G=$SARM_GATES V=$SARM_VERSION
 T=$(mktemp -d /tmp/sarm-gates.XXXXXX); trap 'rm -rf "$T"' EXIT
@@ -112,5 +112,13 @@ check "docs: article, ship, first person plural, filler, dash, dangling link, op
 printf 'x\n' > "$T/d/CHANGES.md"; printf 'The note.\n' > "$T/d/CHANGES.md"; printf '# T\n' > "$T/d/README.md"
 OUT=$(python3 "$G/check-docs.py" "$T/d" 2>&1); rc=$?
 check "docs: internal CHANGES.md not checked" "[ $rc = 0 ] && ! grep -q CHANGES <<<\"\$OUT\""
+
+# ---------- alliteration gate ----------
+printf '# Title\n\nSetup stores values in `/etc/steam-arm`; menu reads them.\nPanfrost and PanVK on Panthor drive it.\n\n```\nsame sentence sits still\n```\n' > "$T/d/README.md"
+OUT=$(python3 "$G/check-alliteration.py" "$T/d" 2>&1); rc=$?
+check "alliteration: pairs, allow-listed names, code fence pass" "[ $rc = 0 ] && grep -q 'alliteration: 1 files, 0 hits' <<<\"\$OUT\""
+printf '# T\n\nSetup saves several settings at start.\n| same sentence sits | still |\n' > "$T/d/README.md"
+OUT=$(python3 "$G/check-alliteration.py" "$T/d" 2>&1); rc=$?
+check "alliteration: three same-initial words in four flagged by file:line; table row ignored" "[ $rc != 0 ] && grep -q 'README.md:3 ' <<<\"\$OUT\" && ! grep -q 'README.md:4' <<<\"\$OUT\""
 echo "passed $pass, failed $fail"
 [ "$fail" = 0 ]

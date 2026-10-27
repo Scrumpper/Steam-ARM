@@ -1,0 +1,7 @@
+# check-alliteration.py allow-list: one word per line, "# reason" optional, case ignored.
+# Proper and product names only; words of one or two letters (Pi, GL) need no entry.
+Panfrost   # Mesa OpenGL driver name
+PanVK      # Mesa Vulkan driver name
+Panthor    # kernel driver name
+PipeWire   # audio server name
+Proton     # Valve compatibility tool name
