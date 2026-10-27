@@ -1,6 +1,6 @@
 #!/bin/bash
 # release-gates.sh [--release] [--with-tests]: source gates for this checkout. Script syntax, version consistency,
-# heredoc syntax, removal drift, test hooks and env reads, privacy, docs style, package build. Settings menu checked as
+# heredoc syntax, removal drift, test hooks and env reads, privacy, docs style and alliteration, package build. Settings menu checked as
 # embedded in installer. --release: changelog entries dated, test suites with no SKIP; --with-tests: run tests/run-all.sh.
 # Exit 1 when any gate fails.
 G=$(cd "$(dirname "$0")/gates" && pwd)
@@ -25,6 +25,7 @@ gate "removal drift" python3 "$G/check-removal.py" --work "$W" "$V"
 gate "test hooks, env reads, private words in installer and menu" python3 "$G/scan-testtools.py" --work "$W" "$V"
 gate "privacy (every file)" python3 "$G/check-private.py" "$ROOT"
 gate "docs style" python3 "$G/check-docs.py" "$ROOT"
+gate "docs alliteration" python3 "$G/check-alliteration.py" "$ROOT"
 gate "package: reproducible, contents" bash "$G/deb-check.sh" "$ROOT"
 if [ $TESTS = 1 ]; then
   if [ -n "$REL" ]; then gate "test suites (no SKIP)" env SARM_REQUIRE_ALL=1 bash "$ROOT/tests/run-all.sh"

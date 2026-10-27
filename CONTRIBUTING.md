@@ -41,13 +41,13 @@ Run from release source; later change to installer, docs or package files change
 
 ```
 installer-menu.png                    ad2ff7df067340631eea1b42315925d5b9058fc2eaffbd1183f4b16e882ff164
-Steam.ARM.3.1.zip                     c2b36aa86bf21f013d8fa8864ef68ded3ea1c6f8cb50d78d293c934cd34d7ac6
-Steam.ARM.3.1.zip.sha256              8ebc6d0567233ade7babc560df59697a19046fb6a66e576e82669798915c86bd
+Steam.ARM.3.1.zip                     66ffbe9ee8d088e8a868e8cc1815eca9d78af7dee779a3acb41997ca5ba022a9
+Steam.ARM.3.1.zip.sha256              555cc4f7d4a23312e285dcab6538d865b0dd6ad080998bfb76305ffb62807ed9
 steam-arm-setup_3.1_arm64.deb         1fe5be36e13600fb7a01e994e930b6f849d753e0ea40d5a15bca765571e90acb
 steam-arm-setup_3.1_arm64.deb.sha256  e02493a23909debd6ca22b5a1c12ff3e1010ae703a97b4ee7ba4e491db91fc7a
 ```
 
-Zip holds nine repository files and screenshot in folder `Steam ARM 3.1`, in fixed order, modes 664
+Zip holds nine repository files and one screenshot, inside folder `Steam ARM 3.1`, in set order, modes 664
 (installer 775), entry time 2026-10-25 00:00 UTC, no extra fields (`zip -X -D`). Package comes from
 `build-deb.sh`; file times follow top `doc/changelog` entry. `tests/test_release_31.sh` covers
 determinism and zip layout.

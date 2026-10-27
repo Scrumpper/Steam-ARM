@@ -29,8 +29,8 @@ IV=$(sed -n 's/^SA_VERSION=//p' "$ROOT/steam-arm-install.sh" | head -n 1)
 # published pins per version: menu screenshot, zip, zip sidecar, package, package sidecar
 case $V in
   3.1) PIN_PNG=ad2ff7df067340631eea1b42315925d5b9058fc2eaffbd1183f4b16e882ff164
-       PIN_ZIP=c2b36aa86bf21f013d8fa8864ef68ded3ea1c6f8cb50d78d293c934cd34d7ac6
-       PIN_ZIPSHA=8ebc6d0567233ade7babc560df59697a19046fb6a66e576e82669798915c86bd
+       PIN_ZIP=66ffbe9ee8d088e8a868e8cc1815eca9d78af7dee779a3acb41997ca5ba022a9
+       PIN_ZIPSHA=555cc4f7d4a23312e285dcab6538d865b0dd6ad080998bfb76305ffb62807ed9
        PIN_DEB=1fe5be36e13600fb7a01e994e930b6f849d753e0ea40d5a15bca765571e90acb
        PIN_DEBSHA=e02493a23909debd6ca22b5a1c12ff3e1010ae703a97b4ee7ba4e491db91fc7a ;;
   *) PIN_PNG= PIN_ZIP= PIN_ZIPSHA= PIN_DEB= PIN_DEBSHA= ;;
