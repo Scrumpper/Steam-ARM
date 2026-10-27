@@ -256,7 +256,7 @@ driver documentation and public reports; grouping is judgement, not result.
 PanVK. This is configuration that package was built against, and test device's family; other
 RK3588 boards running same stack are expected to work.
 
-### Works after one change
+### Works after single change
 
 **Raspberry Pi 5.** Vulkan 1.3 through V3DV, but firmware loads 16K page kernel by
 default and emulation layer needs 4K. Add `kernel=kernel8.img` to `config.txt`, described
