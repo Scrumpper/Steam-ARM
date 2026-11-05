@@ -4,9 +4,10 @@
 from Valve's update channel · x86 Linux titles through FEX · Windows titles through ARM64
 Proton · one installer script · settings menu `steam-arm-config`
 
-Same client Steam Frame runs, set up on other ARM64 Linux devices: single-board computers, TV
-boxes, ARM laptops. Armv8.0 CPUs get Valve's x86 client through FEX in its place. Unofficial;
-not affiliated with Valve (see end of booklet).
+Same client Steam Frame runs for ARM64 Linux devices: single-board computers, TV
+boxes, ARM laptops. 
+Armv8.0 CPUs get Valve's x86 client through FEX in its place. 
+Unofficial; not affiliated with Valve (see end of booklet).
 
 Use this README as instruction booklet: section 1 covers install and first game, and index
 leads to details.
