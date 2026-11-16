@@ -1,4 +1,6 @@
 *.deb
 *.deb.sha256
+*.rpm
+*.rpm.sha256
 /build/
 __pycache__/

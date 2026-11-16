@@ -16,6 +16,7 @@ jobs:
           bash -n bin/steam-arm-setup
           bash -n debian/postinst
           bash -n build-deb.sh
+          bash -n build-rpm.sh
           bash -n tools/build-driver-archive.sh
 
       # Advisory. The installer is a long generated script, and shellcheck has not been
@@ -28,4 +29,5 @@ jobs:
           shellcheck --severity=error bin/steam-arm-setup
           shellcheck --severity=error debian/postinst
           shellcheck --severity=error build-deb.sh
+          shellcheck --severity=error build-rpm.sh
           shellcheck --severity=error tools/build-driver-archive.sh

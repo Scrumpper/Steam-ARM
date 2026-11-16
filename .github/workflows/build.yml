@@ -45,3 +45,41 @@ jobs:
           path: |
             ${{ env.DEB }}
             ${{ env.DEB }}.sha256
+
+  build-rpm:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rpmbuild
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
+      - name: Package file name from build-rpm.sh
+        run: echo "RPM=steam-arm-setup-$(sed -n 's/^VERSION=//p' build-rpm.sh)-1.aarch64.rpm" >> "$GITHUB_ENV"
+
+      - name: Build the package
+        run: ./build-rpm.sh
+
+      - name: Verify the release sidecar
+        run: sha256sum -c "$RPM.sha256"
+
+      - name: Verify the package metadata
+        run: rpm -qip "$RPM"
+
+      - name: Verify the package contents
+        run: rpm -qlp "$RPM"
+
+      - name: Install the package on Fedora
+        run: |
+          sudo docker run --rm -v "$GITHUB_WORKSPACE:/pkg:ro" fedora:latest \
+            sh -c "dnf install -y '/pkg/$RPM' && steam-arm-setup --list && steam-arm-setup --help && dnf remove -y steam-arm-setup"
+
+      - name: Upload the .rpm
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam-arm-setup-rpm
+          path: |
+            ${{ env.RPM }}
+            ${{ env.RPM }}.sha256

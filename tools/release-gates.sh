@@ -18,7 +18,7 @@ awk "/^menu_app\\(\\)\\{ cat <<'STEAMARMCONFIG'\$/{f=1;next} /^STEAMARMCONFIG\$/
 fails=()
 gate(){ local name=$1; shift; echo "=== $name"; if "$@"; then echo "--- $name: ok"; else echo "--- $name: FAILED"; fails+=("$name"); fi; }
 gate "bash -n installer, settings menu, launcher, recipe" bash -c "for f in '$ROOT/steam-arm-install.sh' '$W/steam-arm-config' '$ROOT/bin/steam-arm-setup' '$ROOT/tools/build-driver-archive.sh'; do bash -n \"\$f\" || exit 1; done"
-gate "sh -n package scripts and build-deb.sh" sh -c "sh -n '$ROOT/debian/postinst' && sh -n '$ROOT/debian/prerm' && sh -n '$ROOT/build-deb.sh'"
+gate "sh -n package scripts and build scripts" sh -c "sh -n '$ROOT/debian/postinst' && sh -n '$ROOT/debian/prerm' && sh -n '$ROOT/build-deb.sh' && sh -n '$ROOT/build-rpm.sh'"
 gate "version consistency" python3 "$G/check-version.py" --work "$W" "$V" $REL
 gate "heredoc syntax" python3 "$G/check-heredocs.py" --work "$W" "$V"
 gate "removal drift" python3 "$G/check-removal.py" --work "$W" "$V"
