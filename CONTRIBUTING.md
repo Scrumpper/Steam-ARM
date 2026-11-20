@@ -9,8 +9,8 @@ Package is built with:
 ```
 
 This requires `dpkg-deb` and produces `steam-arm-setup_<version>_arm64.deb` plus
-`steam-arm-setup_<version>_arm64.deb.sha256` (one line, `<sha256>  <file name>`). Same
-sources and same `dpkg-deb` version give same bytes; `tools/release-gates.sh` builds twice
+`steam-arm-setup_<version>_arm64.deb.sha256` (single line, `<sha256>  <file name>`). Same
+sources and `dpkg-deb` version give matching bytes; `tools/release-gates.sh` builds twice
 and compares.
 
 ## Release assets
@@ -41,8 +41,8 @@ Run from release source; later change to installer, docs or package files change
 
 ```
 installer-menu.png                    ad2ff7df067340631eea1b42315925d5b9058fc2eaffbd1183f4b16e882ff164
-Steam.ARM.3.1.zip                     66ffbe9ee8d088e8a868e8cc1815eca9d78af7dee779a3acb41997ca5ba022a9
-Steam.ARM.3.1.zip.sha256              555cc4f7d4a23312e285dcab6538d865b0dd6ad080998bfb76305ffb62807ed9
+Steam.ARM.3.1.zip                     4a27580b2881d5243767ab8fd03cba2f2c3a56dc9fbc29438033e12a78480927
+Steam.ARM.3.1.zip.sha256              6005d51672547fb1eb9d80fa3bb4b4125689fafc39d0bdcc749766257b4db171
 steam-arm-setup_3.1_arm64.deb         1fe5be36e13600fb7a01e994e930b6f849d753e0ea40d5a15bca765571e90acb
 steam-arm-setup_3.1_arm64.deb.sha256  e02493a23909debd6ca22b5a1c12ff3e1010ae703a97b4ee7ba4e491db91fc7a
 ```
@@ -57,7 +57,7 @@ determinism and zip layout.
 1. Build package with `./build-deb.sh`.
 2. Install built package: `sudo dpkg -i steam-arm-setup_*_arm64.deb`.
 3. Run `steam-arm-setup --list` and verify component list matches change.
-4. Run `steam-arm-setup --help` and confirm usage text is correct.
+4. Check `steam-arm-setup --help` output and confirm usage text is correct.
 5. Remove package: `sudo apt-get purge steam-arm-setup`.
 
 ## Required checks
@@ -76,7 +76,7 @@ Reports of device working, or not working, belong in compatibility issue templat
 
 ## Scope of changes
 
-`steam-arm-install.sh` is close to 1400 lines and is installer for every component listed in `README.md`. Keep changes minimal, scoped to one component or concern at time, and explain in pull request what change does and why it is needed.
+`steam-arm-install.sh` is close to 1400 lines and is installer for every component listed in `README.md`. Keep changes minimal, scoped to single component or concern, and explain in pull request what change does and why it is needed.
 
 ---
 

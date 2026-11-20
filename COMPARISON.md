@@ -20,8 +20,8 @@ Legend: ✅ yes  ⚠️ partly, or with conditions  ❌ no  ❓ not publicly ver
 
 This package sets up Steam Frame's ARM64 client. Reading table: routes that run **native** client are this package (Armv8.0 CPUs: x86
 client under FEX), Android and handheld projects, UbuntuAsahi, and macOS. Of those, everything except this one targets
-Adreno or Apple GPUs. Routes that cover Mali at all run **x86** client under
-emulation, or fail on driver.
+Adreno or Apple GPUs. Every route that covers Mali at all runs **x86** client under
+emulation, or fails on driver.
 
 For x86 titles this package offers two graphics routes: forwarding to system Mesa
 (default), and, as option, x86 Mali drivers inside emulation, same layout Valve uses on

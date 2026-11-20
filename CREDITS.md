@@ -2,8 +2,8 @@
 
 This installer writes little software of its own. It arranges other people's work into
 combination that runs native ARM64 Steam client on ARM64 system, and projects below
-are what it stands on. Nothing listed here is bundled in installer: each is either already
-on system, installed from its own repository, or downloaded by client at first start. One
+are what it stands on. Installer bundles none of what is listed here: each is either already
+on system, installed from its own repository, or downloaded by client at first start. Sole
 exception is `gpu-in-emulation` archive, Mesa built for x86 by this project and
 published with its release under Mesa's own licences.
 
@@ -14,8 +14,8 @@ published with its release under Mesa's own licences.
   guest reach host drivers; **Steam Input**, which re-identifies game controllers; and
   **Remote Play**. Client package and Proton are downloaded from Valve at run time.
   Valve's Steam Frame packages keep x86 Mesa inside emulation at
-  `/usr/share/guestos/fex-mesa`; `gpu-in-emulation` follows that layout. Valve's
-  **steam-devices** controller rules (MIT licence) are what `pad-hidraw` installs.
+  `/usr/share/guestos/fex-mesa`; `gpu-in-emulation` follows that layout. Controller rules
+  from Valve's **steam-devices** (MIT licence) are what `pad-hidraw` installs.
   <https://github.com/ValveSoftware/steam-devices>
 - **Wine**: Windows compatibility layer Proton is built from.
   <https://www.winehq.org>
@@ -97,7 +97,7 @@ This project is not affiliated with, endorsed by or sponsored by Valve Corporati
 Proton, Steam Deck and Steam Frame are trademarks of Valve Corporation. No Valve artwork is
 distributed with this package.
 
-This is unofficial, community-built tool. It is not affiliated with, endorsed by or supported
+Unofficial and community-built, this tool is not affiliated with, endorsed by or supported
 by Armbian project, Canonical, Collabora, ARM, FEX-Emu project or any board
 manufacturer. Each project named above is credited for its work, not for any involvement in
 this one.

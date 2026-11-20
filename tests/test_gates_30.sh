@@ -120,5 +120,21 @@ check "alliteration: pairs, allow-listed names, code fence pass" "[ $rc = 0 ] &&
 printf '# T\n\nSetup saves several settings at start.\n| same sentence sits | still |\n' > "$T/d/README.md"
 OUT=$(python3 "$G/check-alliteration.py" "$T/d" 2>&1); rc=$?
 check "alliteration: three same-initial words in four flagged by file:line; table row ignored" "[ $rc != 0 ] && grep -q 'README.md:3 ' <<<\"\$OUT\" && ! grep -q 'README.md:4' <<<\"\$OUT\""
+# openers (3.1 round 2): repeated first word on bullets, sentences, determiner clauses; slogan phrases
+printf '# T\n\n- Tray icon shows state.\n- Tray menu opens pages.\n\nSetup stores values. Setup reads them back.\nOff unless set, never global, never per client.\nOne script, readable before running; nothing bundled, nothing installed.\n' > "$T/d/README.md"
+OUT=$(python3 "$G/check-alliteration.py" "$T/d" 2>&1); rc=$?
+check "openers: bullet, sentence, clause and phrase hits flagged by kind and line" "[ $rc != 0 ] && grep -q \"README.md:4 bullet opener 'tray'\" <<<\"\$OUT\" && grep -q \"README.md:6 sentence opener 'setup'\" <<<\"\$OUT\" && grep -q \"README.md:7 clause opener 'never'\" <<<\"\$OUT\" && grep -q \"README.md:8 phrase 'One script'\" <<<\"\$OUT\" && grep -q \"README.md:8 clause opener 'nothing'\" <<<\"\$OUT\" && grep -q \"README.md:8 phrase 'nothing bundled'\" <<<\"\$OUT\" && grep -q 'hits (0 windows, 7 openers)' <<<\"\$OUT\""
+printf '# T\n\n- \x60steam-arm\x60 starts client.\n- \x60steam-arm-config\x60 opens menu.\n- [Install](#t)\n- [Install notes](#t)\n\n1. Debian 12\n2. Debian 11\n\n| one script | one file |\n\n- Setup stores values.\n\n- Setup reads them.\n- Run \x60one script\x60 then stop.\n- If x, if y.\n' > "$T/d/README.md"
+OUT=$(python3 "$G/check-alliteration.py" "$T/d" 2>&1); rc=$?
+check "openers: code-span and link bullets, numbered list, table row, code span phrase, blank-line break, function words pass" "[ $rc = 0 ] && grep -q 'alliteration: 1 files, 0 hits' <<<\"\$OUT\""
+printf '# T\n\n- Debian 12: ok.\n- Debian 11: halts.\n' > "$T/d/README.md"
+mkdir -p "$T/g"; cp "$G"/*.py "$G"/*.txt "$T/g/" 2>/dev/null; cp "$G"/*.sha256 "$T/g/" 2>/dev/null
+printf 'README.md:Debian   # requirement list per release\n' >> "$T/g/openers-allow.txt"
+OUT=$(python3 "$T/g/check-alliteration.py" "$T/d" 2>&1); rc=$?
+check "openers: allow-list entry scoped to file with reason passes" "[ $rc = 0 ]"
+printf 'Debian\n' > "$T/g/openers-allow.txt"; printf '# T\n\n- Debian 12: ok.\n- Debian 11: halts.\n' > "$T/d/CHANGELOG.md"
+OUT=$(python3 "$T/g/check-alliteration.py" "$T/d" 2>&1); rc=$?
+check "openers: unscoped allow-list entry covers every file" "[ $rc = 0 ] && grep -q 'alliteration: 2 files, 0 hits' <<<\"\$OUT\""
+rm -f "$T/d/CHANGELOG.md"
 echo "passed $pass, failed $fail"
 [ "$fail" = 0 ]
